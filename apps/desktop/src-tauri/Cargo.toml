@@ -1,0 +1,21 @@
+[package]
+name = "desktop"
+description = "App desktop: finestra Tauri che usa il nucleo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+# Il suffisso `_lib` evita su Windows il conflitto di nome con l'eseguibile
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+app-core.workspace = true
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

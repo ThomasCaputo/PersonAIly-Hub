@@ -1,0 +1,41 @@
+name: Controlli
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controlli:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Installa la versione di Rust indicata in rust-toolchain.toml.
+      - run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      # Va prima dei controlli Rust: l'app Tauri incorpora la cartella dist.
+      - name: Interfaccia (TypeScript + build)
+        run: npm run build:ui
+
+      - name: Formattazione
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
