@@ -3,6 +3,7 @@
 //! Tutto ciò che dipende dalla versione di llama.cpp sta in questo modulo
 //! (vedi `docs/adr/0002-motore-locale-llama-server.md`).
 
+pub mod install;
 pub mod runtime;
 pub mod sysmon;
 
@@ -186,6 +187,21 @@ pub fn build_args(model_path: &str, params: &LoadParams, port: u16) -> Vec<Strin
     args
 }
 
+/// Memoria condivisa che un processo CUDA usa anche quando tutto sta in VRAM
+/// (buffer di scambio con la scheda): misurati circa 410 MiB.
+const SHARED_GPU_BASELINE: u64 = 410 * 1024 * 1024;
+
+/// Oltre questa soglia di memoria condivisa si considera che il driver stia
+/// riversando la VRAM in RAM. Misure (ADR 0003): 410 MiB in condizioni
+/// normali, 2418 MiB con la VRAM piena.
+const SHARED_GPU_SPILL_THRESHOLD: u64 = 800 * 1024 * 1024;
+
+/// Se la memoria condivisa indica uno sconfinamento, restituisce quanta RAM
+/// viene usata al posto della VRAM.
+pub fn vram_spill(shared_bytes: u64) -> Option<u64> {
+    (shared_bytes > SHARED_GPU_SPILL_THRESHOLD).then(|| shared_bytes - SHARED_GPU_BASELINE)
+}
+
 /// Stima della memoria necessaria per caricare un modello.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -271,6 +287,14 @@ mod tests {
         assert!(has_pair(&args, "--flash-attn", "on"));
         assert!(has_pair(&args, "--cache-ram", "0"));
         assert!(has_pair(&args, "--fit", "off"));
+    }
+
+    #[test]
+    fn lo_sconfinamento_si_riconosce_dalla_memoria_condivisa() {
+        const MIB: u64 = 1024 * 1024;
+        // Valori misurati: 410 MiB in condizioni normali, 2418 con la VRAM piena.
+        assert_eq!(vram_spill(410 * MIB), None);
+        assert_eq!(vram_spill(2418 * MIB), Some(2008 * MIB));
     }
 
     #[test]

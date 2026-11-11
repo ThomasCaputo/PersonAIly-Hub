@@ -11,7 +11,7 @@ a [requisiti.md](requisiti.md).
 
 **Fatto quando:** l'app si apre su Windows e mostra una finestra vuota; i controlli passano.
 
-## Tappa 1 — Chat con un modello locale (in corso)
+## Tappa 1 — Chat con un modello locale ✅
 
 Fatto:
 
@@ -20,16 +20,19 @@ Fatto:
 - [x] Misure dell'ADR 0003 (modello da 0,8 GB e da 4,4 GB) e scelta dei valori predefiniti.
 - [x] Chat in streaming con cronologia, interruzione, Markdown e codice evidenziato (CH-1, CH-2, CH-4).
 - [x] Pannello parametri, prompt di sistema, preset salvato per modello (PA-1, PA-2, PA-3, PA-5).
-- [x] Indicatori di VRAM, RAM e velocità (LO-7, in parte).
+- [x] Indicatori di VRAM, RAM, velocità e contesto occupato (LO-7).
+- [x] Download e installazione di llama.cpp dall'app, con controllo dell'impronta dei file.
+- [x] Rinomina e ricerca delle conversazioni, anche nel testo dei messaggi (CH-2).
+- [x] Formule matematiche (CH-4).
+- [x] Thread e dimensione del batch tra i parametri di caricamento (PA-2).
+- [x] Avviso quando un modello in VRAM sconfina nella RAM (ADR 0003, punto a).
 
-Manca:
+Rimandato (non blocca la Tappa 2):
 
-- [ ] Download di llama.cpp dall'app: oggi va messo a mano nella cartella dati.
-- [ ] Rilevamento del riversamento della VRAM in RAM (ADR 0003, punto a).
-- [ ] Indicatore del contesto occupato (LO-7).
-- [ ] Rinomina e ricerca delle conversazioni (CH-2); formule matematiche (CH-4).
-- [ ] Thread e dimensione del batch nell'interfaccia (PA-2): il nucleo li supporta già.
-- [ ] I file `.gguf` scaricati a metà compaiono in libreria come modelli normali.
+- [ ] Il contesto occupato si conosce solo dopo una risposta, e si perde riavviando l'app.
+- [ ] Scelta manuale della variante di llama.cpp (oggi: CUDA con GPU NVIDIA, altrimenti Vulkan).
+- [ ] I file `.gguf` scaricati a metà compaiono in libreria come modelli normali
+      (si risolve con il download dei modelli dall'app, Tappa 2).
 
 **Fatto quando:** si chatta con un modello locale, cambiandone i parametri, e a modello
 caricato in VRAM la RAM usata resta entro la soglia fissata dalle misure.

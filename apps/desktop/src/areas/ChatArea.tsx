@@ -30,16 +30,30 @@ export function ChatArea({ status, preset, onPresetChange, onOpenModels }: Props
   const [stats, setStats] = useState<GenerationStats | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [renaming, setRenaming] = useState<{ id: number; title: string } | null>(null);
+  // Token occupati nel contesto dopo l'ultima risposta, per conversazione.
+  const [contextUsed, setContextUsed] = useState<Record<number, number>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const generating = streaming !== null;
   const loaded = status?.loaded ?? null;
 
   const refreshConversations = useCallback(async () => {
-    const list = await api.listConversations();
+    const list = await api.listConversations(query);
     setConversations(list);
     return list;
-  }, []);
+  }, [query]);
+
+  const commitRename = async () => {
+    if (!renaming) return;
+    const title = renaming.title.trim();
+    setRenaming(null);
+    if (title) {
+      await api.renameConversation(renaming.id, title).catch((e) => setError(String(e)));
+      refreshConversations().catch(() => {});
+    }
+  };
 
   useEffect(() => {
     refreshConversations()
@@ -100,6 +114,11 @@ export function ChatArea({ status, preset, onPresetChange, onOpenModels }: Props
         },
       );
       setStats(outcome.stats);
+      const used = (outcome.stats.promptTokens ?? 0) + (outcome.stats.completionTokens ?? 0);
+      if (used > 0) {
+        const id = conversationId;
+        setContextUsed((current) => ({ ...current, [id]: used }));
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -127,12 +146,41 @@ export function ChatArea({ status, preset, onPresetChange, onOpenModels }: Props
         <button className="btn primary wide" onClick={newConversation}>
           Nuova conversazione
         </button>
+        <input
+          type="search"
+          className="conversation-search"
+          placeholder="Cerca nelle conversazioni"
+          aria-label="Cerca nelle conversazioni"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         <div className="conversation-list">
+          {conversations.length === 0 && query && <p className="dim note">Nessun risultato.</p>}
           {conversations.map((c) => (
             <div key={c.id} className={c.id === activeId ? "conversation active" : "conversation"}>
-              <button className="conversation-title" onClick={() => setActiveId(c.id)} title={c.title}>
-                {c.title}
-              </button>
+              {renaming?.id === c.id ? (
+                <input
+                  className="conversation-rename"
+                  aria-label="Nuovo titolo"
+                  autoFocus
+                  value={renaming.title}
+                  onChange={(e) => setRenaming({ id: c.id, title: e.target.value })}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    if (e.key === "Escape") setRenaming(null);
+                  }}
+                />
+              ) : (
+                <button
+                  className="conversation-title"
+                  onClick={() => setActiveId(c.id)}
+                  onDoubleClick={() => setRenaming({ id: c.id, title: c.title })}
+                  title={`${c.title} — doppio clic per rinominare`}
+                >
+                  {c.title}
+                </button>
+              )}
               <button
                 className="conversation-delete"
                 title="Elimina conversazione"
@@ -182,6 +230,9 @@ export function ChatArea({ status, preset, onPresetChange, onOpenModels }: Props
           <div ref={bottomRef} />
         </div>
 
+        {loaded && activeId !== null && contextUsed[activeId] != null && (
+          <ContextMeter used={contextUsed[activeId]} total={loaded.params.contextLength} />
+        )}
         <div className="composer">
           <textarea
             value={draft}
@@ -216,6 +267,21 @@ export function ChatArea({ status, preset, onPresetChange, onOpenModels }: Props
           <p className="dim">I parametri compaiono quando un modello è caricato.</p>
         )}
       </aside>
+    </div>
+  );
+}
+
+/** Quanta parte del contesto del modello è occupata dalla conversazione. */
+function ContextMeter({ used, total }: { used: number; total: number }) {
+  const percent = Math.min(100, (used / Math.max(1, total)) * 100);
+  return (
+    <div className="context-meter" title="Quando il contesto si riempie il modello non può più leggere tutta la conversazione">
+      <span className="dim">
+        Contesto occupato: {used.toLocaleString("it-IT")} / {total.toLocaleString("it-IT")} token
+      </span>
+      <div className="meter-track">
+        <div className={percent > 85 ? "meter-fill high" : "meter-fill"} style={{ width: `${percent}%` }} />
+      </div>
     </div>
   );
 }

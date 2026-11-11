@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use app_core::chat::{self, ChatMessage};
 use app_core::local::runtime::LocalRuntime;
 use app_core::local::sysmon::{self, MemorySnapshot};
-use app_core::local::{LoadParams, Placement, SamplingParams, estimate_memory};
+use app_core::local::{KvCacheType, LoadParams, Placement, SamplingParams, estimate_memory};
 use app_core::models;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -28,6 +28,7 @@ struct Reading {
     memory: MemorySnapshot,
     working_set: u64,
     committed: u64,
+    gpu: Option<sysmon::ProcessGpuMemory>,
 }
 
 fn read(pid: Option<u32>) -> Reading {
@@ -47,6 +48,7 @@ fn read(pid: Option<u32>) -> Reading {
         memory: sysmon::snapshot(),
         working_set,
         committed,
+        gpu: pid.and_then(sysmon::process_gpu_memory),
     }
 }
 
@@ -60,6 +62,14 @@ fn print(label: &str, now: &Reading, base: &Reading) {
         mib(now.working_set),
         mib(now.committed),
     );
+    if let Some(gpu) = now.gpu {
+        println!(
+            "{:<22} memoria grafica del processo: dedicata {:>6.0} MiB, condivisa (RAM usata come VRAM) {:>6.0} MiB",
+            "",
+            mib(gpu.dedicated_bytes),
+            mib(gpu.shared_bytes),
+        );
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -77,6 +87,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         load_mode: args.get(3).filter(|m| *m != "-").cloned(),
         context_length: args.get(4).and_then(|c| c.parse().ok()).unwrap_or(8192),
+        kv_cache_type: match args.get(5).map(String::as_str) {
+            Some("f16") => KvCacheType::F16,
+            Some("q4_0") => KvCacheType::Q4_0,
+            _ => KvCacheType::Q8_0,
+        },
         ..Default::default()
     };
 

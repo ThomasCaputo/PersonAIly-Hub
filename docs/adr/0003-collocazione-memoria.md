@@ -1,6 +1,6 @@
 # 0003 — Modello e cache KV in una sola memoria; KV a `q8_0`
 
-**Stato:** accettata e misurata; resta da realizzare il rilevamento del punto (a)
+**Stato:** accettata, misurata e realizzata
 
 ## Contesto
 
@@ -84,17 +84,34 @@ Cosa dicono:
 - Dopo lo scaricamento VRAM e RAM tornano ai valori di partenza.
 - La stima dell'app è prudente: 5238 MiB stimati contro 4679 (VRAM) e 4966 (RAM) reali.
 
-## Punti ancora aperti
+## Riversamento del driver e altri punti da tenere d'occhio
 
 **a) Riversamento della VRAM nella RAM da parte del driver.** Su Windows il driver NVIDIA,
 quando la VRAM finisce, può spostare dati nella "memoria condivisa" (RAM) invece di dare
 errore: è proprio il doppione che vogliamo evitare, ed è molto lento. L'impostazione sta
 nel pannello di controllo NVIDIA ("CUDA - Sysmem Fallback Policy") e un'app non può
-cambiarla. Oggi l'app si difende solo con la stima prima del caricamento. Da fare:
+cambiarla. L'app si difende in due modi:
 
-- controllo, dopo il caricamento, della memoria GPU condivisa usata dal processo, con
-  avviso all'utente e spiegazione di come disattivare il riversamento;
-- una pagina di guida sull'impostazione.
+- **prima**, con la stima: se il modello non entra nella VRAM libera, il caricamento
+  viene rifiutato;
+- **dopo**, controllando ogni due secondi la *memoria grafica condivisa* del processo
+  (gli stessi contatori di Gestione attività, `\GPU Process Memory(pid_…)\Shared Usage`):
+  se supera la soglia compare un avviso con le istruzioni per rimediare. Serve nei casi
+  in cui l'utente forza il caricamento o un altro programma occupa la VRAM in seguito.
+
+Misure con Qwen2.5 7B, riempiendo apposta la VRAM con altre due copie del modello:
+
+| Situazione | VRAM totale usata | Dedicata al processo | Condivisa del processo |
+|---|---|---|---|
+| Normale (contesto 8192, `q8_0`) | 5,6 / 12 GB | 4676 MiB | **410 MiB** |
+| VRAM piena (contesto 32768, `f16`, forzato) | 11,97 / 12 GB | 4270 MiB | **2418 MiB** |
+
+I 410 MiB in condizioni normali sono buffer di scambio di CUDA, non uno sconfinamento.
+La soglia dell'avviso è fissata a 800 MiB (`SHARED_GPU_SPILL_THRESHOLD`). Limiti noti:
+
+- uno sconfinamento sotto i 400 MiB circa non viene segnalato;
+- la soglia è tarata su una sola scheda e un solo modello: va verificata su altri;
+- il contatore esiste solo su Windows; sulle altre piattaforme il controllo non c'è.
 
 **b) Taratura della stima.** Pesi = dimensione del file; cache KV = layer × contesto ×
 2 × (dimensione di una testa × teste KV) × byte per valore; margine = 400 MiB + 3 % dei

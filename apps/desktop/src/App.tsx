@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, gb, type CoreInfo, type Preset, type RuntimeStatus } from "./api";
 import { ChatArea } from "./areas/ChatArea";
 import { ModelsArea } from "./areas/ModelsArea";
+import { SpillWarning } from "./components/SpillWarning";
 import "./App.css";
 
 const AREAS = [
@@ -75,6 +76,8 @@ export default function App() {
       </nav>
 
       <main className="content">
+        <SpillWarning status={status} />
+        <div className="area">
         {areaId === "chat" && (
           <ChatArea
             status={status}
@@ -88,6 +91,7 @@ export default function App() {
         {areaId === "settings" && (
           <Placeholder title="Impostazioni" hint="Le impostazioni arrivano con le prossime tappe." />
         )}
+        </div>
       </main>
     </div>
   );

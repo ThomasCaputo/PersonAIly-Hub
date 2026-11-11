@@ -11,6 +11,8 @@ import {
   type RuntimeStatus,
 } from "../api";
 
+import { EngineSection } from "../components/EngineSection";
+
 type Props = { status: RuntimeStatus | null; onStatusChange: () => void };
 
 export function ModelsArea({ status, onStatusChange }: Props) {
@@ -47,6 +49,8 @@ export function ModelsArea({ status, onStatusChange }: Props) {
   return (
     <div className="page">
       <h1>Modelli</h1>
+
+      <EngineSection />
 
       <section className="section">
         <div className="section-head">
@@ -224,6 +228,37 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
             </select>
           </div>
 
+          <details className="advanced">
+            <summary>Avanzate</summary>
+            <div className="field">
+              <label htmlFor={`threads-${model.path}`}>Thread del processore</label>
+              <input
+                id={`threads-${model.path}`}
+                type="number"
+                min={1}
+                max={256}
+                placeholder="Automatico"
+                value={preset.load.threads ?? ""}
+                onChange={(e) => setLoad({ threads: optionalInt(e.target.value, 1, 256) })}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor={`batch-${model.path}`}>Dimensione del batch (token)</label>
+              <input
+                id={`batch-${model.path}`}
+                type="number"
+                min={32}
+                max={8192}
+                placeholder="Predefinita (2048)"
+                value={preset.load.batchSize ?? ""}
+                onChange={(e) => setLoad({ batchSize: optionalInt(e.target.value, 32, 8192) })}
+              />
+              <span className="dim note">
+                Quanti token del messaggio vengono letti per volta. Più alto = lettura più rapida, un po' più di memoria.
+              </span>
+            </div>
+          </details>
+
           {check && <Estimate check={check} placement={preset.load.placement} />}
           {error && <p className="error pre">{error}</p>}
 
@@ -272,6 +307,13 @@ function Estimate({ check, placement }: { check: LoadCheck; placement: "vram" | 
       {availableBytes == null && <div className="dim">Memoria libera non misurabile su questa GPU.</div>}
     </div>
   );
+}
+
+/** Numero intero facoltativo: campo vuoto o valore fuori dai limiti = automatico. */
+function optionalInt(text: string, min: number, max: number): number | null {
+  if (text.trim() === "") return null;
+  const n = Math.round(Number(text));
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
 }
 
 function clamp(value: number, min: number, max: number) {

@@ -4,11 +4,12 @@
 use std::sync::Arc;
 
 use app_core::chat::ChatEvent;
+use app_core::local::install::{Phase, Progress, Variant};
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
 use app_core::models::ModelInfo;
 use app_core::store::{Conversation, Message};
-use app_core::{Core, LoadCheck, RuntimeStatus, SendOutcome};
+use app_core::{Core, EngineStatus, LoadCheck, RuntimeStatus, SendOutcome};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State};
@@ -45,6 +46,33 @@ fn core_info(core: CoreState<'_>) -> CmdResult<CoreInfo> {
         version: app_core::version(),
         schema_version: core.schema_version().map_err(text)?,
     })
+}
+
+// ── Motore llama.cpp ────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn engine_status(core: CoreState<'_>) -> CmdResult<EngineStatus> {
+    Ok(core.engine_status().await)
+}
+
+#[tauri::command]
+async fn install_engine(
+    core: CoreState<'_>,
+    variant: Variant,
+    on_progress: Channel<Progress>,
+) -> CmdResult<()> {
+    // Un aggiornamento per ogni pacchetto di rete sarebbero migliaia di
+    // messaggi al secondo: se ne manda uno ogni mezzo punto percentuale.
+    let mut last_sent = 0;
+    core.install_engine(variant, |progress| {
+        let step = progress.total_bytes / 200;
+        if progress.phase != Phase::Download || progress.done_bytes >= last_sent + step {
+            last_sent = progress.done_bytes;
+            let _ = on_progress.send(progress);
+        }
+    })
+    .await
+    .map_err(text)
 }
 
 // ── Modelli ─────────────────────────────────────────────────────────────
@@ -109,8 +137,8 @@ async fn runtime_status(core: CoreState<'_>) -> CmdResult<RuntimeStatus> {
 // ── Conversazioni ───────────────────────────────────────────────────────
 
 #[tauri::command]
-fn list_conversations(core: CoreState<'_>) -> CmdResult<Vec<Conversation>> {
-    core.list_conversations().map_err(text)
+fn list_conversations(core: CoreState<'_>, query: String) -> CmdResult<Vec<Conversation>> {
+    core.list_conversations(&query).map_err(text)
 }
 
 #[tauri::command]
@@ -178,6 +206,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             core_info,
+            engine_status,
+            install_engine,
             model_folders,
             set_model_folders,
             list_models,

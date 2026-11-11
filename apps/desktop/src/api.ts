@@ -72,6 +72,9 @@ export type RuntimeStatus = {
     gpu: { name: string; totalBytes: number; usedBytes: number; freeBytes: number } | null;
   };
   processRamBytes: number | null;
+  processGpu: { dedicatedBytes: number; sharedBytes: number } | null;
+  /** Presente se il modello in VRAM sta sconfinando in RAM. */
+  vramSpillBytes: number | null;
 };
 
 export type Conversation = { id: number; title: string; createdAt: string; updatedAt: string };
@@ -102,8 +105,30 @@ export type StreamEvent = { type: "text"; text: string } | { type: "reasoning"; 
 
 export type CoreInfo = { version: string; schemaVersion: number };
 
+export type EngineVariant = "cuda" | "vulkan" | "cpu";
+
+export type EngineStatus = {
+  installed: string | null;
+  build: string;
+  recommended: EngineVariant;
+  downloadBytes: number;
+};
+
+export type InstallProgress = {
+  phase: "download" | "extract";
+  doneBytes: number;
+  totalBytes: number;
+};
+
 export const api = {
   coreInfo: () => invoke<CoreInfo>("core_info"),
+
+  engineStatus: () => invoke<EngineStatus>("engine_status"),
+  installEngine: (variant: EngineVariant, onProgress: (progress: InstallProgress) => void) => {
+    const channel = new Channel<InstallProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("install_engine", { variant, onProgress: channel });
+  },
 
   modelFolders: () => invoke<string[]>("model_folders"),
   setModelFolders: (folders: string[]) => invoke<void>("set_model_folders", { folders }),
@@ -118,7 +143,7 @@ export const api = {
   unloadModel: () => invoke<void>("unload_model"),
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
 
-  listConversations: () => invoke<Conversation[]>("list_conversations"),
+  listConversations: (query = "") => invoke<Conversation[]>("list_conversations", { query }),
   createConversation: () => invoke<Conversation>("create_conversation"),
   renameConversation: (id: number, title: string) =>
     invoke<void>("rename_conversation", { id, title }),
@@ -144,6 +169,11 @@ export const api = {
   },
   stopGeneration: () => invoke<void>("stop_generation"),
 };
+
+/** Dimensione leggibile: megabyte sotto il gigabyte, gigabyte sopra. */
+export function size(bytes: number): string {
+  return bytes < GIB ? `${Math.round(bytes / 1024 ** 2)} MB` : `${gb(bytes)} GB`;
+}
 
 const GIB = 1024 ** 3;
 

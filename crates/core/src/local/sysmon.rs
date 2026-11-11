@@ -48,6 +48,99 @@ pub fn process_ram(pid: u32) -> Option<u64> {
     sys.process(pid).map(|p| p.memory())
 }
 
+/// Memoria grafica usata da un singolo processo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessGpuMemory {
+    /// Memoria sulla scheda video (VRAM vera).
+    pub dedicated_bytes: u64,
+    /// Memoria "condivisa": è RAM di sistema usata come se fosse VRAM. Un valore
+    /// alto significa che il driver sta riversando la VRAM in RAM.
+    pub shared_bytes: u64,
+}
+
+/// Memoria grafica dedicata e condivisa di un processo, dagli stessi
+/// contatori che usa Gestione attività. `None` se non sono disponibili.
+#[cfg(windows)]
+pub fn process_gpu_memory(pid: u32) -> Option<ProcessGpuMemory> {
+    use windows_sys::Win32::System::Performance::{
+        PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_MORE_DATA, PdhAddEnglishCounterW,
+        PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+    };
+
+    /// Somma i valori di tutte le istanze di un contatore (una per scheda video).
+    unsafe fn sum(counter: *mut core::ffi::c_void) -> Option<u64> {
+        let mut size = 0u32;
+        let mut count = 0u32;
+        // La prima chiamata dice quanto spazio serve.
+        let status = unsafe {
+            PdhGetFormattedCounterArrayW(
+                counter,
+                PDH_FMT_LARGE,
+                &mut size,
+                &mut count,
+                std::ptr::null_mut(),
+            )
+        };
+        if status != PDH_MORE_DATA || size == 0 {
+            return None;
+        }
+        // Vettore di u64 per garantire l'allineamento richiesto dalla struttura.
+        let mut buffer = vec![0u64; size as usize / 8 + 1];
+        let items = buffer.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+        let status = unsafe {
+            PdhGetFormattedCounterArrayW(counter, PDH_FMT_LARGE, &mut size, &mut count, items)
+        };
+        if status != 0 {
+            return None;
+        }
+        let mut total = 0u64;
+        for i in 0..count as usize {
+            let item = unsafe { &*items.add(i) };
+            if item.FmtValue.CStatus == 0 {
+                total += unsafe { item.FmtValue.Anonymous.largeValue }.max(0) as u64;
+            }
+        }
+        Some(total)
+    }
+
+    let wide = |text: String| -> Vec<u16> { text.encode_utf16().chain([0]).collect() };
+    // Nomi in inglese: funzionano con qualsiasi lingua di Windows.
+    let dedicated_path = wide(format!(r"\GPU Process Memory(pid_{pid}_*)\Dedicated Usage"));
+    let shared_path = wide(format!(r"\GPU Process Memory(pid_{pid}_*)\Shared Usage"));
+
+    unsafe {
+        let mut query = std::ptr::null_mut();
+        if PdhOpenQueryW(std::ptr::null(), 0, &mut query) != 0 {
+            return None;
+        }
+        let mut dedicated = std::ptr::null_mut();
+        let mut shared = std::ptr::null_mut();
+        let result = if PdhAddEnglishCounterW(query, dedicated_path.as_ptr(), 0, &mut dedicated)
+            == 0
+            && PdhAddEnglishCounterW(query, shared_path.as_ptr(), 0, &mut shared) == 0
+            && PdhCollectQueryData(query) == 0
+        {
+            match (sum(dedicated), sum(shared)) {
+                (Some(dedicated_bytes), Some(shared_bytes)) => Some(ProcessGpuMemory {
+                    dedicated_bytes,
+                    shared_bytes,
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        PdhCloseQuery(query);
+        result
+    }
+}
+
+#[cfg(not(windows))]
+pub fn process_gpu_memory(_pid: u32) -> Option<ProcessGpuMemory> {
+    None
+}
+
 /// VRAM della prima GPU NVIDIA, letta da `nvidia-smi`.
 ///
 /// Per ora solo NVIDIA; le altre GPU arriveranno con il supporto a Vulkan.

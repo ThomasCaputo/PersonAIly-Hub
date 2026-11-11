@@ -47,14 +47,24 @@ solo CPU).
 
 ## Versione in uso
 
-Build **b12110**, che corrisponde alla versione stabile **v0.9.0** di llama.cpp. Da
-`github.com/ggml-org/llama.cpp/releases/tag/b12110` servono due archivi, estratti nella
-stessa cartella `bin\llama.cpp\b12110-cuda\` dentro la cartella dati dell'app:
+Build **b12110**, che corrisponde alla versione stabile **v0.9.0** di llama.cpp.
 
-- `llama-b12110-bin-win-cuda-13.4-x64.zip` — il programma;
-- `cudart-llama-bin-win-cuda-13.4-x64.zip` — le librerie CUDA di NVIDIA.
+L'app la scarica da sé (pagina Modelli → Motore) da
+`github.com/ggml-org/llama.cpp/releases/tag/b12110` e la installa in
+`bin\llama.cpp\b12110-<variante>\` dentro la cartella dati. Le varianti:
+
+| Variante | Quando | Archivi | Download |
+|---|---|---|---|
+| `cuda` | GPU NVIDIA | `llama-b12110-bin-win-cuda-13.4-x64.zip` + `cudart-llama-bin-win-cuda-13.4-x64.zip` (librerie CUDA) | 565 MB |
+| `vulkan` | altre GPU | `llama-b12110-bin-win-vulkan-x64.zip` | 36 MB |
+| `cpu` | nessuna GPU | `llama-b12110-bin-win-cpu-x64.zip` | 24 MB |
+
+Nomi, dimensioni e impronte SHA-256 degli archivi sono scritti nel codice
+(`crates/core/src/local/install.rs`): un file che non corrisponde viene rifiutato prima
+dell'estrazione. Passare a una nuova build significa aggiornare quella tabella e
+ricontrollare gli argomenti di `build_args` con `llama-server --help`.
 
 Attenzione allo schema delle release: la release "latest" (`v0.9.0`) contiene solo un
 file di testo con il nome della build; i binari stanno nelle release `bNNNNN`.
 
-Per ora il download si fa a mano; quello dall'app è previsto (requisito LO-9).
+Oggi sono previsti solo gli archivi per Windows x64.

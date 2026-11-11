@@ -1,6 +1,6 @@
 # Progetto AI
 
-> Nome provvisorio. Stato: **Tappa 1 in corso** — si può già caricare un modello locale
+> Nome provvisorio. Stato: **Tappa 1 completata** — si può caricare un modello locale
 > `.gguf` e chattarci (vedi la [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:
@@ -57,8 +57,8 @@ npm run check    # formattazione, lint e test del codice Rust
 npm run build    # crea l'installer
 ```
 
-Per usare i modelli locali serve anche llama.cpp nella cartella dati dell'app: quali file
-e dove metterli è scritto nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso).
+Per usare i modelli locali serve llama.cpp: l'app lo scarica da sé dalla pagina
+**Modelli → Motore** (dettagli nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso)).
 
 ## Struttura del repository
 

@@ -19,8 +19,9 @@ use tokio::sync::Notify;
 
 use chat::{ChatEvent, ChatMessage, GenerationStats};
 use error::{Error, Result};
+use local::install::{self, Variant};
 use local::runtime::{LoadedModel, LocalRuntime};
-use local::sysmon::{self, MemorySnapshot};
+use local::sysmon::{self, MemorySnapshot, ProcessGpuMemory};
 use local::{LoadParams, MemoryEstimate, Placement, Preset, SamplingParams};
 use models::ModelInfo;
 use store::{Conversation, Message, Store};
@@ -54,6 +55,11 @@ pub struct RuntimeStatus {
     pub memory: MemorySnapshot,
     /// RAM occupata dal processo del modello.
     pub process_ram_bytes: Option<u64>,
+    /// Memoria grafica dedicata e condivisa del processo del modello.
+    pub process_gpu: Option<ProcessGpuMemory>,
+    /// Presente se un modello caricato in VRAM sta sconfinando in RAM:
+    /// quanta RAM il driver sta usando al posto della VRAM.
+    pub vram_spill_bytes: Option<u64>,
 }
 
 /// Esito dell'invio di un messaggio.
@@ -75,6 +81,20 @@ pub struct Core {
     runtime: tokio::sync::Mutex<LocalRuntime>,
     /// Segnale per interrompere la generazione in corso.
     generation: Mutex<Option<Arc<Notify>>>,
+    /// Occupato mentre llama.cpp viene scaricato e installato.
+    installing: tokio::sync::Mutex<()>,
+}
+
+/// Stato dell'installazione di llama.cpp.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineStatus {
+    /// Cartella della versione installata, se c'è.
+    pub installed: Option<String>,
+    /// Build che l'app installerebbe.
+    pub build: &'static str,
+    pub recommended: Variant,
+    pub download_bytes: u64,
 }
 
 impl Core {
@@ -91,6 +111,7 @@ impl Core {
             )),
             http,
             generation: Mutex::new(None),
+            installing: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -151,6 +172,51 @@ impl Core {
         Ok(())
     }
 
+    // ── Motore llama.cpp ────────────────────────────────────────────────
+
+    /// Dice se llama.cpp è installato e quale variante conviene a questo PC.
+    pub async fn engine_status(&self) -> EngineStatus {
+        let installed = self
+            .runtime
+            .try_lock()
+            .ok()
+            .and_then(|runtime| runtime.find_server().ok())
+            .and_then(|exe| Some(exe.parent()?.file_name()?.to_string_lossy().into_owned()));
+        // Con una GPU NVIDIA si usa CUDA; altrimenti Vulkan, che copre AMD e Intel.
+        let has_nvidia = tokio::task::spawn_blocking(|| sysmon::snapshot().gpu.is_some())
+            .await
+            .unwrap_or(false);
+        let recommended = if has_nvidia {
+            Variant::Cuda
+        } else {
+            Variant::Vulkan
+        };
+        EngineStatus {
+            installed,
+            build: local::LLAMA_CPP_BUILD,
+            recommended,
+            download_bytes: recommended.download_bytes(),
+        }
+    }
+
+    /// Scarica e installa llama.cpp. Una sola installazione alla volta.
+    pub async fn install_engine(
+        &self,
+        variant: Variant,
+        on_progress: impl FnMut(install::Progress),
+    ) -> Result<()> {
+        let _guard = self
+            .installing
+            .try_lock()
+            .map_err(|_| Error::msg("Un'installazione è già in corso."))?;
+        let bin_dir = self.data_dir.join("bin").join("llama.cpp");
+        std::fs::create_dir_all(&bin_dir)?;
+        // Client separato: per uscire su internet va rispettato il proxy di sistema.
+        let http = reqwest::Client::new();
+        install::install(&http, &bin_dir, variant, on_progress).await?;
+        Ok(())
+    }
+
     // ── Caricamento dei modelli locali ──────────────────────────────────
 
     /// Confronta la memoria necessaria con quella libera nella collocazione scelta.
@@ -199,7 +265,7 @@ impl Core {
                     Placement::Ram => "RAM",
                 };
                 return Err(Error::msg(format!(
-                    "Il modello non entra nella {place}: servono circa {:.1} GB, liberi {:.1} GB.",
+                    "Il modello non entra nella {place}: servono circa {} GB, liberi {} GB.",
                     gib(check.estimate.total_bytes),
                     gib(check.available_bytes.unwrap_or(0)),
                 )));
@@ -239,17 +305,31 @@ impl Core {
             Err(_) => (true, None),
         };
         let pid = loaded.as_ref().map(|m| m.pid);
-        let (memory, process_ram_bytes) = tokio::task::spawn_blocking(move || {
-            (sysmon::snapshot(), pid.and_then(sysmon::process_ram))
+        let (memory, process_ram_bytes, process_gpu) = tokio::task::spawn_blocking(move || {
+            (
+                sysmon::snapshot(),
+                pid.and_then(sysmon::process_ram),
+                pid.and_then(sysmon::process_gpu_memory),
+            )
         })
         .await
         .unwrap_or_default();
+
+        // Solo in VRAM ha senso parlare di sconfinamento: in RAM è tutto lì per scelta.
+        let in_vram = loaded
+            .as_ref()
+            .is_some_and(|m| m.params.placement == Placement::Vram);
+        let vram_spill_bytes = process_gpu
+            .filter(|_| in_vram)
+            .and_then(|gpu| local::vram_spill(gpu.shared_bytes));
 
         RuntimeStatus {
             loading,
             loaded,
             memory,
             process_ram_bytes,
+            process_gpu,
+            vram_spill_bytes,
         }
     }
 
@@ -259,8 +339,10 @@ impl Core {
         self.store().create_conversation(DEFAULT_TITLE)
     }
 
-    pub fn list_conversations(&self) -> Result<Vec<Conversation>> {
-        self.store().list_conversations()
+    /// Conversazioni dalla più recente; con `query` solo quelle che contengono
+    /// il testo cercato nel titolo o in un messaggio.
+    pub fn list_conversations(&self, query: &str) -> Result<Vec<Conversation>> {
+        self.store().list_conversations(query)
     }
 
     pub fn rename_conversation(&self, id: i64, title: &str) -> Result<()> {
@@ -356,8 +438,9 @@ impl Core {
     }
 }
 
-fn gib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+/// Byte in gigabyte con una cifra decimale e la virgola, come si scrive in italiano.
+fn gib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / (1024.0 * 1024.0 * 1024.0)).replace('.', ",")
 }
 
 /// Titolo di una conversazione ricavato dal primo messaggio.

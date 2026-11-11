@@ -114,13 +114,25 @@ impl Store {
         )?)
     }
 
-    /// Tutte le conversazioni, dalla più recente.
-    pub fn list_conversations(&self) -> Result<Vec<Conversation>> {
+    /// Le conversazioni, dalla più recente. Con `query` non vuota, solo quelle
+    /// che contengono il testo nel titolo o in un messaggio (senza distinguere
+    /// maiuscole e minuscole).
+    pub fn list_conversations(&self, query: &str) -> Result<Vec<Conversation>> {
+        // `%` e `_` sono caratteri jolly di LIKE: se l'utente li cerca vanno presi alla lettera.
+        let escaped = query
+            .trim()
+            .replace('\\', r"\\")
+            .replace('%', r"\%")
+            .replace('_', r"\_");
+        let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, created_at, updated_at FROM conversations
-             ORDER BY updated_at DESC, id DESC",
+            r"SELECT id, title, created_at, updated_at FROM conversations c
+              WHERE c.title LIKE ?1 ESCAPE '\'
+                 OR EXISTS (SELECT 1 FROM messages m
+                            WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\')
+              ORDER BY updated_at DESC, id DESC",
         )?;
-        let rows = stmt.query_map([], row_to_conversation)?;
+        let rows = stmt.query_map([pattern], row_to_conversation)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -261,12 +273,42 @@ mod tests {
         store.add_message(conv.id, "user", "ciao", None).unwrap();
         store.delete_conversation(conv.id).unwrap();
 
-        assert!(store.list_conversations().unwrap().is_empty());
+        assert!(store.list_conversations("").unwrap().is_empty());
         let rimasti: i64 = store
             .conn
             .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rimasti, 0);
+    }
+
+    #[test]
+    fn la_ricerca_guarda_titoli_e_messaggi() {
+        let store = Store::open_in_memory().unwrap();
+        let ricette = store.create_conversation("Ricette di pasta").unwrap();
+        store
+            .add_message(ricette.id, "user", "Come si fa la carbonara?", None)
+            .unwrap();
+        let codice = store.create_conversation("Aiuto con Python").unwrap();
+        store
+            .add_message(codice.id, "user", "Sconto del 100% sul totale", None)
+            .unwrap();
+
+        let titoli = |query: &str| -> Vec<String> {
+            store
+                .list_conversations(query)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.title)
+                .collect()
+        };
+
+        assert_eq!(titoli("").len(), 2);
+        assert_eq!(titoli("PASTA"), ["Ricette di pasta"]);
+        assert_eq!(titoli("carbonara"), ["Ricette di pasta"]);
+        assert_eq!(titoli("100%"), ["Aiuto con Python"]);
+        // Il segno % cercato da solo non deve valere "qualsiasi cosa".
+        assert_eq!(titoli("%"), ["Aiuto con Python"]);
+        assert!(titoli("inesistente").is_empty());
     }
 
     #[test]
