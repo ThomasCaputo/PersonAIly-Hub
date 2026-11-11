@@ -1,30 +1,62 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, gb, type CoreInfo, type Preset, type RuntimeStatus } from "./api";
+import { ChatArea } from "./areas/ChatArea";
+import { ModelsArea } from "./areas/ModelsArea";
 import "./App.css";
 
-type CoreInfo = { version: string; schemaVersion: number };
-
 const AREAS = [
-  { id: "chat", label: "Chat", hint: "Le conversazioni arrivano con la Tappa 1." },
-  { id: "agents", label: "Agenti", hint: "Gli agenti arrivano con la Tappa 4." },
-  { id: "models", label: "Modelli", hint: "La libreria dei modelli arriva con la Tappa 1." },
-  { id: "settings", label: "Impostazioni", hint: "Le impostazioni arrivano con le prossime tappe." },
+  { id: "chat", label: "Chat" },
+  { id: "agents", label: "Agenti" },
+  { id: "models", label: "Modelli" },
+  { id: "settings", label: "Impostazioni" },
 ] as const;
 
 type AreaId = (typeof AREAS)[number]["id"];
 
+const STATUS_INTERVAL_MS = 2000;
+const PRESET_SAVE_DELAY_MS = 500;
+
 export default function App() {
   const [areaId, setAreaId] = useState<AreaId>("chat");
   const [core, setCore] = useState<CoreInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<RuntimeStatus | null>(null);
+  const [preset, setPreset] = useState<Preset | null>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
 
-  useEffect(() => {
-    invoke<CoreInfo>("core_info")
-      .then(setCore)
-      .catch((e) => setError(String(e)));
+  const refreshStatus = useCallback(() => {
+    api.runtimeStatus().then(setStatus).catch(() => {});
   }, []);
 
-  const area = AREAS.find((a) => a.id === areaId)!;
+  useEffect(() => {
+    api.coreInfo().then(setCore).catch(() => {});
+    refreshStatus();
+    const timer = window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [refreshStatus]);
+
+  // Il preset in uso è quello del modello caricato.
+  const loadedPath = status?.loaded?.modelPath ?? null;
+  useEffect(() => {
+    if (!loadedPath) {
+      setPreset(null);
+      return;
+    }
+    api.getPreset(loadedPath).then(setPreset).catch(() => setPreset(null));
+  }, [loadedPath]);
+
+  // Le modifiche ai parametri valgono subito; il salvataggio su disco aspetta
+  // che l'utente smetta di muovere i controlli.
+  const updatePreset = useCallback(
+    (next: Preset) => {
+      setPreset(next);
+      if (!loadedPath) return;
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        api.savePreset(loadedPath, next).catch(() => {});
+      }, PRESET_SAVE_DELAY_MS);
+    },
+    [loadedPath],
+  );
 
   return (
     <div className="shell">
@@ -39,20 +71,74 @@ export default function App() {
             {a.label}
           </button>
         ))}
-        <div className="status">
-          {error && <span className="status-error">Nucleo non raggiungibile: {error}</span>}
-          {core && (
-            <span>
-              Nucleo {core.version} · archivio v{core.schemaVersion}
-            </span>
-          )}
-        </div>
+        <StatusPanel status={status} core={core} />
       </nav>
 
       <main className="content">
-        <h1>{area.label}</h1>
-        <p className="placeholder">{area.hint}</p>
+        {areaId === "chat" && (
+          <ChatArea
+            status={status}
+            preset={preset}
+            onPresetChange={updatePreset}
+            onOpenModels={() => setAreaId("models")}
+          />
+        )}
+        {areaId === "models" && <ModelsArea status={status} onStatusChange={refreshStatus} />}
+        {areaId === "agents" && <Placeholder title="Agenti" hint="Gli agenti arrivano con la Tappa 4." />}
+        {areaId === "settings" && (
+          <Placeholder title="Impostazioni" hint="Le impostazioni arrivano con le prossime tappe." />
+        )}
       </main>
+    </div>
+  );
+}
+
+function Placeholder({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="page">
+      <h1>{title}</h1>
+      <p className="dim">{hint}</p>
+    </div>
+  );
+}
+
+function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: CoreInfo | null }) {
+  const gpu = status?.memory.gpu ?? null;
+  const ramUsed = status ? status.memory.ramTotalBytes - status.memory.ramAvailableBytes : 0;
+
+  return (
+    <div className="status">
+      <div className="status-model">
+        {status?.loading
+          ? "Caricamento del modello…"
+          : (status?.loaded?.modelName ?? "Nessun modello caricato")}
+      </div>
+      {status?.loaded && (
+        <div className="dim">
+          {status.loaded.params.placement === "vram" ? "Solo VRAM" : "Solo RAM"}
+          {status.processRamBytes != null && ` · processo ${gb(status.processRamBytes)} GB di RAM`}
+        </div>
+      )}
+      {gpu && <Meter label="VRAM" used={gpu.usedBytes} total={gpu.totalBytes} />}
+      {status && <Meter label="RAM" used={ramUsed} total={status.memory.ramTotalBytes} />}
+      {core && <div className="dim status-version">Nucleo {core.version}</div>}
+    </div>
+  );
+}
+
+function Meter({ label, used, total }: { label: string; used: number; total: number }) {
+  const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+  return (
+    <div className="meter">
+      <div className="meter-label">
+        <span>{label}</span>
+        <span>
+          {gb(used)} / {gb(total)} GB
+        </span>
+      </div>
+      <div className="meter-track">
+        <div className={percent > 90 ? "meter-fill high" : "meter-fill"} style={{ width: `${percent}%` }} />
+      </div>
     </div>
   );
 }

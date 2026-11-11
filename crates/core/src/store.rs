@@ -1,8 +1,11 @@
-//! Archivio SQLite: conversazioni, messaggi e, più avanti, agenti e impostazioni.
+//! Archivio SQLite: conversazioni, messaggi, impostazioni.
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+
+use crate::error::Result;
 
 /// Passi di aggiornamento dello schema, in ordine.
 ///
@@ -29,7 +32,34 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX messages_by_conversation ON messages (conversation_id, id);
     ",
+    // 2 — impostazioni (chiave → valore JSON)
+    "
+    CREATE TABLE settings (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    );
+    ",
 ];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    pub id: i64,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub role: String,
+    pub content: String,
+    pub model: Option<String>,
+    pub created_at: String,
+}
 
 /// Accesso all'archivio dell'app.
 pub struct Store {
@@ -38,16 +68,16 @@ pub struct Store {
 
 impl Store {
     /// Apre (o crea) l'archivio nel file indicato e lo porta allo schema più recente.
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
     }
 
     /// Archivio temporaneo in memoria, per i test.
-    pub fn open_in_memory() -> rusqlite::Result<Self> {
+    pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(mut conn: Connection) -> rusqlite::Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
 
         let current: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -62,10 +92,127 @@ impl Store {
     }
 
     /// Numero dell'ultimo passo di aggiornamento applicato.
-    pub fn schema_version(&self) -> rusqlite::Result<i64> {
-        self.conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
+    pub fn schema_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))?)
     }
+
+    // ── Conversazioni ───────────────────────────────────────────────────
+
+    pub fn create_conversation(&self, title: &str) -> Result<Conversation> {
+        self.conn
+            .execute("INSERT INTO conversations (title) VALUES (?1)", [title])?;
+        self.conversation(self.conn.last_insert_rowid())
+    }
+
+    pub fn conversation(&self, id: i64) -> Result<Conversation> {
+        Ok(self.conn.query_row(
+            "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?1",
+            [id],
+            row_to_conversation,
+        )?)
+    }
+
+    /// Tutte le conversazioni, dalla più recente.
+    pub fn list_conversations(&self) -> Result<Vec<Conversation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM conversations
+             ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_conversation)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn rename_conversation(&self, id: i64, title: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET title = ?2 WHERE id = ?1",
+            params![id, title],
+        )?;
+        Ok(())
+    }
+
+    /// Elimina la conversazione e tutti i suoi messaggi.
+    pub fn delete_conversation(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM conversations WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ── Messaggi ────────────────────────────────────────────────────────
+
+    pub fn messages(&self, conversation_id: i64) -> Result<Vec<Message>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conversation_id, role, content, model, created_at FROM messages
+             WHERE conversation_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([conversation_id], row_to_message)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Aggiunge un messaggio e segna la conversazione come appena aggiornata.
+    pub fn add_message(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+    ) -> Result<Message> {
+        self.conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, model) VALUES (?1, ?2, ?3, ?4)",
+            params![conversation_id, role, content, model],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            [conversation_id],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT id, conversation_id, role, content, model, created_at FROM messages WHERE id = ?1",
+            [id],
+            row_to_message,
+        )?)
+    }
+
+    // ── Impostazioni ────────────────────────────────────────────────────
+
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+}
+
+fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
+}
+
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+    Ok(Message {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        model: row.get(4)?,
+        created_at: row.get(5)?,
+    })
 }
 
 #[cfg(test)]
@@ -93,20 +240,41 @@ mod tests {
     }
 
     #[test]
+    fn messaggi_salvati_e_riletti_in_ordine() {
+        let store = Store::open_in_memory().unwrap();
+        let conv = store.create_conversation("prova").unwrap();
+        store.add_message(conv.id, "user", "ciao", None).unwrap();
+        store
+            .add_message(conv.id, "assistant", "salve", Some("modello"))
+            .unwrap();
+
+        let messages = store.messages(conv.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "ciao");
+        assert_eq!(messages[1].model.as_deref(), Some("modello"));
+    }
+
+    #[test]
     fn eliminare_una_conversazione_elimina_i_suoi_messaggi() {
         let store = Store::open_in_memory().unwrap();
-        store
-            .conn
-            .execute_batch(
-                "INSERT INTO conversations (id, title) VALUES (1, 'prova');
-                 INSERT INTO messages (conversation_id, role, content) VALUES (1, 'user', 'ciao');
-                 DELETE FROM conversations WHERE id = 1;",
-            )
-            .unwrap();
+        let conv = store.create_conversation("prova").unwrap();
+        store.add_message(conv.id, "user", "ciao", None).unwrap();
+        store.delete_conversation(conv.id).unwrap();
+
+        assert!(store.list_conversations().unwrap().is_empty());
         let rimasti: i64 = store
             .conn
             .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rimasti, 0);
+    }
+
+    #[test]
+    fn le_impostazioni_si_sovrascrivono() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.setting("lingua").unwrap(), None);
+        store.set_setting("lingua", "it").unwrap();
+        store.set_setting("lingua", "en").unwrap();
+        assert_eq!(store.setting("lingua").unwrap().as_deref(), Some("en"));
     }
 }

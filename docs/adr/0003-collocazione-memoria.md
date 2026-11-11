@@ -1,6 +1,7 @@
 # 0003 — Modello e cache KV in una sola memoria; KV a `q8_0`
 
-**Stato:** accettata — i dettagli segnati con ⚠ vanno confermati con misure nella Tappa 1
+**Stato:** accettata — misurata su un modello piccolo; resta da confermare su modelli
+grandi e da realizzare il rilevamento del punto (b)
 
 ## Contesto
 
@@ -13,47 +14,83 @@ perdita visibile di qualità.
 
 1. L'utente sceglie per ogni modello una **collocazione**: *Solo VRAM* oppure *Solo RAM*.
 2. Non esiste divisione automatica tra le due. Se il modello non entra nella memoria
-   scelta, l'app avvisa e non lo carica.
+   scelta, l'app avvisa e non lo carica (l'utente può forzare il caricamento).
 3. La cache KV è quantizzata a **`q8_0`** di default (chiavi e valori), modificabile nel
    preset (`f16` per la massima fedeltà, `q4_0` per risparmiare ancora).
+4. `llama-server` non tiene **nessuna copia della cache in RAM**: né la cache dei prompt,
+   né i punti di ripristino del contesto.
 
 ## Traduzione in argomenti di `llama-server`
 
-| Impostazione | Solo VRAM | Solo RAM |
-|---|---|---|
-| Layer su GPU (`--n-gpu-layers`) | tutti | `0` |
-| Cache KV sulla GPU | sì (predefinito) | no (`--no-kv-offload`) |
-| Tipo cache KV (`--cache-type-k`, `--cache-type-v`) | `q8_0` | `q8_0` |
-| Flash attention (`--flash-attn`) | attiva | attiva |
-| Blocco in RAM (`--mlock`) | mai | facoltativo |
-| Mappatura del file (`--no-mmap`) | ⚠ da misurare | mappatura attiva |
+Verificati con `llama-server --help` della build **b12110** (versione stabile v0.9.0).
+Il codice sta in `crates/core/src/local/mod.rs`, funzione `build_args`.
 
-La quantizzazione dei valori della cache KV richiede la flash attention: per questo è
-sempre attiva quando il tipo non è `f16`.
+| Argomento | Solo VRAM | Solo RAM | Perché |
+|---|---|---|---|
+| `--gpu-layers` | `all` | `0` | Dove stanno i pesi |
+| `--device` | — | `none` | In RAM la GPU non viene toccata affatto |
+| `--kv-offload` / `--no-kv-offload` | `--kv-offload` | `--no-kv-offload` | Dove sta la cache KV |
+| `--cache-type-k`, `--cache-type-v` | `q8_0` | `q8_0` | Quantizzazione della cache KV |
+| `--flash-attn` | `on` | `on` | Necessaria per quantizzare la cache KV |
+| `--load-mode` | `dio` | `mmap` | Come viene letto il file (vedi misure) |
+| `--fit` | `off` | `off` | Di default llama.cpp *adatta da solo* i parametri per far entrare il modello: è la divisione automatica che non vogliamo |
+| `--cache-ram` | `0` | `0` | Di default tiene fino a 8 GB di cache dei prompt in RAM |
+| `--ctx-checkpoints` | `0` | `0` | Di default salva in RAM fino a 32 copie dello stato del contesto |
+| `--parallel` | `1` | `1` | Tutto il contesto alla conversazione in corso |
 
-## Punti da verificare con misure ⚠
+Nota: le vecchie opzioni `--no-mmap` e `--mlock` in questa versione sono sostituite da
+`--load-mode`.
 
-**a) Residuo in RAM nella modalità Solo VRAM.** Mentre carica i pesi sulla GPU,
-llama.cpp legge il file dal disco. Con la mappatura in memoria (mmap) le pagine lette
-possono restare conteggiate nella RAM del processo anche a caricamento finito; senza
-mappatura, la lettura passa da un'area temporanea. Va misurato quale delle due lascia
-meno RAM occupata a regime, e se serve chiedere a Windows di ridurre la memoria del
-processo dopo il caricamento. La scelta predefinita di `--no-mmap` dipenderà dal risultato.
+## Misure
+
+Macchina: RTX 3060 12 GB, 16 GB di RAM, Windows 11. Modello: Gemma 3 1B Q4 (0,75 GB),
+contesto 8192, cache KV `q8_0`. Si rifanno con
+`cargo run -p app-core --example misura -- <cartella dati> <modello> <vram|ram> [load-mode]`.
+
+| Collocazione | Lettura file | VRAM usata | RAM del processo | Velocità |
+|---|---|---|---|---|
+| Solo VRAM | `mmap` | +977 MiB | **1204 MiB** | — |
+| Solo VRAM | `none` | +981 MiB | 746 MiB | — |
+| Solo VRAM | `dio` | +977 MiB | **746 MiB** | 161 token/s |
+| Solo RAM | `mmap` | +0 MiB | 1158 MiB | 40 token/s |
+
+Cosa dicono:
+
+- **Con `mmap` in modalità VRAM i pesi restano anche in RAM**: il processo occupa circa
+  460 MiB in più, cioè quasi tutto il file. È il doppione da evitare. Con `none` e `dio`
+  non succede.
+- Tra `none` e `dio` la RAM del processo è identica. Si sceglie **`dio`** perché legge
+  il file saltando la cache dei file di Windows, che altrimenti si riempirebbe con una
+  copia del modello (memoria che Windows rilascia a richiesta, ma che compare come usata).
+- I circa 750 MiB che restano in RAM non sono una copia del modello: sono le librerie
+  CUDA, i buffer del server e la tabella del vocabolario, che llama.cpp tiene sempre in
+  RAM. Su un modello da 4–8 GB ci si aspetta che questa cifra cresca poco; **va
+  confermato** con la misura su un modello grande.
+- In modalità RAM la GPU non viene usata affatto (+0 MiB).
+- Dopo lo scaricamento VRAM e RAM tornano ai valori di partenza.
+- La stima dell'app (1317 MiB) è prudente rispetto all'uso reale (977 MiB).
+
+## Punti ancora aperti
+
+**a) Conferma su un modello grande.** Rifare la tabella con un modello da 4 GB o più.
 
 **b) Riversamento della VRAM nella RAM da parte del driver.** Su Windows il driver NVIDIA,
 quando la VRAM finisce, può spostare dati nella "memoria condivisa" (RAM) invece di dare
 errore: è proprio il doppione che vogliamo evitare, ed è molto lento. L'impostazione sta
 nel pannello di controllo NVIDIA ("CUDA - Sysmem Fallback Policy") e un'app non può
-cambiarla. Contromisure previste:
+cambiarla. Oggi l'app si difende solo con la stima prima del caricamento. Da fare:
 
-- stima prudente della memoria prima del caricamento, con margine;
-- controllo, dopo il caricamento, della memoria condivisa usata dal processo: se cresce,
-  avviso all'utente con la spiegazione di come disattivare il riversamento;
-- la guida dell'app spiega l'impostazione.
+- controllo, dopo il caricamento, della memoria GPU condivisa usata dal processo, con
+  avviso all'utente e spiegazione di come disattivare il riversamento;
+- una pagina di guida sull'impostazione.
 
-**c) Precisione della stima.** Pesi = dimensione del file; cache KV = funzione di
-contesto, numero di layer e tipo di quantizzazione; più un margine per i buffer di
-calcolo. La formula va tarata confrontandola con l'uso reale su alcuni modelli.
+**c) Taratura della stima.** Pesi = dimensione del file; cache KV = layer × contesto ×
+2 × (dimensione di una testa × teste KV) × byte per valore; margine = 400 MiB + 3 % dei
+pesi. Va confrontata con l'uso reale su più modelli, soprattutto con contesti lunghi.
+
+**d) Effetto di `--ctx-checkpoints 0`.** Con alcuni modelli, senza punti di ripristino,
+modificare un messaggio vecchio costringe a rielaborare tutta la conversazione. Da
+valutare se offrire l'opzione nel preset.
 
 ## Alternative scartate
 
@@ -68,5 +105,5 @@ calcolo. La formula va tarata confrontandola con l'uso reale su alcuni modelli.
 - Comportamento prevedibile: l'utente sa sempre dove sta il modello.
 - Alcuni modelli che "girerebbero comunque" in modalità mista vengono rifiutati. La
   modalità ibrida resta possibile in futuro solo come scelta esplicita (requisito LO-10).
-- Serve un monitoraggio affidabile di VRAM e RAM (NVML per NVIDIA; da definire per le
-  altre GPU).
+- La VRAM si legge con `nvidia-smi`: per ora funziona solo con GPU NVIDIA. Sulle altre
+  l'app non può fare il controllo preventivo e lo dice.

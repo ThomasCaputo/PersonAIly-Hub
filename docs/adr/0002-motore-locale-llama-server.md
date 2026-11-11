@@ -42,3 +42,19 @@ solo CPU).
   versione provata di llama.cpp e la costruzione degli argomenti sta in un unico modulo
   (`local`), coperto da test.
 - Il primo avvio richiede di scaricare i binari (alcune centinaia di MB per la variante CUDA).
+- Inoltre `llama-server` viene legato alla vita dell'app con un "job" di Windows: se l'app
+  va in crash o viene terminata, il sistema chiude anche lui e la memoria si libera.
+
+## Versione in uso
+
+Build **b12110**, che corrisponde alla versione stabile **v0.9.0** di llama.cpp. Da
+`github.com/ggml-org/llama.cpp/releases/tag/b12110` servono due archivi, estratti nella
+stessa cartella `bin\llama.cpp\b12110-cuda\` dentro la cartella dati dell'app:
+
+- `llama-b12110-bin-win-cuda-13.4-x64.zip` — il programma;
+- `cudart-llama-bin-win-cuda-13.4-x64.zip` — le librerie CUDA di NVIDIA.
+
+Attenzione allo schema delle release: la release "latest" (`v0.9.0`) contiene solo un
+file di testo con il nome della build; i binari stanno nelle release `bNNNNN`.
+
+Per ora il download si fa a mano; quello dall'app è previsto (requisito LO-9).

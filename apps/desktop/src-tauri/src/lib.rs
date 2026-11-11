@@ -1,39 +1,210 @@
 //! Guscio dell'app desktop: crea la finestra e inoltra i comandi al nucleo.
 //! Qui non va logica propria: sta tutta in `app-core`.
 
-use std::sync::Mutex;
+use std::sync::Arc;
 
-use app_core::store::Store;
-use tauri::Manager;
+use app_core::chat::ChatEvent;
+use app_core::local::runtime::LoadedModel;
+use app_core::local::{LoadParams, Preset, SamplingParams};
+use app_core::models::ModelInfo;
+use app_core::store::{Conversation, Message};
+use app_core::{Core, LoadCheck, RuntimeStatus, SendOutcome};
+use serde::Serialize;
+use tauri::ipc::Channel;
+use tauri::{Manager, RunEvent, State};
 
-#[derive(serde::Serialize)]
+type CoreState<'a> = State<'a, Arc<Core>>;
+type CmdResult<T> = Result<T, String>;
+
+fn text(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+/// Esegue fuori dal thread dell'interfaccia un'operazione che legge il disco.
+async fn blocking<T: Send + 'static>(
+    core: &Arc<Core>,
+    f: impl FnOnce(&Core) -> app_core::error::Result<T> + Send + 'static,
+) -> CmdResult<T> {
+    let core = core.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&core))
+        .await
+        .map_err(text)?
+        .map_err(text)
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CoreInfo {
     version: &'static str,
     schema_version: i64,
 }
 
-/// Informazioni sul nucleo, mostrate nell'interfaccia.
 #[tauri::command]
-fn core_info(store: tauri::State<'_, Mutex<Store>>) -> Result<CoreInfo, String> {
-    let store = store.lock().map_err(|e| e.to_string())?;
+fn core_info(core: CoreState<'_>) -> CmdResult<CoreInfo> {
     Ok(CoreInfo {
         version: app_core::version(),
-        schema_version: store.schema_version().map_err(|e| e.to_string())?,
+        schema_version: core.schema_version().map_err(text)?,
     })
+}
+
+// ── Modelli ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn model_folders(core: CoreState<'_>) -> CmdResult<Vec<String>> {
+    core.model_folders().map_err(text)
+}
+
+#[tauri::command]
+fn set_model_folders(core: CoreState<'_>, folders: Vec<String>) -> CmdResult<()> {
+    core.set_model_folders(&folders).map_err(text)
+}
+
+#[tauri::command]
+async fn list_models(core: CoreState<'_>) -> CmdResult<Vec<ModelInfo>> {
+    blocking(&core, |core| core.list_models()).await
+}
+
+#[tauri::command]
+fn get_preset(core: CoreState<'_>, model_path: String) -> CmdResult<Preset> {
+    core.preset(&model_path).map_err(text)
+}
+
+#[tauri::command]
+fn save_preset(core: CoreState<'_>, model_path: String, preset: Preset) -> CmdResult<()> {
+    core.save_preset(&model_path, &preset).map_err(text)
+}
+
+#[tauri::command]
+async fn check_load(
+    core: CoreState<'_>,
+    model_path: String,
+    params: LoadParams,
+) -> CmdResult<LoadCheck> {
+    blocking(&core, move |core| Ok(core.check_load(&model_path, &params))).await
+}
+
+#[tauri::command]
+async fn load_model(
+    core: CoreState<'_>,
+    model_path: String,
+    params: LoadParams,
+    force: bool,
+) -> CmdResult<LoadedModel> {
+    core.load_model(&model_path, &params, force)
+        .await
+        .map_err(text)
+}
+
+#[tauri::command]
+async fn unload_model(core: CoreState<'_>) -> CmdResult<()> {
+    core.unload_model().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn runtime_status(core: CoreState<'_>) -> CmdResult<RuntimeStatus> {
+    Ok(core.status().await)
+}
+
+// ── Conversazioni ───────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_conversations(core: CoreState<'_>) -> CmdResult<Vec<Conversation>> {
+    core.list_conversations().map_err(text)
+}
+
+#[tauri::command]
+fn create_conversation(core: CoreState<'_>) -> CmdResult<Conversation> {
+    core.create_conversation().map_err(text)
+}
+
+#[tauri::command]
+fn rename_conversation(core: CoreState<'_>, id: i64, title: String) -> CmdResult<()> {
+    core.rename_conversation(id, &title).map_err(text)
+}
+
+#[tauri::command]
+fn delete_conversation(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.delete_conversation(id).map_err(text)
+}
+
+#[tauri::command]
+fn get_messages(core: CoreState<'_>, conversation_id: i64) -> CmdResult<Vec<Message>> {
+    core.messages(conversation_id).map_err(text)
+}
+
+/// Pezzi di risposta inviati all'interfaccia mentre il modello genera.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+enum StreamEvent {
+    Text { text: String },
+    Reasoning { text: String },
+}
+
+#[tauri::command]
+async fn send_message(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    text: String,
+    sampling: SamplingParams,
+    system_prompt: String,
+    on_event: Channel<StreamEvent>,
+) -> CmdResult<SendOutcome> {
+    core.send_message(conversation_id, &text, &sampling, &system_prompt, |event| {
+        let event = match event {
+            ChatEvent::Text(text) => StreamEvent::Text { text },
+            ChatEvent::Reasoning(text) => StreamEvent::Reasoning { text },
+        };
+        // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare.
+        let _ = on_event.send(event);
+    })
+    .await
+    .map_err(self::text)
+}
+
+#[tauri::command]
+fn stop_generation(core: CoreState<'_>) {
+    core.stop_generation();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
-            let store = Store::open(&data_dir.join("data.sqlite"))?;
-            app.manage(Mutex::new(store));
+            let core = Core::new(&app.path().app_data_dir()?)?;
+            app.manage(Arc::new(core));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![core_info])
-        .run(tauri::generate_context!())
+        .invoke_handler(tauri::generate_handler![
+            core_info,
+            model_folders,
+            set_model_folders,
+            list_models,
+            get_preset,
+            save_preset,
+            check_load,
+            load_model,
+            unload_model,
+            runtime_status,
+            list_conversations,
+            create_conversation,
+            rename_conversation,
+            delete_conversation,
+            get_messages,
+            send_message,
+            stop_generation,
+        ])
+        .build(tauri::generate_context!())
         .expect("errore durante l'avvio dell'app");
+
+    app.run(|handle, event| {
+        // Alla chiusura il modello va scaricato, altrimenti llama-server
+        // resterebbe in esecuzione con la memoria occupata.
+        if let RunEvent::Exit = event
+            && let Some(core) = handle.try_state::<Arc<Core>>()
+        {
+            tauri::async_runtime::block_on(core.unload_model());
+        }
+    });
 }

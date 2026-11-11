@@ -1,7 +1,7 @@
 # Progetto AI
 
-> Nome provvisorio. Stato: **Tappa 0 completata** — l'app si avvia ma è ancora vuota
-> (vedi la [roadmap](docs/roadmap.md)).
+> Nome provvisorio. Stato: **Tappa 1 in corso** — si può già caricare un modello locale
+> `.gguf` e chattarci (vedi la [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:
 
@@ -56,6 +56,9 @@ npm run dev      # avvia l'app in modalità sviluppo
 npm run check    # formattazione, lint e test del codice Rust
 npm run build    # crea l'installer
 ```
+
+Per usare i modelli locali serve anche llama.cpp nella cartella dati dell'app: quali file
+e dove metterli è scritto nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso).
 
 ## Struttura del repository
 

@@ -11,13 +11,26 @@ a [requisiti.md](requisiti.md).
 
 **Fatto quando:** l'app si apre su Windows e mostra una finestra vuota; i controlli passano.
 
-## Tappa 1 — Chat con un modello locale
+## Tappa 1 — Chat con un modello locale (in corso)
 
-- Download e avvio di `llama-server`; caricamento e scaricamento di un GGUF (LO-1, LO-2).
-- Collocazione Solo VRAM / Solo RAM, cache KV `q8_0`, stima della memoria (LO-4, LO-5, LO-6).
-- **Misure previste dall'ADR 0003** e scelta dei valori predefiniti.
-- Chat in streaming con cronologia (CH-1, CH-2, CH-4).
-- Pannello parametri e indicatori di memoria e velocità (PA-1, PA-2, PA-3, PA-5, LO-7).
+Fatto:
+
+- [x] Avvio di `llama-server`; caricamento e scaricamento di un GGUF (LO-1, LO-2).
+- [x] Collocazione Solo VRAM / Solo RAM, cache KV `q8_0`, stima della memoria (LO-4, LO-5, LO-6).
+- [x] Prime misure dell'ADR 0003 e scelta dei valori predefiniti.
+- [x] Chat in streaming con cronologia, interruzione, Markdown e codice evidenziato (CH-1, CH-2, CH-4).
+- [x] Pannello parametri, prompt di sistema, preset salvato per modello (PA-1, PA-2, PA-3, PA-5).
+- [x] Indicatori di VRAM, RAM e velocità (LO-7, in parte).
+
+Manca:
+
+- [ ] Misura su un modello grande (ADR 0003, punto a).
+- [ ] Download di llama.cpp dall'app: oggi va messo a mano nella cartella dati.
+- [ ] Rilevamento del riversamento della VRAM in RAM (ADR 0003, punto b).
+- [ ] Indicatore del contesto occupato (LO-7).
+- [ ] Rinomina e ricerca delle conversazioni (CH-2); formule matematiche (CH-4).
+- [ ] Thread e dimensione del batch nell'interfaccia (PA-2): il nucleo li supporta già.
+- [ ] I file `.gguf` scaricati a metà compaiono in libreria come modelli normali.
 
 **Fatto quando:** si chatta con un modello locale, cambiandone i parametri, e a modello
 caricato in VRAM la RAM usata resta entro la soglia fissata dalle misure.
