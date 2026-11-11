@@ -17,16 +17,15 @@ Fatto:
 
 - [x] Avvio di `llama-server`; caricamento e scaricamento di un GGUF (LO-1, LO-2).
 - [x] Collocazione Solo VRAM / Solo RAM, cache KV `q8_0`, stima della memoria (LO-4, LO-5, LO-6).
-- [x] Prime misure dell'ADR 0003 e scelta dei valori predefiniti.
+- [x] Misure dell'ADR 0003 (modello da 0,8 GB e da 4,4 GB) e scelta dei valori predefiniti.
 - [x] Chat in streaming con cronologia, interruzione, Markdown e codice evidenziato (CH-1, CH-2, CH-4).
 - [x] Pannello parametri, prompt di sistema, preset salvato per modello (PA-1, PA-2, PA-3, PA-5).
 - [x] Indicatori di VRAM, RAM e velocità (LO-7, in parte).
 
 Manca:
 
-- [ ] Misura su un modello grande (ADR 0003, punto a).
 - [ ] Download di llama.cpp dall'app: oggi va messo a mano nella cartella dati.
-- [ ] Rilevamento del riversamento della VRAM in RAM (ADR 0003, punto b).
+- [ ] Rilevamento del riversamento della VRAM in RAM (ADR 0003, punto a).
 - [ ] Indicatore del contesto occupato (LO-7).
 - [ ] Rinomina e ricerca delle conversazioni (CH-2); formule matematiche (CH-4).
 - [ ] Thread e dimensione del batch nell'interfaccia (PA-2): il nucleo li supporta già.

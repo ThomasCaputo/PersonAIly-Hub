@@ -84,15 +84,12 @@ impl Default for LoadParams {
 impl LoadParams {
     /// Modalità di lettura effettiva del file del modello.
     ///
-    /// - VRAM: lettura diretta dal disco (`dio`), così i pesi non passano
-    ///   dalla cache dei file di Windows e non restano in RAM dopo il caricamento.
-    /// - RAM: mappatura in memoria, il modo più rapido di caricare.
+    /// Sempre lettura diretta dal disco (`dio`), mai mappatura in memoria.
+    /// Con la mappatura i pesi finiscono due volte in RAM (misure nell'ADR 0003):
+    /// - in VRAM, perché il file mappato resta in RAM dopo la copia sulla GPU;
+    /// - in RAM, perché llama.cpp riorganizza i pesi in un secondo buffer.
     pub fn effective_load_mode(&self) -> &str {
-        match (&self.load_mode, self.placement) {
-            (Some(mode), _) => mode,
-            (None, Placement::Vram) => "dio",
-            (None, Placement::Ram) => "mmap",
-        }
+        self.load_mode.as_deref().unwrap_or("dio")
     }
 }
 
@@ -263,7 +260,7 @@ mod tests {
         assert!(has_pair(&args, "--gpu-layers", "0"));
         assert!(has_pair(&args, "--device", "none"));
         assert!(has(&args, "--no-kv-offload"));
-        assert!(has_pair(&args, "--load-mode", "mmap"));
+        assert!(has_pair(&args, "--load-mode", "dio"));
     }
 
     #[test]
