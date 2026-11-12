@@ -86,7 +86,33 @@ export type Message = {
   content: string;
   model: string | null;
   createdAt: string;
+  /** Token letti dal modello per questa risposta (tutta la conversazione fin lì). */
+  promptTokens: number | null;
+  completionTokens: number | null;
+  /** Costo stimato in dollari; assente per i modelli locali o senza prezzo noto. */
+  costUsd: number | null;
 };
+
+/** Parametri di generazione e prompt di sistema salvati con un nome. */
+export type NamedPreset = { name: string; sampling: SamplingParams; systemPrompt: string };
+
+export type HubRepo = { id: string; downloads: number; likes: number };
+export type HubFile = { path: string; sizeBytes: number; sha256: string | null };
+
+export type DownloadState = {
+  repo: string;
+  file: string;
+  doneBytes: number;
+  totalBytes: number;
+  phase: "downloading" | "done" | "failed" | "cancelled";
+  error: string | null;
+};
+
+/** Importo in dollari: più decimali per le cifre piccole, tipiche di una singola risposta. */
+export function usd(amount: number): string {
+  const digits = amount >= 1 ? 2 : amount >= 0.01 ? 3 : 4;
+  return `$${amount.toLocaleString("it-IT", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
 
 export type GenerationStats = {
   promptTokens: number | null;
@@ -99,7 +125,44 @@ export type SendOutcome = {
   assistantMessage: Message | null;
   stats: GenerationStats;
   cancelled: boolean;
+  /** Avviso da mostrare sotto la risposta (troncata, rifiutata…). */
+  notice: string | null;
 };
+
+export type ProviderKind = "anthropic" | "openai_compatible";
+
+export type CloudModel = {
+  id: string;
+  name: string;
+  contextLength: number | null;
+  maxOutputTokens: number | null;
+  /** Dollari per milione di token letti / generati, se noti. */
+  inputPrice: number | null;
+  outputPrice: number | null;
+};
+
+/** Dati di un provider che l'utente può modificare. */
+export type Provider = {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  models: CloudModel[];
+};
+
+export type ProviderInfo = Provider & {
+  hasKey: boolean;
+  /** Parametri di generazione accettati da questo provider. */
+  supportedParams: string[];
+};
+
+/** Il modello a cui inviare un messaggio. */
+export type ModelRef = { kind: "local" } | { kind: "cloud"; providerId: string; model: string };
+
+/** Chiave sotto cui sono salvati i parametri di un modello cloud. */
+export function cloudPresetKey(providerId: string, model: string): string {
+  return `cloud:${providerId}:${model}`;
+}
 
 export type StreamEvent = { type: "text"; text: string } | { type: "reasoning"; text: string };
 
@@ -155,6 +218,7 @@ export const api = {
     text: string,
     sampling: SamplingParams,
     systemPrompt: string,
+    model: ModelRef,
     onEvent: (event: StreamEvent) => void,
   ) => {
     const channel = new Channel<StreamEvent>();
@@ -164,10 +228,31 @@ export const api = {
       text,
       sampling,
       systemPrompt,
+      model,
       onEvent: channel,
     });
   },
   stopGeneration: () => invoke<void>("stop_generation"),
+
+  listNamedPresets: () => invoke<NamedPreset[]>("list_named_presets"),
+  saveNamedPreset: (preset: NamedPreset) => invoke<NamedPreset>("save_named_preset", { preset }),
+  deleteNamedPreset: (name: string) => invoke<void>("delete_named_preset", { name }),
+  exportNamedPreset: (name: string, path: string) => invoke<void>("export_named_preset", { name, path }),
+  importNamedPreset: (path: string) => invoke<NamedPreset>("import_named_preset", { path }),
+
+  searchHub: (query: string) => invoke<HubRepo[]>("search_hub", { query }),
+  hubFiles: (repo: string) => invoke<HubFile[]>("hub_files", { repo }),
+  startModelDownload: (repo: string, file: HubFile, folder: string) =>
+    invoke<void>("start_model_download", { repo, file, folder }),
+  downloadStatus: () => invoke<DownloadState | null>("download_status"),
+  cancelDownload: () => invoke<void>("cancel_download"),
+
+  listProviders: () => invoke<ProviderInfo[]>("list_providers"),
+  /** `apiKey` vuota lascia invariata la chiave già salvata. */
+  saveProvider: (provider: Provider, apiKey: string) =>
+    invoke<ProviderInfo>("save_provider", { provider, apiKey: apiKey || null }),
+  deleteProvider: (id: string) => invoke<void>("delete_provider", { id }),
+  refreshProviderModels: (id: string) => invoke<ProviderInfo>("refresh_provider_models", { id }),
 };
 
 /** Dimensione leggibile: megabyte sotto il gigabyte, gigabyte sopra. */

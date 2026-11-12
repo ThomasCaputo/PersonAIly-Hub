@@ -8,14 +8,23 @@ import {
   type LoadParams,
   type ModelInfo,
   type Preset,
+  type ProviderInfo,
   type RuntimeStatus,
 } from "../api";
 
 import { EngineSection } from "../components/EngineSection";
 
-type Props = { status: RuntimeStatus | null; onStatusChange: () => void };
+import { HubSection } from "../components/HubSection";
+import { ProvidersSection } from "../components/ProvidersSection";
 
-export function ModelsArea({ status, onStatusChange }: Props) {
+type Props = {
+  status: RuntimeStatus | null;
+  onStatusChange: () => void;
+  providers: ProviderInfo[];
+  onProvidersChange: () => void;
+};
+
+export function ModelsArea({ status, onStatusChange, providers, onProvidersChange }: Props) {
   const [folders, setFolders] = useState<string[]>([]);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -50,6 +59,8 @@ export function ModelsArea({ status, onStatusChange }: Props) {
     <div className="page">
       <h1>Modelli</h1>
 
+      <ProvidersSection providers={providers} onChange={onProvidersChange} />
+
       <EngineSection />
 
       <section className="section">
@@ -78,6 +89,8 @@ export function ModelsArea({ status, onStatusChange }: Props) {
       </section>
 
       {error && <p className="error">{error}</p>}
+
+      <HubSection folders={folders} status={status} onDownloaded={rescan} />
 
       <section className="section">
         <h2>Modelli locali</h2>

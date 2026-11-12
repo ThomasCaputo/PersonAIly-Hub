@@ -1,9 +1,13 @@
 import { useState } from "react";
 import type { LoadedModel, Preset, SamplingParams } from "../api";
+import { NamedPresets } from "./NamedPresets";
 
 type Props = {
   preset: Preset;
-  loaded: LoadedModel;
+  /** Il modello locale caricato; `null` per un modello cloud. */
+  loaded: LoadedModel | null;
+  /** Parametri accettati dal modello; `null` = tutti (modello locale). */
+  supported: string[] | null;
   onChange: (preset: Preset) => void;
   onOpenModels: () => void;
 };
@@ -27,7 +31,9 @@ const SLIDERS: SliderDef[] = [
 
 const KV_LABEL = { q8_0: "q8_0", f16: "f16", q4_0: "q4_0" } as const;
 
-export function ParamsPanel({ preset, loaded, onChange, onOpenModels }: Props) {
+export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels }: Props) {
+  const shows = (param: string) => supported === null || supported.includes(param);
+
   // Testo così come lo scrive l'utente: ricavarlo dall'elenco gli impedirebbe
   // di digitare la virgola.
   const [stopText, setStopText] = useState(() => preset.sampling.stop.join(", "));
@@ -40,6 +46,14 @@ export function ParamsPanel({ preset, loaded, onChange, onOpenModels }: Props) {
       <h2>Parametri</h2>
       <p className="dim note">Valgono dal prossimo messaggio.</p>
 
+      <NamedPresets
+        preset={preset}
+        onApply={(named) => {
+          setStopText(named.sampling.stop.join(", "));
+          onChange({ ...preset, sampling: named.sampling, systemPrompt: named.systemPrompt });
+        }}
+      />
+
       <div className="field">
         <label htmlFor="system-prompt">Prompt di sistema</label>
         <textarea
@@ -51,7 +65,7 @@ export function ParamsPanel({ preset, loaded, onChange, onOpenModels }: Props) {
         />
       </div>
 
-      {SLIDERS.map((s) => (
+      {SLIDERS.filter((s) => shows(s.key)).map((s) => (
         <div className="field" key={s.key} title={s.hint}>
           <div className="slider-head">
             <label htmlFor={`param-${s.key}`}>{s.label}</label>
@@ -78,28 +92,32 @@ export function ParamsPanel({ preset, loaded, onChange, onOpenModels }: Props) {
         </div>
       ))}
 
-      <div className="field">
-        <label htmlFor="param-max-tokens">Token massimi per risposta</label>
-        <input
-          id="param-max-tokens"
-          type="number"
-          min={1}
-          placeholder="Nessun limite"
-          value={preset.sampling.maxTokens ?? ""}
-          onChange={(e) => setSampling({ maxTokens: optionalInt(e.target.value, 1) })}
-        />
-      </div>
+      {shows("maxTokens") && (
+        <div className="field">
+          <label htmlFor="param-max-tokens">Token massimi per risposta</label>
+          <input
+            id="param-max-tokens"
+            type="number"
+            min={1}
+            placeholder={loaded ? "Nessun limite" : "Predefinito"}
+            value={preset.sampling.maxTokens ?? ""}
+            onChange={(e) => setSampling({ maxTokens: optionalInt(e.target.value, 1) })}
+          />
+        </div>
+      )}
 
-      <div className="field">
-        <label htmlFor="param-seed">Seed</label>
-        <input
-          id="param-seed"
-          type="number"
-          placeholder="Casuale"
-          value={preset.sampling.seed ?? ""}
-          onChange={(e) => setSampling({ seed: optionalInt(e.target.value, 0) })}
-        />
-      </div>
+      {shows("seed") && (
+        <div className="field">
+          <label htmlFor="param-seed">Seed</label>
+          <input
+            id="param-seed"
+            type="number"
+            placeholder="Casuale"
+            value={preset.sampling.seed ?? ""}
+            onChange={(e) => setSampling({ seed: optionalInt(e.target.value, 0) })}
+          />
+        </div>
+      )}
 
       <div className="field">
         <label htmlFor="param-stop">Sequenze di stop</label>
@@ -120,21 +138,31 @@ export function ParamsPanel({ preset, loaded, onChange, onOpenModels }: Props) {
         />
       </div>
 
-      <h2>Caricamento</h2>
-      <dl className="facts">
-        <dt>Collocazione</dt>
-        <dd>{loaded.params.placement === "vram" ? "Solo VRAM" : "Solo RAM"}</dd>
-        <dt>Contesto</dt>
-        <dd>{loaded.params.contextLength.toLocaleString("it-IT")} token</dd>
-        <dt>Cache KV</dt>
-        <dd>{KV_LABEL[loaded.params.kvCacheType]}</dd>
-      </dl>
-      <p className="dim note">
-        Per cambiarli il modello va ricaricato.{" "}
-        <button className="btn-link" onClick={onOpenModels}>
-          Apri Modelli
-        </button>
-      </p>
+      {supported !== null && (
+        <p className="dim note">
+          Sono mostrati solo i parametri che questo servizio accetta: gli altri verrebbero rifiutati.
+        </p>
+      )}
+
+      {loaded && (
+        <>
+          <h2>Caricamento</h2>
+          <dl className="facts">
+            <dt>Collocazione</dt>
+            <dd>{loaded.params.placement === "vram" ? "Solo VRAM" : "Solo RAM"}</dd>
+            <dt>Contesto</dt>
+            <dd>{loaded.params.contextLength.toLocaleString("it-IT")} token</dd>
+            <dt>Cache KV</dt>
+            <dd>{KV_LABEL[loaded.params.kvCacheType]}</dd>
+          </dl>
+          <p className="dim note">
+            Per cambiarli il modello va ricaricato.{" "}
+            <button className="btn-link" onClick={onOpenModels}>
+              Apri Modelli
+            </button>
+          </p>
+        </>
+      )}
     </div>
   );
 }

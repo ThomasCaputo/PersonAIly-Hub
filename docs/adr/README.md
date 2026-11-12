@@ -8,5 +8,7 @@ ADR che sostituisce il precedente.
 |---|---|---|
 | [0001](0001-stack-tauri-typescript.md) | App desktop con Tauri, React e TypeScript | Accettata |
 | [0002](0002-motore-locale-llama-server.md) | Modelli locali tramite `llama-server` come processo separato | Accettata |
-| [0003](0003-collocazione-memoria.md) | Modello e cache KV in una sola memoria; KV a `q8_0` | Accettata, da verificare con misure |
+| [0003](0003-collocazione-memoria.md) | Modello e cache KV in una sola memoria; KV a `q8_0` | Accettata, misurata e realizzata |
 | [0004](0004-nucleo-condiviso-api-locale.md) | Nucleo unico con API locale per app e VS Code | Accettata |
+| [0005](0005-provider-cloud.md) | Provider cloud: due famiglie di API, chiavi nel portachiavi | Accettata, Anthropic da provare con una chiave vera |
+| [0006](0006-download-modelli.md) | Download dei modelli da Hugging Face: file `.part`, ripresa, impronta | Accettata e provata |

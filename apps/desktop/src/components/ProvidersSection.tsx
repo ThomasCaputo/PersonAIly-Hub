@@ -1,0 +1,180 @@
+import { useState } from "react";
+import { api, type Provider, type ProviderInfo, type ProviderKind } from "../api";
+
+type Props = { providers: ProviderInfo[]; onChange: () => void };
+
+/** Servizi già pronti: l'utente sceglie e deve solo incollare la chiave. */
+const TEMPLATES: { label: string; name: string; kind: ProviderKind; baseUrl: string }[] = [
+  { label: "Anthropic (Claude)", name: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com" },
+  { label: "OpenAI", name: "OpenAI", kind: "openai_compatible", baseUrl: "https://api.openai.com/v1" },
+  { label: "OpenRouter", name: "OpenRouter", kind: "openai_compatible", baseUrl: "https://openrouter.ai/api/v1" },
+  { label: "Altro servizio compatibile con OpenAI", name: "", kind: "openai_compatible", baseUrl: "https://" },
+];
+
+type Draft = { provider: Provider; apiKey: string; hasKey: boolean };
+
+const emptyDraft = (templateIndex: number): Draft => {
+  const t = TEMPLATES[templateIndex];
+  return {
+    provider: { id: "", name: t.name, kind: t.kind, baseUrl: t.baseUrl, models: [] },
+    apiKey: "",
+    hasKey: false,
+  };
+};
+
+/** Provider cloud: elenco, aggiunta, modifica della chiave, aggiornamento dei modelli. */
+export function ProvidersSection({ providers, onChange }: Props) {
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [templateIndex, setTemplateIndex] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (label: string, action: () => Promise<void>) => {
+    setBusy(label);
+    setError(null);
+    try {
+      await action();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+      onChange();
+    }
+  };
+
+  const save = () =>
+    run("save", async () => {
+      if (!draft) return;
+      const saved = await api.saveProvider(draft.provider, draft.apiKey);
+      setDraft(null);
+      // Con una chiave disponibile si scarica subito l'elenco dei modelli.
+      if (saved.hasKey) await api.refreshProviderModels(saved.id);
+    });
+
+  const remove = (provider: ProviderInfo) => {
+    if (!window.confirm(`Eliminare ${provider.name} e la sua chiave API?`)) return;
+    run(provider.id, () => api.deleteProvider(provider.id));
+  };
+
+  return (
+    <section className="section">
+      <div className="section-head">
+        <h2>Provider cloud</h2>
+        {!draft && (
+          <button className="btn" onClick={() => setDraft(emptyDraft(templateIndex))}>
+            Aggiungi provider
+          </button>
+        )}
+      </div>
+
+      {providers.length === 0 && !draft && (
+        <p className="dim">
+          Collega un servizio come Anthropic o OpenAI con la tua chiave API per usarne i modelli in chat.
+        </p>
+      )}
+
+      {providers.map((p) => (
+        <div key={p.id} className="card provider">
+          <div>
+            <div className="card-title">{p.name}</div>
+            <div className="dim">
+              {p.hasKey ? `${p.models.length} modelli` : "Chiave API mancante"} · <span className="mono">{p.baseUrl}</span>
+            </div>
+          </div>
+          <div className="row">
+            <button
+              className="btn"
+              disabled={busy !== null || !p.hasKey}
+              onClick={() =>
+                run(p.id, async () => {
+                  await api.refreshProviderModels(p.id);
+                })
+              }
+            >
+              {busy === p.id ? "Aggiornamento…" : "Aggiorna modelli"}
+            </button>
+            <button
+              className="btn"
+              disabled={busy !== null}
+              onClick={() => setDraft({ provider: { ...p }, apiKey: "", hasKey: p.hasKey })}
+            >
+              Modifica
+            </button>
+            <button className="btn-link" disabled={busy !== null} onClick={() => remove(p)}>
+              Elimina
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {draft && (
+        <div className="card card-body provider-form">
+          {draft.provider.id === "" && (
+            <div className="field">
+              <label htmlFor="provider-template">Servizio</label>
+              <select
+                id="provider-template"
+                value={templateIndex}
+                onChange={(e) => {
+                  const index = Number(e.target.value);
+                  setTemplateIndex(index);
+                  setDraft({ ...emptyDraft(index), apiKey: draft.apiKey });
+                }}
+              >
+                {TEMPLATES.map((t, i) => (
+                  <option key={t.label} value={i}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="provider-name">Nome</label>
+            <input
+              id="provider-name"
+              type="text"
+              value={draft.provider.name}
+              onChange={(e) => setDraft({ ...draft, provider: { ...draft.provider, name: e.target.value } })}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="provider-url">Indirizzo dell'API</label>
+            <input
+              id="provider-url"
+              type="text"
+              className="mono"
+              value={draft.provider.baseUrl}
+              onChange={(e) => setDraft({ ...draft, provider: { ...draft.provider, baseUrl: e.target.value } })}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="provider-key">Chiave API</label>
+            <input
+              id="provider-key"
+              type="password"
+              autoComplete="off"
+              placeholder={draft.hasKey ? "Già salvata — lascia vuoto per non cambiarla" : "Incolla qui la chiave"}
+              value={draft.apiKey}
+              onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
+            />
+            <span className="dim note">
+              Viene salvata nel Gestore credenziali di Windows, non nei file dell'app, e inviata solo all'indirizzo qui
+              sopra.
+            </span>
+          </div>
+          <div className="row">
+            <button className="btn primary" disabled={busy !== null} onClick={save}>
+              {busy === "save" ? "Salvataggio…" : "Salva"}
+            </button>
+            <button className="btn" disabled={busy !== null} onClick={() => setDraft(null)}>
+              Annulla
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="error pre">{error}</p>}
+    </section>
+  );
+}

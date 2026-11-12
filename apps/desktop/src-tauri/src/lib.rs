@@ -3,13 +3,17 @@
 
 use std::sync::Arc;
 
+use app_core::DownloadState;
 use app_core::chat::ChatEvent;
+use app_core::hub::{HubFile, HubRepo};
 use app_core::local::install::{Phase, Progress, Variant};
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
 use app_core::models::ModelInfo;
+use app_core::named_presets::NamedPreset;
+use app_core::providers::Provider;
 use app_core::store::{Conversation, Message};
-use app_core::{Core, EngineStatus, LoadCheck, RuntimeStatus, SendOutcome};
+use app_core::{Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State};
@@ -176,23 +180,130 @@ async fn send_message(
     text: String,
     sampling: SamplingParams,
     system_prompt: String,
+    model: ModelRef,
     on_event: Channel<StreamEvent>,
 ) -> CmdResult<SendOutcome> {
-    core.send_message(conversation_id, &text, &sampling, &system_prompt, |event| {
+    let on_chunk = |event| {
         let event = match event {
             ChatEvent::Text(text) => StreamEvent::Text { text },
             ChatEvent::Reasoning(text) => StreamEvent::Reasoning { text },
         };
         // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare.
         let _ = on_event.send(event);
-    })
+    };
+    core.send_message(
+        conversation_id,
+        &text,
+        &sampling,
+        &system_prompt,
+        &model,
+        on_chunk,
+    )
     .await
     .map_err(self::text)
+}
+
+// ── Provider cloud ──────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_providers(core: CoreState<'_>) -> CmdResult<Vec<ProviderInfo>> {
+    blocking(&core, |core| core.providers()).await
+}
+
+/// `api_key` vuota o assente lascia invariata la chiave già salvata.
+#[tauri::command]
+async fn save_provider(
+    core: CoreState<'_>,
+    provider: Provider,
+    api_key: Option<String>,
+) -> CmdResult<ProviderInfo> {
+    blocking(&core, move |core| {
+        core.save_provider(provider, api_key.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_provider(core: CoreState<'_>, id: String) -> CmdResult<()> {
+    blocking(&core, move |core| core.delete_provider(&id)).await
+}
+
+#[tauri::command]
+async fn refresh_provider_models(core: CoreState<'_>, id: String) -> CmdResult<ProviderInfo> {
+    core.refresh_provider_models(&id).await.map_err(text)
 }
 
 #[tauri::command]
 fn stop_generation(core: CoreState<'_>) {
     core.stop_generation();
+}
+
+// ── Preset con nome ─────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_named_presets(core: CoreState<'_>) -> CmdResult<Vec<NamedPreset>> {
+    blocking(&core, |core| Ok(core.named_presets())).await
+}
+
+#[tauri::command]
+async fn save_named_preset(core: CoreState<'_>, preset: NamedPreset) -> CmdResult<NamedPreset> {
+    blocking(&core, move |core| core.save_named_preset(&preset)).await
+}
+
+#[tauri::command]
+async fn delete_named_preset(core: CoreState<'_>, name: String) -> CmdResult<()> {
+    blocking(&core, move |core| core.delete_named_preset(&name)).await
+}
+
+/// `path` arriva dalla finestra "Salva con nome" del sistema.
+#[tauri::command]
+async fn export_named_preset(core: CoreState<'_>, name: String, path: String) -> CmdResult<()> {
+    blocking(&core, move |core| {
+        core.export_named_preset(&name, std::path::Path::new(&path))
+    })
+    .await
+}
+
+/// `path` arriva dalla finestra "Apri" del sistema.
+#[tauri::command]
+async fn import_named_preset(core: CoreState<'_>, path: String) -> CmdResult<NamedPreset> {
+    blocking(&core, move |core| {
+        core.import_named_preset(std::path::Path::new(&path))
+    })
+    .await
+}
+
+// ── Download dei modelli ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn search_hub(core: CoreState<'_>, query: String) -> CmdResult<Vec<HubRepo>> {
+    core.search_hub(&query).await.map_err(text)
+}
+
+#[tauri::command]
+async fn hub_files(core: CoreState<'_>, repo: String) -> CmdResult<Vec<HubFile>> {
+    core.hub_files(&repo).await.map_err(text)
+}
+
+/// Avvia il download e torna subito: l'avanzamento si legge con `download_status`,
+/// così prosegue anche se l'utente cambia pagina.
+#[tauri::command]
+fn start_model_download(core: CoreState<'_>, repo: String, file: HubFile, folder: String) {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        // L'esito, errori compresi, finisce nello stato del download.
+        let _ = core.download_model(&repo, &file, &folder).await;
+    });
+}
+
+#[tauri::command]
+fn download_status(core: CoreState<'_>) -> Option<DownloadState> {
+    core.download_status()
+}
+
+#[tauri::command]
+fn cancel_download(core: CoreState<'_>) {
+    core.cancel_download();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -224,6 +335,20 @@ pub fn run() {
             get_messages,
             send_message,
             stop_generation,
+            list_providers,
+            save_provider,
+            delete_provider,
+            refresh_provider_models,
+            list_named_presets,
+            save_named_preset,
+            delete_named_preset,
+            export_named_preset,
+            import_named_preset,
+            search_hub,
+            hub_files,
+            start_model_download,
+            download_status,
+            cancel_download,
         ])
         .build(tauri::generate_context!())
         .expect("errore durante l'avvio dell'app");

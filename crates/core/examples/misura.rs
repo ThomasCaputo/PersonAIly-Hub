@@ -131,14 +131,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         content: "Spiega in circa 150 parole che cos'è la cache KV di un modello linguistico."
             .to_string(),
     }];
+    let sampling = SamplingParams {
+        max_tokens: Some(300),
+        ..Default::default()
+    };
     let outcome = chat::stream_chat(
         &http,
-        &format!("http://127.0.0.1:{}", loaded.port),
-        &messages,
-        &SamplingParams {
-            max_tokens: Some(300),
-            ..Default::default()
-        },
+        &format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port),
+        None,
+        &chat::request_body(&messages, &sampling, None, chat::Flavor::Llama),
         Arc::new(tokio::sync::Notify::new()),
         |_| {},
     )

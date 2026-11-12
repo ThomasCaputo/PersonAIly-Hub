@@ -1,7 +1,8 @@
 # Progetto AI
 
-> Nome provvisorio. Stato: **Tappa 1 completata** — si può caricare un modello locale
-> `.gguf` e chattarci (vedi la [roadmap](docs/roadmap.md)).
+> Nome provvisorio. Stato: **Tappa 2 completata** — si chatta con modelli locali `.gguf`
+> (scaricabili da Hugging Face) e con modelli cloud (Anthropic, servizi compatibili con
+> OpenAI). Prossima: gli strumenti (vedi la [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:
 

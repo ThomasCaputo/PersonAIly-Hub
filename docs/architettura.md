@@ -146,6 +146,7 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 |---|---|
 | Conversazioni, agenti, sessioni, impostazioni | `data.sqlite` |
 | Preset dei modelli | `presets\*.json` (leggibili e condivisibili) |
+| Preset con nome | `presets\named\*.json` (parametri di generazione e prompt di sistema, applicabili a qualsiasi modello) |
 | Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` |
 | File di blocco del nucleo | `core.lock` |
 | Chiavi API | Gestore credenziali di Windows — **non** su disco |

@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, gb, type CoreInfo, type Preset, type RuntimeStatus } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  api,
+  cloudPresetKey,
+  gb,
+  type CoreInfo,
+  type ModelRef,
+  type Preset,
+  type ProviderInfo,
+  type RuntimeStatus,
+} from "./api";
 import { ChatArea } from "./areas/ChatArea";
 import { ModelsArea } from "./areas/ModelsArea";
 import { SpillWarning } from "./components/SpillWarning";
@@ -16,11 +25,25 @@ type AreaId = (typeof AREAS)[number]["id"];
 
 const STATUS_INTERVAL_MS = 2000;
 const PRESET_SAVE_DELAY_MS = 500;
+const ACTIVE_MODEL_KEY = "active-model";
+
+/** Ultimo modello scelto in chat: una comodità, quindi basta la memoria del browser. */
+function readStoredModel(): ModelRef {
+  try {
+    const stored = JSON.parse(localStorage.getItem(ACTIVE_MODEL_KEY) ?? "null");
+    if (stored?.kind === "cloud" && stored.providerId && stored.model) return stored;
+  } catch {
+    // Memoria non disponibile o contenuto non valido: si parte dal modello locale.
+  }
+  return { kind: "local" };
+}
 
 export default function App() {
   const [areaId, setAreaId] = useState<AreaId>("chat");
   const [core, setCore] = useState<CoreInfo | null>(null);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [activeModel, setActiveModel] = useState<ModelRef>(readStoredModel);
   const [preset, setPreset] = useState<Preset | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
 
@@ -28,35 +51,64 @@ export default function App() {
     api.runtimeStatus().then(setStatus).catch(() => {});
   }, []);
 
+  const refreshProviders = useCallback(() => {
+    api.listProviders().then(setProviders).catch(() => {});
+  }, []);
+
   useEffect(() => {
     api.coreInfo().then(setCore).catch(() => {});
     refreshStatus();
+    refreshProviders();
     const timer = window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [refreshStatus]);
+  }, [refreshStatus, refreshProviders]);
 
-  // Il preset in uso è quello del modello caricato.
-  const loadedPath = status?.loaded?.modelPath ?? null;
-  useEffect(() => {
-    if (!loadedPath) {
-      setPreset(null);
-      return;
+  // A ogni cambio di pagina l'elenco dei provider viene riletto, così la
+  // scelta del modello in chat è sempre aggiornata.
+  useEffect(refreshProviders, [areaId, refreshProviders]);
+
+  const chooseModel = useCallback((model: ModelRef) => {
+    setActiveModel(model);
+    try {
+      localStorage.setItem(ACTIVE_MODEL_KEY, JSON.stringify(model));
+    } catch {
+      // Senza memoria del browser la scelta vale solo per questa sessione.
     }
-    api.getPreset(loadedPath).then(setPreset).catch(() => setPreset(null));
-  }, [loadedPath]);
+  }, []);
+
+  // Il preset in uso è quello del modello scelto: per un modello locale la
+  // chiave è il percorso del file, per uno cloud provider + modello.
+  const loadedPath = status?.loaded?.modelPath ?? null;
+  const presetKey = useMemo(
+    () => (activeModel.kind === "cloud" ? cloudPresetKey(activeModel.providerId, activeModel.model) : loadedPath),
+    [activeModel, loadedPath],
+  );
+
+  useEffect(() => {
+    setPreset(null);
+    if (!presetKey) return;
+    let current = true;
+    api
+      .getPreset(presetKey)
+      .then((p) => current && setPreset(p))
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [presetKey]);
 
   // Le modifiche ai parametri valgono subito; il salvataggio su disco aspetta
   // che l'utente smetta di muovere i controlli.
   const updatePreset = useCallback(
     (next: Preset) => {
       setPreset(next);
-      if (!loadedPath) return;
+      if (!presetKey) return;
       window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => {
-        api.savePreset(loadedPath, next).catch(() => {});
+        api.savePreset(presetKey, next).catch(() => {});
       }, PRESET_SAVE_DELAY_MS);
     },
-    [loadedPath],
+    [presetKey],
   );
 
   return (
@@ -78,19 +130,29 @@ export default function App() {
       <main className="content">
         <SpillWarning status={status} />
         <div className="area">
-        {areaId === "chat" && (
-          <ChatArea
-            status={status}
-            preset={preset}
-            onPresetChange={updatePreset}
-            onOpenModels={() => setAreaId("models")}
-          />
-        )}
-        {areaId === "models" && <ModelsArea status={status} onStatusChange={refreshStatus} />}
-        {areaId === "agents" && <Placeholder title="Agenti" hint="Gli agenti arrivano con la Tappa 4." />}
-        {areaId === "settings" && (
-          <Placeholder title="Impostazioni" hint="Le impostazioni arrivano con le prossime tappe." />
-        )}
+          {areaId === "chat" && (
+            <ChatArea
+              status={status}
+              providers={providers}
+              activeModel={activeModel}
+              onModelChange={chooseModel}
+              preset={preset}
+              onPresetChange={updatePreset}
+              onOpenModels={() => setAreaId("models")}
+            />
+          )}
+          {areaId === "models" && (
+            <ModelsArea
+              status={status}
+              onStatusChange={refreshStatus}
+              providers={providers}
+              onProvidersChange={refreshProviders}
+            />
+          )}
+          {areaId === "agents" && <Placeholder title="Agenti" hint="Gli agenti arrivano con la Tappa 4." />}
+          {areaId === "settings" && (
+            <Placeholder title="Impostazioni" hint="Le impostazioni arrivano con le prossime tappe." />
+          )}
         </div>
       </main>
     </div>
@@ -115,7 +177,7 @@ function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: Cor
       <div className="status-model">
         {status?.loading
           ? "Caricamento del modello…"
-          : (status?.loaded?.modelName ?? "Nessun modello caricato")}
+          : (status?.loaded?.modelName ?? "Nessun modello locale caricato")}
       </div>
       {status?.loaded && (
         <div className="dim">

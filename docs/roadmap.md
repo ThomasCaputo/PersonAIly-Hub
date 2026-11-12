@@ -29,19 +29,36 @@ Fatto:
 
 Rimandato (non blocca la Tappa 2):
 
-- [ ] Il contesto occupato si conosce solo dopo una risposta, e si perde riavviando l'app.
+- [x] Il contesto occupato si perdeva riavviando l'app: ora è salvato con ogni risposta
+      (fatto nella Tappa 2). Resta noto solo dopo la prima risposta.
+- [x] I file `.gguf` scaricati a metà comparivano in libreria come modelli normali: i
+      download dell'app usano un file `.part` (fatto nella Tappa 2).
 - [ ] Scelta manuale della variante di llama.cpp (oggi: CUDA con GPU NVIDIA, altrimenti Vulkan).
-- [ ] I file `.gguf` scaricati a metà compaiono in libreria come modelli normali
-      (si risolve con il download dei modelli dall'app, Tappa 2).
 
 **Fatto quando:** si chatta con un modello locale, cambiandone i parametri, e a modello
 caricato in VRAM la RAM usata resta entro la soglia fissata dalle misure.
 
-## Tappa 2 — Modelli cloud
+## Tappa 2 — Modelli cloud ✅
 
-- Provider Anthropic e compatibile OpenAI; chiavi nel Gestore credenziali (CL-1, CL-2, CL-4, CL-5).
-- Cambio di modello a metà conversazione (CH-3); parametri filtrati per provider (PA-6).
-- Preset salvabili (PA-4); download da Hugging Face (LO-3).
+Fatto:
+
+- [x] Provider Anthropic e compatibile OpenAI, con elenco dei modelli scaricato dal servizio (CL-1, CL-2, CL-5).
+- [x] Chiavi nel Gestore credenziali di Windows (CL-4).
+- [x] Scelta del modello in chat e cambio a metà conversazione (CH-3).
+- [x] Parametri filtrati per provider (PA-6).
+- [x] Avvisi per risposte troncate o rifiutate.
+- [x] Preset con nome: salva, applica, esporta e importa come file JSON (PA-4).
+- [x] Ricerca e download dei modelli da Hugging Face, con ripresa dei download interrotti
+      e controllo dell'impronta (LO-3, [ADR 0006](adr/0006-download-modelli.md)).
+- [x] Conteggio dei token e costo stimato per risposta e per conversazione, salvati in
+      archivio (CL-6).
+
+Rimandato (non blocca la Tappa 3):
+
+- [ ] **Prova con chiavi vere**: i provider cloud sono stati provati solo contro servizi
+      finti su questo computer. Si aspetta la prima segnalazione di chi usa una chiave.
+- [ ] Modelli GGUF divisi in più file (`-00001-of-00003`): non vengono proposti per il download.
+- [ ] Un solo download per volta.
 
 **Fatto quando:** nella stessa conversazione si passa da un modello locale a uno cloud.
 
