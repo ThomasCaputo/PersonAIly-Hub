@@ -165,8 +165,8 @@ Due famiglie di endpoint, solo su `127.0.0.1`, con token:
 
 | # | Questione | Da decidere entro |
 |---|---|---|
-| 1 | Quale servizio per la ricerca web (Brave, Tavily, SearXNG, ricerca nativa dei provider cloud)? Quasi tutti richiedono una chiave | Tappa 3 |
+| 1 | ~~Quale servizio per la ricerca web~~ — **deciso:** DuckDuckGo senza chiave ([ADR 0007](adr/0007-strumenti-e-permessi.md)) | Tappa 3 |
 | 2 | Isolamento dei comandi eseguiti dagli agenti: bastano i permessi o serve una sandbox? | Tappa 4 |
 | 3 | Più modelli locali caricati insieme: consentirlo, e con quali limiti? | Tappa 4 |
-| 4 | Estrazione del testo dai PDF: quale libreria | Tappa 3 |
+| 4 | ~~Estrazione del testo dai PDF~~ — **deciso:** crate `pdf-extract` | Tappa 3 |
 | 5 | Nome definitivo e licenza | Prima della pubblicazione |

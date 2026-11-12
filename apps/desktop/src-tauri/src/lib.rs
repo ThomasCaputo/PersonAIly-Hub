@@ -13,7 +13,10 @@ use app_core::models::ModelInfo;
 use app_core::named_presets::NamedPreset;
 use app_core::providers::Provider;
 use app_core::store::{Conversation, Message};
-use app_core::{Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome};
+use app_core::tools::ToolSettings;
+use app_core::{
+    Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome,
+};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State};
@@ -169,15 +172,31 @@ fn get_messages(core: CoreState<'_>, conversation_id: i64) -> CmdResult<Vec<Mess
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 enum StreamEvent {
-    Text { text: String },
-    Reasoning { text: String },
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    /// Nuovi messaggi in archivio: l'interfaccia li rilegge.
+    Saved,
+    /// Uno strumento aspetta la conferma dell'utente.
+    ToolRequest {
+        id: String,
+        name: String,
+        summary: String,
+        arguments: serde_json::Value,
+    },
 }
 
+/// Tauri passa ogni parametro a parte: raggrupparli complicherebbe l'interfaccia.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn send_message(
     core: CoreState<'_>,
     conversation_id: i64,
     text: String,
+    attachments: Vec<String>,
     sampling: SamplingParams,
     system_prompt: String,
     model: ModelRef,
@@ -187,6 +206,18 @@ async fn send_message(
         let event = match event {
             ChatEvent::Text(text) => StreamEvent::Text { text },
             ChatEvent::Reasoning(text) => StreamEvent::Reasoning { text },
+            ChatEvent::Saved => StreamEvent::Saved,
+            ChatEvent::ToolRequest {
+                id,
+                name,
+                summary,
+                arguments,
+            } => StreamEvent::ToolRequest {
+                id,
+                name,
+                summary,
+                arguments,
+            },
         };
         // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare.
         let _ = on_event.send(event);
@@ -194,6 +225,7 @@ async fn send_message(
     core.send_message(
         conversation_id,
         &text,
+        &attachments,
         &sampling,
         &system_prompt,
         &model,
@@ -201,6 +233,51 @@ async fn send_message(
     )
     .await
     .map_err(self::text)
+}
+
+// ── Strumenti e permessi ────────────────────────────────────────────────
+
+#[tauri::command]
+fn granted_folders(core: CoreState<'_>) -> CmdResult<Vec<String>> {
+    core.granted_folders().map_err(text)
+}
+
+/// Le cartelle arrivano dalla finestra `"Scegli cartella`" del sistema.
+#[tauri::command]
+fn set_granted_folders(core: CoreState<'_>, folders: Vec<String>) -> CmdResult<()> {
+    core.set_granted_folders(&folders).map_err(text)
+}
+
+#[tauri::command]
+fn tool_defaults(core: CoreState<'_>) -> CmdResult<ToolSettings> {
+    core.tool_defaults().map_err(text)
+}
+
+#[tauri::command]
+fn set_tool_defaults(core: CoreState<'_>, settings: ToolSettings) -> CmdResult<()> {
+    core.set_tool_defaults(&settings).map_err(text)
+}
+
+#[tauri::command]
+fn conversation_tools(core: CoreState<'_>, conversation_id: i64) -> CmdResult<ToolSettings> {
+    core.conversation_tools(conversation_id).map_err(text)
+}
+
+#[tauri::command]
+fn set_conversation_tools(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    settings: ToolSettings,
+) -> CmdResult<()> {
+    core.set_conversation_tools(conversation_id, &settings)
+        .map_err(text)
+}
+
+/// Risposta dell'utente a una richiesta di conferma. Arriva solo da un clic
+/// nell'interfaccia: il modello non ha modo di chiamare questo comando.
+#[tauri::command]
+fn answer_tool_request(core: CoreState<'_>, id: String, approval: Approval) {
+    core.answer_tool_request(&id, approval);
 }
 
 // ── Provider cloud ──────────────────────────────────────────────────────
@@ -335,6 +412,13 @@ pub fn run() {
             get_messages,
             send_message,
             stop_generation,
+            granted_folders,
+            set_granted_folders,
+            tool_defaults,
+            set_tool_defaults,
+            conversation_tools,
+            set_conversation_tools,
+            answer_tool_request,
             list_providers,
             save_provider,
             delete_provider,

@@ -12,3 +12,4 @@ ADR che sostituisce il precedente.
 | [0004](0004-nucleo-condiviso-api-locale.md) | Nucleo unico con API locale per app e VS Code | Accettata |
 | [0005](0005-provider-cloud.md) | Provider cloud: due famiglie di API, chiavi nel portachiavi | Accettata, Anthropic da provare con una chiave vera |
 | [0006](0006-download-modelli.md) | Download dei modelli da Hugging Face: file `.part`, ripresa, impronta | Accettata e provata |
+| [0007](0007-strumenti-e-permessi.md) | Strumenti e permessi: il nucleo esegue, l'utente conferma | Accettata e provata; Anthropic solo con test automatici |

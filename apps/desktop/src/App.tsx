@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { ChatArea } from "./areas/ChatArea";
 import { ModelsArea } from "./areas/ModelsArea";
+import { SettingsArea } from "./areas/SettingsArea";
 import { SpillWarning } from "./components/SpillWarning";
 import "./App.css";
 
@@ -139,6 +140,7 @@ export default function App() {
               preset={preset}
               onPresetChange={updatePreset}
               onOpenModels={() => setAreaId("models")}
+              onOpenSettings={() => setAreaId("settings")}
             />
           )}
           {areaId === "models" && (
@@ -150,9 +152,7 @@ export default function App() {
             />
           )}
           {areaId === "agents" && <Placeholder title="Agenti" hint="Gli agenti arrivano con la Tappa 4." />}
-          {areaId === "settings" && (
-            <Placeholder title="Impostazioni" hint="Le impostazioni arrivano con le prossime tappe." />
-          )}
+          {areaId === "settings" && <SettingsArea />}
         </div>
       </main>
     </div>

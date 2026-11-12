@@ -62,10 +62,23 @@ Rimandato (non blocca la Tappa 3):
 
 **Fatto quando:** nella stessa conversazione si passa da un modello locale a uno cloud.
 
-## Tappa 3 — Strumenti
+## Tappa 3 — Strumenti ✅
 
-- Sistema di permessi (SI-1, SI-2, SI-3, SI-5).
-- Allegati (CH-5), accesso alle cartelle concesse (CH-7), ricerca web con fonti (CH-6).
+Fatto ([ADR 0007](adr/0007-strumenti-e-permessi.md)):
+
+- [x] Ciclo degli strumenti nel nucleo, per modelli locali, compatibili OpenAI e Anthropic.
+- [x] Permessi a tre livelli per conversazione, con conferma "una volta" o "sempre" (SI-1, SI-2).
+- [x] Accesso ai file solo nelle cartelle concesse, a prova di `..` e giunzioni (CH-7, SI-3).
+- [x] Ricerca web (DuckDuckGo, senza chiave) e lettura di pagine pubbliche, con fonti (CH-6).
+- [x] Il contenuto di file e pagine non può concedere permessi (SI-5).
+- [x] Allegati: testo, PDF e immagini (queste ultime solo con modelli cloud) (CH-5).
+- [x] Pagina Impostazioni: cartelle concesse e strumenti predefiniti.
+
+Rimandato:
+
+- [ ] Strumenti con Anthropic provati solo dai test automatici (manca la chiave vera, come in Tappa 2).
+- [ ] Immagini con i modelli locali (richiede i file `mmproj` di llama.cpp).
+- [ ] Registro delle azioni consultabile a parte (SI-6): oggi le azioni si rivedono nelle conversazioni.
 
 **Fatto quando:** il modello cerca sul web, legge un file concesso e ne crea uno nuovo
 dopo la conferma dell'utente.

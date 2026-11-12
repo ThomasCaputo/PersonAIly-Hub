@@ -6,17 +6,51 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
 use crate::local::SamplingParams;
+use crate::tools::{ToolCall, ToolDef};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Un'immagine allegata a un messaggio dell'utente.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Image {
+    /// Per esempio `image/png`.
+    pub media_type: String,
+    /// Contenuto in base64.
+    pub data: String,
+}
+
+/// Un messaggio della conversazione, in forma indipendente dal provider.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatMessage {
+    /// `system`, `user`, `assistant` oppure `tool`.
     pub role: String,
     pub content: String,
+    /// Strumenti chiesti dal modello (messaggi `assistant`).
+    pub tool_calls: Vec<ToolCall>,
+    /// La chiamata a cui questo messaggio risponde (messaggi `tool`).
+    pub tool_call_id: Option<String>,
+    /// Lo strumento è fallito o è stato negato (messaggi `tool`).
+    pub is_error: bool,
+    /// Immagini allegate (messaggi `user`).
+    pub images: Vec<Image>,
+    /// Il messaggio così come l'ha prodotto il provider, ragionamento
+    /// compreso. Vale solo mentre gli strumenti di quella stessa risposta
+    /// sono in corso: Anthropic lo vuole indietro identico.
+    pub native: Option<Value>,
+}
+
+impl ChatMessage {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.into(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Misure di una risposta appena generata.
@@ -35,12 +69,28 @@ pub enum ChatEvent {
     Text(String),
     /// Un pezzo di ragionamento (modelli che "pensano" prima di rispondere).
     Reasoning(String),
+    /// Il nucleo ha salvato nuovi messaggi (una risposta parziale, il
+    /// risultato di uno strumento): l'interfaccia li rilegge dall'archivio.
+    Saved,
+    /// Uno strumento aspetta la conferma dell'utente.
+    ToolRequest {
+        id: String,
+        name: String,
+        /// Descrizione breve di ciò che lo strumento farebbe.
+        summary: String,
+        arguments: Value,
+    },
 }
 
 /// Esito di una generazione.
 #[derive(Debug, Clone, Default)]
 pub struct ChatOutcome {
     pub text: String,
+    /// Strumenti che il modello chiede di usare prima di continuare.
+    pub tool_calls: Vec<ToolCall>,
+    /// La risposta nel formato del provider, da rimandare identica
+    /// (vedi [`ChatMessage::native`]).
+    pub native: Option<Value>,
     pub stats: GenerationStats,
     /// `true` se l'utente ha interrotto la risposta.
     pub cancelled: bool,
@@ -64,20 +114,85 @@ pub enum Flavor {
     },
 }
 
+/// I messaggi nel formato "chat completions".
+fn openai_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|m| match m.role.as_str() {
+            "assistant" if !m.tool_calls.is_empty() => json!({
+                "role": "assistant",
+                "content": if m.content.is_empty() { Value::Null } else { json!(m.content) },
+                "tool_calls": m.tool_calls.iter().map(|call| json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        // Qui i parametri viaggiano come testo JSON. Quelli
+                        // illeggibili non si rimandano: il servizio li rifiuterebbe.
+                        "arguments": if call.arguments.is_object() {
+                            call.arguments.to_string()
+                        } else {
+                            "{}".to_string()
+                        },
+                    },
+                })).collect::<Vec<_>>(),
+            }),
+            "tool" => json!({
+                "role": "tool",
+                "tool_call_id": m.tool_call_id,
+                "content": m.content,
+            }),
+            "user" if !m.images.is_empty() => {
+                let mut parts: Vec<Value> = m
+                    .images
+                    .iter()
+                    .map(|image| {
+                        json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:{};base64,{}", image.media_type, image.data),
+                            },
+                        })
+                    })
+                    .collect();
+                parts.push(json!({ "type": "text", "text": m.content }));
+                json!({ "role": "user", "content": parts })
+            }
+            role => json!({ "role": role, "content": m.content }),
+        })
+        .collect()
+}
+
 /// Corpo della richiesta.
 pub fn request_body(
     messages: &[ChatMessage],
+    tools: &[ToolDef],
     sampling: &SamplingParams,
     model: Option<&str>,
     flavor: Flavor,
 ) -> Value {
     let mut body = json!({
-        "messages": messages,
+        "messages": openai_messages(messages),
         "stream": true,
         "stream_options": { "include_usage": true },
     });
     if let Some(model) = model {
         body["model"] = json!(model);
+    }
+    if !tools.is_empty() {
+        body["tools"] = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.schema,
+                    },
+                })
+            })
+            .collect();
     }
 
     match flavor {
@@ -146,6 +261,7 @@ pub async fn stream_chat(
 
     let mut outcome = ChatOutcome::default();
     let mut parser = SseParser::default();
+    let mut calls: Vec<PartialCall> = Vec::new();
 
     loop {
         let chunk = tokio::select! {
@@ -167,16 +283,85 @@ pub async fn stream_chat(
             if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
                 return Err(Error::msg(message));
             }
-            apply_chunk(&value, &mut outcome, &mut on_event);
+            apply_chunk(&value, &mut outcome, &mut calls, &mut on_event);
         }
+    }
+    // Una chiamata interrotta a metà è incompleta: non si esegue.
+    if !outcome.cancelled {
+        outcome.tool_calls = finish_calls(calls);
     }
     Ok(outcome)
 }
 
-/// Estrae da un pezzo della risposta testo, ragionamento e misure.
-fn apply_chunk(value: &Value, outcome: &mut ChatOutcome, on_event: &mut impl FnMut(ChatEvent)) {
+/// Una chiamata a uno strumento mentre arriva, un pezzo alla volta.
+#[derive(Debug, Default)]
+struct PartialCall {
+    id: String,
+    name: String,
+    /// I parametri, come testo JSON che si completa pezzo dopo pezzo.
+    arguments: String,
+}
+
+fn finish_calls(calls: Vec<PartialCall>) -> Vec<ToolCall> {
+    calls
+        .into_iter()
+        .filter(|call| !call.name.is_empty())
+        .enumerate()
+        .map(|(index, call)| ToolCall {
+            // Qualche servizio non assegna un identificatore: se ne inventa uno.
+            id: if call.id.is_empty() {
+                format!("call_{index}")
+            } else {
+                call.id
+            },
+            name: call.name,
+            arguments: parse_arguments(&call.arguments),
+        })
+        .collect()
+}
+
+/// I parametri di una chiamata. Se non sono un oggetto JSON valido resta il
+/// testo grezzo, e la chiamata fallirà senza eseguire nulla.
+pub(crate) fn parse_arguments(text: &str) -> Value {
+    if text.trim().is_empty() {
+        return json!({});
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(value) if value.is_object() => value,
+        _ => Value::String(text.to_string()),
+    }
+}
+
+/// Estrae da un pezzo della risposta testo, ragionamento, strumenti e misure.
+fn apply_chunk(
+    value: &Value,
+    outcome: &mut ChatOutcome,
+    calls: &mut Vec<PartialCall>,
+    on_event: &mut impl FnMut(ChatEvent),
+) {
     if let Some(choice) = value.pointer("/choices/0") {
         if let Some(delta) = choice.get("delta") {
+            for piece in delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let index = piece.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if calls.len() <= index {
+                    calls.resize_with(index + 1, PartialCall::default);
+                }
+                let call = &mut calls[index];
+                if let Some(id) = piece.get("id").and_then(Value::as_str) {
+                    call.id.push_str(id);
+                }
+                if let Some(name) = piece.pointer("/function/name").and_then(Value::as_str) {
+                    call.name.push_str(name);
+                }
+                if let Some(text) = piece.pointer("/function/arguments").and_then(Value::as_str) {
+                    call.arguments.push_str(text);
+                }
+            }
             // `reasoning_content` è il nome usato da llama-server, `reasoning` da OpenRouter.
             let reasoning = delta
                 .get("reasoning_content")
@@ -293,6 +478,7 @@ mod tests {
     fn raccoglie_testo_e_misure() {
         let mut outcome = ChatOutcome::default();
         let mut events = Vec::new();
+        let mut calls = Vec::new();
         let chunks = [
             json!({"choices": [{"delta": {"reasoning_content": "penso"}}]}),
             json!({"choices": [{"delta": {"content": "Ciao"}}]}),
@@ -301,7 +487,7 @@ mod tests {
                    "timings": {"predicted_per_second": 41.5}}),
         ];
         for chunk in &chunks {
-            apply_chunk(chunk, &mut outcome, &mut |e| events.push(e));
+            apply_chunk(chunk, &mut outcome, &mut calls, &mut |e| events.push(e));
         }
 
         assert_eq!(outcome.text, "Ciao mondo");
@@ -314,16 +500,114 @@ mod tests {
     }
 
     #[test]
+    fn ricompone_le_chiamate_agli_strumenti() {
+        let mut outcome = ChatOutcome::default();
+        let mut calls = Vec::new();
+        // Due chiamate in parallelo, con i parametri che arrivano a pezzi.
+        let chunks = [
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_a", "function": {"name": "read_file", "arguments": ""}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "{\"path\": \"no"}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 1, "function": {"name": "web_search", "arguments": "{\"query\""}},
+                {"index": 0, "function": {"arguments": "te.txt\"}"}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 1, "function": {"arguments": ": rotto"}}]}, "finish_reason": "tool_calls"}]}),
+        ];
+        for chunk in &chunks {
+            apply_chunk(chunk, &mut outcome, &mut calls, &mut |_| {});
+        }
+        let calls = finish_calls(calls);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "call_a");
+        assert_eq!(calls[0].arguments, json!({"path": "note.txt"}));
+        // Senza identificatore se ne assegna uno; il JSON rotto resta testo.
+        assert_eq!(calls[1].id, "call_1");
+        assert_eq!(calls[1].arguments, json!("{\"query\": rotto"));
+        assert_eq!(parse_arguments(""), json!({}));
+        assert_eq!(parse_arguments("[1]"), json!("[1]"));
+    }
+
+    #[test]
+    fn la_cronologia_con_strumenti_e_immagini_ha_il_formato_giusto() {
+        let call = ToolCall {
+            id: "call_a".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "note.txt"}),
+        };
+        let messages = [
+            ChatMessage {
+                images: vec![Image {
+                    media_type: "image/png".into(),
+                    data: "AQID".into(),
+                }],
+                ..ChatMessage::new("user", "Cosa vedi?")
+            },
+            ChatMessage {
+                tool_calls: vec![call],
+                ..ChatMessage::new("assistant", "")
+            },
+            ChatMessage {
+                tool_call_id: Some("call_a".into()),
+                ..ChatMessage::new("tool", "pane")
+            },
+        ];
+        let tools = crate::tools::available(
+            &crate::tools::ToolSettings {
+                files: false,
+                web: true,
+                ..Default::default()
+            },
+            &[],
+        );
+        let body = request_body(
+            &messages,
+            &tools,
+            &SamplingParams::default(),
+            None,
+            Flavor::Llama,
+        );
+
+        let sent = body["messages"].as_array().unwrap();
+        assert_eq!(
+            sent[0]["content"][0]["image_url"]["url"],
+            json!("data:image/png;base64,AQID")
+        );
+        assert_eq!(sent[0]["content"][1]["text"], json!("Cosa vedi?"));
+        assert_eq!(sent[1]["content"], Value::Null);
+        assert_eq!(
+            sent[1]["tool_calls"][0]["function"]["arguments"],
+            json!("{\"path\":\"note.txt\"}")
+        );
+        assert_eq!(
+            sent[2],
+            json!({"role": "tool", "tool_call_id": "call_a", "content": "pane"})
+        );
+        assert_eq!(body["tools"][0]["type"], json!("function"));
+        assert_eq!(body["tools"][0]["function"]["name"], json!("web_search"));
+        // Senza strumenti il campo non c'è.
+        let plain = request_body(
+            &messages,
+            &[],
+            &SamplingParams::default(),
+            None,
+            Flavor::Llama,
+        );
+        assert!(plain.get("tools").is_none());
+    }
+
+    #[test]
     fn segnala_la_risposta_troncata() {
         let mut outcome = ChatOutcome::default();
         let chunk = json!({"choices": [{"delta": {}, "finish_reason": "length"}]});
-        apply_chunk(&chunk, &mut outcome, &mut |_| {});
+        apply_chunk(&chunk, &mut outcome, &mut Vec::new(), &mut |_| {});
         assert_eq!(outcome.notice.as_deref(), Some(NOTICE_TRUNCATED));
     }
 
     #[test]
     fn llama_riceve_tutti_i_parametri() {
-        let body = request_body(&[], &SamplingParams::default(), None, Flavor::Llama);
+        let body = request_body(&[], &[], &SamplingParams::default(), None, Flavor::Llama);
         assert!(body.get("model").is_none());
         assert!(body.get("top_k").is_some());
         assert!(body.get("min_p").is_some());
@@ -333,6 +617,7 @@ mod tests {
         assert_eq!(body["stream"], json!(true));
 
         let body = request_body(
+            &[],
             &[],
             &SamplingParams {
                 seed: Some(7),
@@ -358,7 +643,7 @@ mod tests {
             top_p: 1.0,
             ..Default::default()
         };
-        let body = request_body(&[], &neutral, Some("modello-x"), flavor);
+        let body = request_body(&[], &[], &neutral, Some("modello-x"), flavor);
         assert_eq!(body["model"], json!("modello-x"));
         // Valori predefiniti: non si inviano affatto.
         assert!(body.get("temperature").is_none());
@@ -373,14 +658,14 @@ mod tests {
             max_tokens: Some(500),
             ..neutral
         };
-        let body = request_body(&[], &custom, Some("modello-x"), flavor);
+        let body = request_body(&[], &[], &custom, Some("modello-x"), flavor);
         assert_eq!(body["temperature"], json!(0.2f32));
         assert_eq!(body["max_tokens"], json!(500));
 
         let openai = Flavor::OpenAi {
             max_completion_tokens: true,
         };
-        let body = request_body(&[], &custom, Some("modello-x"), openai);
+        let body = request_body(&[], &[], &custom, Some("modello-x"), openai);
         assert_eq!(body["max_completion_tokens"], json!(500));
         assert!(body.get("max_tokens").is_none());
     }

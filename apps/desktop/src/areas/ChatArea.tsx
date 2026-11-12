@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   usd,
+  type Approval,
   type Conversation,
   type GenerationStats,
   type Message,
@@ -9,9 +11,20 @@ import {
   type Preset,
   type ProviderInfo,
   type RuntimeStatus,
+  type ToolRequest,
+  type ToolSettings,
 } from "../api";
 import { Markdown } from "../components/Markdown";
 import { ParamsPanel } from "../components/ParamsPanel";
+import { ToolRequestCard, ToolsBar } from "../components/ToolsBar";
+
+const ATTACHMENT_FILTERS = [
+  { name: "Testo, PDF e immagini", extensions: ["txt", "md", "csv", "json", "pdf", "png", "jpg", "jpeg", "gif", "webp"] },
+  { name: "Tutti i file", extensions: ["*"] },
+];
+
+/** Nome del file da un percorso di Windows o di altri sistemi. */
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 type Props = {
   status: RuntimeStatus | null;
@@ -21,10 +34,11 @@ type Props = {
   preset: Preset | null;
   onPresetChange: (preset: Preset) => void;
   onOpenModels: () => void;
+  onOpenSettings: () => void;
 };
 
 /** Messaggio mostrato a schermo: salvato, oppure in arrivo dal modello. */
-type Shown = { key: string; role: string; content: string; model?: string | null };
+type Shown = { key: string; role: string; content: string; model?: string | null; saved?: Message };
 
 export function ChatArea({
   status,
@@ -34,7 +48,12 @@ export function ChatArea({
   preset,
   onPresetChange,
   onOpenModels,
+  onOpenSettings,
 }: Props) {
+  const [toolSettings, setToolSettings] = useState<ToolSettings | null>(null);
+  const [folderCount, setFolderCount] = useState(0);
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [toolRequest, setToolRequest] = useState<ToolRequest | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -101,6 +120,36 @@ export function ChatArea({
     api.getMessages(activeId).then(setMessages).catch((e) => setError(String(e)));
   }, [activeId]);
 
+  // Strumenti della conversazione aperta; quelli predefiniti per una nuova.
+  useEffect(() => {
+    api.grantedFolders().then((f) => setFolderCount(f.length)).catch(() => {});
+    const load = activeId === null ? api.toolDefaults() : api.conversationTools(activeId);
+    load.then(setToolSettings).catch(() => {});
+  }, [activeId]);
+
+  const changeTools = async (next: ToolSettings) => {
+    setToolSettings(next);
+    let id = activeId;
+    if (id === null) {
+      id = (await api.createConversation()).id;
+      setActiveId(id);
+      refreshConversations().catch(() => {});
+    }
+    await api.setConversationTools(id, next).catch((e) => setError(String(e)));
+  };
+
+  const pickAttachments = async () => {
+    const picked = await open({ multiple: true, title: "Allega file", filters: ATTACHMENT_FILTERS });
+    const paths = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+    setAttachments((current) => [...current, ...paths.filter((p) => !current.includes(p))]);
+  };
+
+  const answer = (approval: Approval) => {
+    if (!toolRequest) return;
+    api.answerToolRequest(toolRequest.id, approval).catch(() => {});
+    setToolRequest(null);
+  };
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming, pendingUser]);
@@ -130,20 +179,38 @@ export function ChatArea({
         conversationId = (await api.createConversation()).id;
         setActiveId(conversationId);
       }
+      const files = attachments;
       setDraft("");
+      setAttachments([]);
       setPendingUser(text);
       setStreaming("");
       setReasoning("");
 
+      const id = conversationId;
       const outcome = await api.sendMessage(
-        conversationId,
+        id,
         text,
+        files,
         preset.sampling,
         preset.systemPrompt,
         activeModel,
         (event) => {
           if (event.type === "text") setStreaming((s) => (s ?? "") + event.text);
-          else setReasoning((r) => r + event.text);
+          else if (event.type === "reasoning") setReasoning((r) => r + event.text);
+          else if (event.type === "toolRequest") setToolRequest(event);
+          else {
+            // Il nucleo ha salvato un pezzo di risposta o il risultato di uno
+            // strumento: si rilegge l'archivio e si ricomincia a raccogliere il testo.
+            api
+              .getMessages(id)
+              .then((saved) => {
+                setMessages(saved);
+                setPendingUser(null);
+              })
+              .catch(() => {});
+            setStreaming("");
+            setReasoning("");
+          }
         },
       );
       setStats(outcome.stats);
@@ -151,6 +218,11 @@ export function ChatArea({
     } catch (e) {
       setError(String(e));
     } finally {
+      setToolRequest(null);
+      // "Consenti sempre" cambia i permessi della conversazione nel nucleo.
+      if (conversationId !== null) {
+        api.conversationTools(conversationId).then(setToolSettings).catch(() => {});
+      }
       // La fonte di verità è l'archivio: si rilegge quello che è stato salvato.
       if (conversationId !== null) {
         await api.getMessages(conversationId).then(setMessages).catch(() => {});
@@ -170,11 +242,15 @@ export function ChatArea({
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
   const lastCost = lastMessage?.role === "assistant" ? lastMessage.costUsd : null;
 
-  const shown: Shown[] = messages.map((m) => ({ ...m, key: `m${m.id}` }));
+  // Una risposta fatta solo di chiamate a strumenti si vede già nelle righe dei risultati.
+  const shown: Shown[] = messages
+    .filter((m) => !(m.role === "assistant" && !m.content && m.toolCalls.length > 0))
+    .map((m) => ({ ...m, key: `m${m.id}`, saved: m }));
   if (pendingUser !== null) {
     shown.push({ key: "pending-user", role: "user", content: pendingUser });
   }
-  if (streaming !== null) {
+  // Mentre si aspetta una conferma la risposta è ferma: niente bolla vuota.
+  if (streaming !== null && !(toolRequest && !streaming)) {
     shown.push({ key: "streaming", role: "assistant", content: streaming, model: modelName });
   }
 
@@ -240,6 +316,15 @@ export function ChatArea({
           disabled={generating}
           onChange={onModelChange}
         />
+        {toolSettings && (
+          <ToolsBar
+            settings={toolSettings}
+            folderCount={folderCount}
+            disabled={generating}
+            onChange={changeTools}
+            onOpenSettings={onOpenSettings}
+          />
+        )}
 
         <div className="messages">
           {shown.length === 0 && (
@@ -256,19 +341,33 @@ export function ChatArea({
               )}
             </div>
           )}
-          {shown.map((m) => (
-            <div key={m.key} className={`message ${m.role}`}>
-              <div className="message-role">{m.role === "user" ? "Tu" : (m.model ?? "Modello")}</div>
-              {m.key === "streaming" && reasoning && !m.content && <div className="reasoning">{reasoning}</div>}
-              {m.role === "user" ? (
-                <div className="message-text">{m.content}</div>
-              ) : m.content ? (
-                <Markdown text={m.content} />
-              ) : (
-                !reasoning && <div className="dim">Sto elaborando…</div>
-              )}
-            </div>
-          ))}
+          {shown.map((m) =>
+            m.role === "tool" ? (
+              <ToolResult key={m.key} message={m.saved!} />
+            ) : (
+              <div key={m.key} className={`message ${m.role}`}>
+                <div className="message-role">{m.role === "user" ? "Tu" : (m.model ?? "Modello")}</div>
+                {m.key === "streaming" && reasoning && !m.content && <div className="reasoning">{reasoning}</div>}
+                {m.saved && m.saved.attachments.length > 0 && (
+                  <div className="attachment-list">
+                    {m.saved.attachments.map((a) => (
+                      <span key={a.name} className="attachment">
+                        {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {m.role === "user" ? (
+                  <div className="message-text">{m.content}</div>
+                ) : m.content ? (
+                  <Markdown text={m.content} />
+                ) : m.saved && m.saved.toolCalls.length > 0 ? null : (
+                  !reasoning && !toolRequest && <div className="dim">Sto elaborando…</div>
+                )}
+              </div>
+            ),
+          )}
+          {toolRequest && <ToolRequestCard request={toolRequest} onAnswer={answer} />}
           {stats && !generating && <StatsLine stats={stats} cost={lastCost} />}
           {notice && !generating && <p className="notice">{notice}</p>}
           {error && <p className="error pre">{error}</p>}
@@ -280,7 +379,32 @@ export function ChatArea({
           contextTotal={contextTotal}
           cost={conversationCost}
         />
+        {attachments.length > 0 && (
+          <div className="attachment-list composer-attachments">
+            {attachments.map((path) => (
+              <span key={path} className="attachment" title={path}>
+                {baseName(path)}
+                <button
+                  className="conversation-delete"
+                  aria-label={`Togli ${baseName(path)}`}
+                  onClick={() => setAttachments(attachments.filter((p) => p !== path))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer">
+          <button
+            className="btn"
+            title="Allega file di testo, PDF o immagini"
+            aria-label="Allega file"
+            disabled={!canSend || generating}
+            onClick={pickAttachments}
+          >
+            📎
+          </button>
           <textarea
             value={draft}
             placeholder={canSend ? "Scrivi un messaggio…" : (blockedReason ?? "")}
@@ -368,6 +492,30 @@ function ModelPicker({ providers, loadedName, value, disabled, onChange }: Picke
         {!known && value.kind === "cloud" && <option value={current}>{value.model} (non disponibile)</option>}
       </select>
     </div>
+  );
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  list_folder: "Elenco della cartella",
+  read_file: "Lettura del file",
+  write_file: "Scrittura del file",
+  edit_file: "Modifica del file",
+  web_search: "Ricerca web",
+  read_web_page: "Lettura della pagina",
+};
+
+/** Il risultato di uno strumento: una riga, con il contenuto da aprire a richiesta. */
+function ToolResult({ message }: { message: Message }) {
+  const label = TOOL_LABELS[message.toolName ?? ""] ?? message.toolName ?? "Strumento";
+  const firstLine = message.content.split("\n")[0];
+  return (
+    <details className={message.isError ? "tool-result failed" : "tool-result"}>
+      <summary>
+        <span className="tool-result-label">{message.isError ? `${label} non riuscita` : label}</span>
+        <span className="dim"> · {firstLine.length > 90 ? `${firstLine.slice(0, 90)}…` : firstLine}</span>
+      </summary>
+      <pre className="tool-preview">{message.content}</pre>
+    </details>
   );
 }
 

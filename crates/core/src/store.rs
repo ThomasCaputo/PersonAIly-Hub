@@ -3,9 +3,11 @@
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::attachments::{Attachment, AttachmentInfo};
 use crate::error::Result;
+use crate::tools::ToolCall;
 
 /// Passi di aggiornamento dello schema, in ordine.
 ///
@@ -45,11 +47,34 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN completion_tokens INTEGER;
     ALTER TABLE messages ADD COLUMN cost_usd REAL;
     ",
+    // 4 — strumenti (chiamate e risultati, in JSON), allegati dei messaggi,
+    //     strumenti e permessi di ogni conversazione
+    "
+    ALTER TABLE messages ADD COLUMN tool_data TEXT;
+    ALTER TABLE messages ADD COLUMN attachments TEXT;
+    ALTER TABLE conversations ADD COLUMN tools TEXT;
+    ",
 ];
 
 /// Colonne lette per ogni messaggio, nell'ordine atteso da `row_to_message`.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, model, created_at, \
-     prompt_tokens, completion_tokens, cost_usd";
+     prompt_tokens, completion_tokens, cost_usd, tool_data, attachments";
+
+/// Ciò che un messaggio ha a che fare con gli strumenti, salvato in JSON.
+///
+/// Un messaggio `assistant` elenca le chiamate chieste dal modello (`calls`);
+/// un messaggio `tool` è il risultato di una chiamata (`call_id`, `name`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolData {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<ToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub is_error: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +101,18 @@ pub struct Message {
     /// Costo stimato della risposta in dollari; assente per i modelli locali
     /// o quando il prezzo non è noto.
     pub cost_usd: Option<f64>,
+    /// Strumenti chiesti dal modello in questa risposta.
+    pub tool_calls: Vec<ToolCall>,
+    /// Per un messaggio `tool`: la chiamata di cui è il risultato.
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    /// Per un messaggio `tool`: lo strumento è fallito o è stato negato.
+    pub is_error: bool,
+    /// Nome e tipo degli allegati, per l'interfaccia.
+    pub attachments: Vec<AttachmentInfo>,
+    /// Contenuto degli allegati: serve al modello, non all'interfaccia.
+    #[serde(skip)]
+    pub attachment_data: Vec<Attachment>,
 }
 
 /// Accesso all'archivio dell'app.
@@ -168,6 +205,27 @@ impl Store {
         Ok(())
     }
 
+    /// Strumenti e permessi della conversazione, in JSON; `None` se mai impostati.
+    pub fn conversation_tools(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT tools FROM conversations WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_conversation_tools(&self, id: i64, tools_json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET tools = ?2 WHERE id = ?1",
+            params![id, tools_json],
+        )?;
+        Ok(())
+    }
+
     // ── Messaggi ────────────────────────────────────────────────────────
 
     pub fn messages(&self, conversation_id: i64) -> Result<Vec<Message>> {
@@ -186,9 +244,36 @@ impl Store {
         content: &str,
         model: Option<&str>,
     ) -> Result<Message> {
+        self.add_message_with(conversation_id, role, content, model, None, &[])
+    }
+
+    /// Come [`Store::add_message`], con i dati sugli strumenti e gli allegati.
+    pub fn add_message_with(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+        tool: Option<&ToolData>,
+        attachments: &[Attachment],
+    ) -> Result<Message> {
+        let tool_json = tool.map(serde_json::to_string).transpose()?;
+        let attachments_json = if attachments.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(attachments)?)
+        };
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, model) VALUES (?1, ?2, ?3, ?4)",
-            params![conversation_id, role, content, model],
+            "INSERT INTO messages (conversation_id, role, content, model, tool_data, attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                conversation_id,
+                role,
+                content,
+                model,
+                tool_json,
+                attachments_json
+            ],
         )?;
         let id = self.conn.last_insert_rowid();
         self.conn.execute(
@@ -258,7 +343,22 @@ fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation
 }
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+    // Un JSON illeggibile non deve rendere illeggibile la conversazione.
+    let tool: ToolData = row
+        .get::<_, Option<String>>(9)?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    let attachment_data: Vec<Attachment> = row
+        .get::<_, Option<String>>(10)?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
     Ok(Message {
+        tool_calls: tool.calls,
+        tool_call_id: tool.call_id,
+        tool_name: tool.name,
+        is_error: tool.is_error,
+        attachments: attachment_data.iter().map(Attachment::info).collect(),
+        attachment_data,
         id: row.get(0)?,
         conversation_id: row.get(1)?,
         role: row.get(2)?,

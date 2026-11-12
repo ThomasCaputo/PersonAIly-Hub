@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 use crate::chat::{self, ChatEvent, ChatMessage, ChatOutcome, Flavor};
 use crate::error::{Error, Result};
 use crate::local::SamplingParams;
+use crate::tools::ToolDef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,6 +156,7 @@ pub async fn stream(
     api_key: &str,
     model: &str,
     messages: &[ChatMessage],
+    tools: &[ToolDef],
     system_prompt: &str,
     sampling: &SamplingParams,
     cancel: Arc<Notify>,
@@ -170,6 +172,7 @@ pub async fn stream(
                 model,
                 max_output,
                 messages,
+                tools,
                 system_prompt,
                 sampling,
                 cancel,
@@ -180,17 +183,14 @@ pub async fn stream(
         ProviderKind::OpenaiCompatible => {
             let mut all = Vec::with_capacity(messages.len() + 1);
             if !system_prompt.trim().is_empty() {
-                all.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                });
+                all.push(ChatMessage::new("system", system_prompt));
             }
             all.extend_from_slice(messages);
 
             let flavor = Flavor::OpenAi {
                 max_completion_tokens: provider.base().contains("api.openai.com"),
             };
-            let body = chat::request_body(&all, sampling, Some(model), flavor);
+            let body = chat::request_body(&all, tools, sampling, Some(model), flavor);
             let url = format!("{}/chat/completions", provider.base());
             chat::stream_chat(http, &url, Some(api_key), &body, cancel, on_event).await
         }

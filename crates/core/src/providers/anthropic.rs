@@ -12,6 +12,7 @@ use super::{CloudModel, Provider};
 use crate::chat::{self, ChatEvent, ChatMessage, ChatOutcome, NOTICE_TRUNCATED, SseParser};
 use crate::error::{Error, Result};
 use crate::local::SamplingParams;
+use crate::tools::{ToolCall, ToolDef};
 
 /// Versione dell'API. Da questa versione le richieste non accettano più
 /// `temperature`, `top_p` e `top_k`: per questo non vengono mai inviati.
@@ -39,16 +40,114 @@ fn supports_fallback(model: &str) -> bool {
     .any(|prefix| model.starts_with(prefix))
 }
 
+/// Un identificatore di chiamata accettato da Anthropic: lettere, cifre, `_` e `-`.
+/// Serve quando la chiamata è nata da un altro provider, a conversazione già avviata.
+fn safe_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn is_thinking(block: &Value) -> bool {
+    matches!(
+        block.get("type").and_then(Value::as_str),
+        Some("thinking" | "redacted_thinking")
+    )
+}
+
+/// I messaggi nel formato di Anthropic.
+///
+/// - I risultati degli strumenti viaggiano in un messaggio `user`, tutti
+///   insieme, subito dopo la risposta che li ha chiesti.
+/// - Una risposta i cui strumenti sono ancora in corso torna indietro così
+///   com'è arrivata ([`ChatMessage::native`]), ragionamento compreso: il
+///   servizio lo richiede. Delle risposte più vecchie resta solo il contenuto.
+fn api_messages(messages: &[ChatMessage], keep_thinking: bool) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let mut results: Vec<Value> = Vec::new();
+
+    for m in messages {
+        if m.role == "tool" {
+            let mut result = json!({
+                "type": "tool_result",
+                "tool_use_id": safe_id(m.tool_call_id.as_deref().unwrap_or_default()),
+                "content": m.content,
+            });
+            if m.is_error {
+                result["is_error"] = json!(true);
+            }
+            results.push(result);
+            continue;
+        }
+        if !results.is_empty() {
+            out.push(json!({ "role": "user", "content": std::mem::take(&mut results) }));
+        }
+
+        if m.role == "assistant" {
+            let blocks: Vec<Value> = match &m.native {
+                Some(Value::Array(native)) => native
+                    .iter()
+                    .filter(|block| keep_thinking || !is_thinking(block))
+                    .cloned()
+                    .collect(),
+                _ => {
+                    let mut blocks = Vec::new();
+                    if !m.content.is_empty() {
+                        blocks.push(json!({ "type": "text", "text": m.content }));
+                    }
+                    for call in &m.tool_calls {
+                        blocks.push(json!({
+                            "type": "tool_use",
+                            "id": safe_id(&call.id),
+                            "name": call.name,
+                            "input": if call.arguments.is_object() { call.arguments.clone() } else { json!({}) },
+                        }));
+                    }
+                    blocks
+                }
+            };
+            // Un messaggio senza contenuto verrebbe rifiutato.
+            if !blocks.is_empty() {
+                out.push(json!({ "role": "assistant", "content": blocks }));
+            }
+        } else if m.images.is_empty() {
+            out.push(json!({ "role": "user", "content": m.content }));
+        } else {
+            let mut blocks: Vec<Value> = m
+                .images
+                .iter()
+                .map(|image| json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": image.media_type, "data": image.data },
+                }))
+                .collect();
+            blocks.push(json!({ "type": "text", "text": m.content }));
+            out.push(json!({ "role": "user", "content": blocks }));
+        }
+    }
+    if !results.is_empty() {
+        out.push(json!({ "role": "user", "content": results }));
+    }
+    out
+}
+
 /// Corpo della richiesta.
 ///
-/// Con `extras` si chiedono due comodità che non tutti i modelli accettano:
-/// il riassunto del ragionamento (altrimenti invisibile) e il ripiego
-/// automatico in caso di rifiuto. Se il servizio le respinge, la richiesta
-/// viene ripetuta senza.
+/// Con `extras` si chiedono comodità che non tutti i modelli accettano: il
+/// riassunto del ragionamento (altrimenti invisibile), il ripiego automatico
+/// in caso di rifiuto e l'arrivo graduale dei parametri degli strumenti. Se il
+/// servizio le respinge, la richiesta viene ripetuta senza.
 fn request_body(
     model: &str,
     max_output: Option<u64>,
     messages: &[ChatMessage],
+    tools: &[ToolDef],
     system_prompt: &str,
     sampling: &SamplingParams,
     extras: bool,
@@ -63,13 +162,33 @@ fn request_body(
         "model": model,
         "max_tokens": max_tokens,
         "stream": true,
-        "messages": messages,
+        // Senza le comodità non si chiede il ragionamento, quindi quello
+        // delle risposte in corso non si rimanda.
+        "messages": api_messages(messages, extras),
     });
     if !system_prompt.trim().is_empty() {
         body["system"] = json!(system_prompt);
     }
     if !sampling.stop.is_empty() {
         body["stop_sequences"] = json!(sampling.stop);
+    }
+    if !tools.is_empty() {
+        body["tools"] = tools
+            .iter()
+            .map(|tool| {
+                let mut def = json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.schema,
+                });
+                if extras {
+                    // Il contenuto di un file da scrivere arriva mentre viene
+                    // generato, invece che tutto alla fine dopo una lunga pausa.
+                    def["eager_input_streaming"] = json!(true);
+                }
+                def
+            })
+            .collect();
     }
     if extras {
         body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
@@ -105,25 +224,36 @@ pub async fn stream(
     model: &str,
     max_output: Option<u64>,
     messages: &[ChatMessage],
+    tools: &[ToolDef],
     system_prompt: &str,
     sampling: &SamplingParams,
     cancel: Arc<Notify>,
     mut on_event: impl FnMut(ChatEvent),
 ) -> Result<ChatOutcome> {
-    let body = request_body(model, max_output, messages, system_prompt, sampling, true);
-    let mut response = send(http, provider, api_key, &body).await?;
+    let body = |extras| {
+        request_body(
+            model,
+            max_output,
+            messages,
+            tools,
+            system_prompt,
+            sampling,
+            extras,
+        )
+    };
+    let mut response = send(http, provider, api_key, &body(true)).await?;
 
     // 400 = richiesta non valida: di solito un modello più vecchio che non
     // conosce le comodità richieste. Si riprova con la richiesta essenziale.
     if response.status().as_u16() == 400 {
-        let plain = request_body(model, max_output, messages, system_prompt, sampling, false);
-        response = send(http, provider, api_key, &plain).await?;
+        response = send(http, provider, api_key, &body(false)).await?;
     }
     if !response.status().is_success() {
         return Err(chat::http_error(response).await);
     }
 
     let mut outcome = ChatOutcome::default();
+    let mut blocks = Blocks::default();
     let mut parser = SseParser::default();
 
     loop {
@@ -140,16 +270,89 @@ pub async fn stream(
             let Ok(event) = serde_json::from_str::<Value>(&data) else {
                 continue;
             };
-            apply_event(&event, &mut outcome, &mut on_event)?;
+            apply_event(&event, &mut outcome, &mut blocks, &mut on_event)?;
         }
     }
+    // Una risposta interrotta a metà può contenere chiamate incomplete: non si eseguono.
+    if !outcome.cancelled {
+        blocks.finish(&mut outcome);
+    }
     Ok(outcome)
+}
+
+/// Un blocco di contenuto della risposta mentre arriva.
+#[derive(Debug, Default)]
+struct Block {
+    /// Il blocco com'è stato annunciato dal servizio.
+    start: Value,
+    /// Testo, ragionamento o parametri JSON, accumulati pezzo dopo pezzo.
+    text: String,
+    signature: String,
+}
+
+/// I blocchi della risposta in costruzione, nell'ordine deciso dal servizio.
+#[derive(Debug, Default)]
+struct Blocks(Vec<Block>);
+
+impl Blocks {
+    fn at(&mut self, event: &Value) -> &mut Block {
+        let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+        if self.0.len() <= index {
+            self.0.resize_with(index + 1, Block::default);
+        }
+        &mut self.0[index]
+    }
+
+    /// Ricompone la risposta nel formato del servizio ed estrae le chiamate
+    /// agli strumenti.
+    fn finish(self, outcome: &mut ChatOutcome) {
+        let mut native = Vec::new();
+        for block in self.0 {
+            let mut value = block.start;
+            match value.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    // Senza pezzi in arrivo valgono i parametri annunciati all'inizio.
+                    let arguments = if block.text.trim().is_empty() && value["input"].is_object() {
+                        value["input"].clone()
+                    } else {
+                        chat::parse_arguments(&block.text)
+                    };
+                    value["input"] = if arguments.is_object() {
+                        arguments.clone()
+                    } else {
+                        json!({})
+                    };
+                    outcome.tool_calls.push(ToolCall {
+                        id: value["id"].as_str().unwrap_or_default().to_string(),
+                        name: value["name"].as_str().unwrap_or_default().to_string(),
+                        arguments,
+                    });
+                }
+                Some("thinking") => {
+                    value["thinking"] = json!(block.text);
+                    value["signature"] = json!(block.signature);
+                }
+                // Un blocco di testo vuoto verrebbe rifiutato al giro successivo.
+                Some("text") if block.text.is_empty() => continue,
+                Some("text") => value = json!({ "type": "text", "text": block.text }),
+                // Blocchi senza annuncio (non dovrebbe succedere) si ignorano.
+                None => continue,
+                // Ogni altro tipo torna indietro così com'è arrivato.
+                Some(_) => {}
+            }
+            native.push(value);
+        }
+        if !outcome.tool_calls.is_empty() {
+            outcome.native = Some(Value::Array(native));
+        }
+    }
 }
 
 /// Applica un evento dello streaming all'esito in costruzione.
 fn apply_event(
     event: &Value,
     outcome: &mut ChatOutcome,
+    blocks: &mut Blocks,
     on_event: &mut impl FnMut(ChatEvent),
 ) -> Result<()> {
     match event.get("type").and_then(Value::as_str) {
@@ -164,22 +367,32 @@ fn apply_event(
                 );
             }
         }
+        Some("content_block_start") => {
+            blocks.at(event).start = event["content_block"].clone();
+        }
         Some("content_block_delta") => {
             let delta = &event["delta"];
+            let block = blocks.at(event);
+            let piece = |key: &str| delta.get(key).and_then(Value::as_str).unwrap_or("");
             match delta.get("type").and_then(Value::as_str) {
                 Some("text_delta") => {
-                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                        outcome.text.push_str(text);
-                        on_event(ChatEvent::Text(text.to_string()));
+                    let text = piece("text");
+                    if block.start.is_null() {
+                        block.start = json!({ "type": "text" });
                     }
+                    block.text.push_str(text);
+                    outcome.text.push_str(text);
+                    on_event(ChatEvent::Text(text.to_string()));
                 }
                 Some("thinking_delta") => {
-                    if let Some(text) = delta.get("thinking").and_then(Value::as_str)
-                        && !text.is_empty()
-                    {
+                    let text = piece("thinking");
+                    block.text.push_str(text);
+                    if !text.is_empty() {
                         on_event(ChatEvent::Reasoning(text.to_string()));
                     }
                 }
+                Some("signature_delta") => block.signature.push_str(piece("signature")),
+                Some("input_json_delta") => block.text.push_str(piece("partial_json")),
                 _ => {}
             }
         }
@@ -313,10 +526,7 @@ mod tests {
     use super::*;
 
     fn user(text: &str) -> Vec<ChatMessage> {
-        vec![ChatMessage {
-            role: "user".into(),
-            content: text.into(),
-        }]
+        vec![ChatMessage::new("user", text)]
     }
 
     #[test]
@@ -328,7 +538,15 @@ mod tests {
             seed: Some(3),
             ..Default::default()
         };
-        let body = request_body("claude-opus-5-5", None, &user("ciao"), "", &sampling, true);
+        let body = request_body(
+            "claude-opus-5-5",
+            None,
+            &user("ciao"),
+            &[],
+            "",
+            &sampling,
+            true,
+        );
         for key in ["temperature", "top_p", "top_k", "seed", "min_p", "system"] {
             assert!(body.get(key).is_none(), "{key} non dovrebbe esserci");
         }
@@ -340,7 +558,8 @@ mod tests {
     fn il_limite_di_token_rispetta_il_massimo_del_modello() {
         let none = SamplingParams::default();
         let body = |max_output, sampling: &SamplingParams| {
-            request_body("m", max_output, &user("x"), "", sampling, false)["max_tokens"].clone()
+            request_body("m", max_output, &user("x"), &[], "", sampling, false)["max_tokens"]
+                .clone()
         };
         // Senza indicazioni: 64 000, o meno se il modello non ci arriva.
         assert_eq!(body(None, &none), json!(64_000));
@@ -361,18 +580,26 @@ mod tests {
             stop: vec!["FINE".into()],
             ..Default::default()
         };
-        let with = request_body("claude-opus-5-5", None, &user("x"), "Sii breve.", &s, true);
+        let with = request_body(
+            "claude-opus-5-5",
+            None,
+            &user("x"),
+            &[],
+            "Sii breve.",
+            &s,
+            true,
+        );
         assert_eq!(with["thinking"]["display"], json!("summarized"));
         assert_eq!(with["fallbacks"], json!("default"));
         assert_eq!(with["system"], json!("Sii breve."));
         assert_eq!(with["stop_sequences"], json!(["FINE"]));
 
         // Un modello senza ripiego automatico.
-        let haiku = request_body("claude-haiku-5-5", None, &user("x"), "", &s, true);
+        let haiku = request_body("claude-haiku-5-5", None, &user("x"), &[], "", &s, true);
         assert!(haiku.get("fallbacks").is_none());
 
         // Richiesta essenziale, usata come secondo tentativo.
-        let plain = request_body("claude-opus-5-5", None, &user("x"), "", &s, false);
+        let plain = request_body("claude-opus-5-5", None, &user("x"), &[], "", &s, false);
         assert!(plain.get("thinking").is_none());
         assert!(plain.get("fallbacks").is_none());
     }
@@ -398,8 +625,9 @@ mod tests {
         ];
         let mut outcome = ChatOutcome::default();
         let mut seen = Vec::new();
+        let mut blocks = Blocks::default();
         for event in &events {
-            apply_event(event, &mut outcome, &mut |e| seen.push(e)).unwrap();
+            apply_event(event, &mut outcome, &mut blocks, &mut |e| seen.push(e)).unwrap();
         }
 
         assert_eq!(outcome.text, "Ciao mondo");
@@ -411,11 +639,112 @@ mod tests {
     }
 
     #[test]
+    fn ricompone_le_chiamate_e_conserva_il_ragionamento() {
+        let events = [
+            json!({"type": "content_block_start", "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""}}),
+            json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "Leggo il file."}}),
+            json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "signature_delta", "signature": "firma"}}),
+            json!({"type": "content_block_start", "index": 1,
+                "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": "Un attimo."}}),
+            json!({"type": "content_block_start", "index": 2,
+                "content_block": {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {}}}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"no"}}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "te.txt\"}"}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        ];
+        let mut outcome = ChatOutcome::default();
+        let mut blocks = Blocks::default();
+        for event in &events {
+            apply_event(event, &mut outcome, &mut blocks, &mut |_| {}).unwrap();
+        }
+        blocks.finish(&mut outcome);
+
+        assert_eq!(outcome.tool_calls.len(), 1);
+        assert_eq!(outcome.tool_calls[0].id, "toolu_1");
+        assert_eq!(outcome.tool_calls[0].arguments, json!({"path": "note.txt"}));
+        let native = outcome.native.clone().unwrap();
+        assert_eq!(
+            native[0],
+            json!({"type": "thinking", "thinking": "Leggo il file.", "signature": "firma"})
+        );
+        assert_eq!(native[1], json!({"type": "text", "text": "Un attimo."}));
+        assert_eq!(native[2]["input"], json!({"path": "note.txt"}));
+
+        // Il giro successivo: la risposta torna identica, i risultati in un unico messaggio utente.
+        let history = vec![
+            ChatMessage::new("user", "Leggi note.txt e cerca sul web"),
+            ChatMessage {
+                tool_calls: outcome.tool_calls.clone(),
+                native: outcome.native.clone(),
+                ..ChatMessage::new("assistant", "Un attimo.")
+            },
+            ChatMessage {
+                tool_call_id: Some("toolu_1".into()),
+                ..ChatMessage::new("tool", "pane")
+            },
+            ChatMessage {
+                tool_call_id: Some("call.2".into()),
+                is_error: true,
+                ..ChatMessage::new("tool", "negato")
+            },
+        ];
+        let sent = api_messages(&history, true);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[1]["content"], native);
+        assert_eq!(sent[2]["role"], json!("user"));
+        assert_eq!(sent[2]["content"][0]["tool_use_id"], json!("toolu_1"));
+        assert!(sent[2]["content"][0].get("is_error").is_none());
+        // Identificatori nati da un altro provider resi accettabili.
+        assert_eq!(sent[2]["content"][1]["tool_use_id"], json!("call_2"));
+        assert_eq!(sent[2]["content"][1]["is_error"], json!(true));
+
+        // Nella richiesta essenziale il ragionamento non si rimanda.
+        let plain = api_messages(&history, false);
+        assert_eq!(plain[1]["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn una_risposta_senza_ragionamento_salvato_si_ricostruisce() {
+        let history = vec![
+            ChatMessage::new("user", "ciao"),
+            ChatMessage {
+                tool_calls: vec![ToolCall {
+                    id: "call_0".into(),
+                    name: "web_search".into(),
+                    arguments: json!("rotto"),
+                }],
+                ..ChatMessage::new("assistant", "")
+            },
+            ChatMessage {
+                tool_call_id: Some("call_0".into()),
+                ..ChatMessage::new("tool", "risultati")
+            },
+            ChatMessage::new("assistant", "Ecco."),
+        ];
+        let sent = api_messages(&history, true);
+        assert_eq!(
+            sent[1]["content"],
+            json!([{"type": "tool_use", "id": "call_0", "name": "web_search", "input": {}}])
+        );
+        assert_eq!(
+            sent[3]["content"],
+            json!([{"type": "text", "text": "Ecco."}])
+        );
+    }
+
+    #[test]
     fn rifiuto_troncamento_ed_errore_vengono_segnalati() {
         let stop = |reason: &str| {
             let mut outcome = ChatOutcome::default();
             let event = json!({"type": "message_delta", "delta": {"stop_reason": reason}});
-            apply_event(&event, &mut outcome, &mut |_| {}).unwrap();
+            apply_event(&event, &mut outcome, &mut Blocks::default(), &mut |_| {}).unwrap();
             outcome.notice
         };
         assert_eq!(stop("refusal").as_deref(), Some(NOTICE_REFUSAL));
@@ -423,7 +752,12 @@ mod tests {
 
         let error = json!({"type": "error", "error": {"type": "overloaded_error",
             "message": "Overloaded"}});
-        let result = apply_event(&error, &mut ChatOutcome::default(), &mut |_| {});
+        let result = apply_event(
+            &error,
+            &mut ChatOutcome::default(),
+            &mut Blocks::default(),
+            &mut |_| {},
+        );
         assert!(result.unwrap_err().to_string().contains("Overloaded"));
     }
 

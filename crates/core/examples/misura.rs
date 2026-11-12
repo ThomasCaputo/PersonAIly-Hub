@@ -126,11 +126,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_secs(5)).await;
     print("dopo 5 s", &read(Some(loaded.pid)), &base);
 
-    let messages = [ChatMessage {
-        role: "user".to_string(),
-        content: "Spiega in circa 150 parole che cos'è la cache KV di un modello linguistico."
-            .to_string(),
-    }];
+    let messages = [ChatMessage::new(
+        "user",
+        "Spiega in circa 150 parole che cos'è la cache KV di un modello linguistico.",
+    )];
     let sampling = SamplingParams {
         max_tokens: Some(300),
         ..Default::default()
@@ -139,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &http,
         &format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port),
         None,
-        &chat::request_body(&messages, &sampling, None, chat::Flavor::Llama),
+        &chat::request_body(&messages, &[], &sampling, None, chat::Flavor::Llama),
         Arc::new(tokio::sync::Notify::new()),
         |_| {},
     )

@@ -91,7 +91,29 @@ export type Message = {
   completionTokens: number | null;
   /** Costo stimato in dollari; assente per i modelli locali o senza prezzo noto. */
   costUsd: number | null;
+  /** Strumenti chiesti dal modello in questa risposta. */
+  toolCalls: ToolCall[];
+  /** Per un messaggio `tool`: la chiamata di cui è il risultato. */
+  toolCallId: string | null;
+  toolName: string | null;
+  /** Per un messaggio `tool`: lo strumento è fallito o è stato negato. */
+  isError: boolean;
+  attachments: AttachmentInfo[];
 };
+
+export type ToolCall = { id: string; name: string; arguments: unknown };
+export type AttachmentInfo = { name: string; kind: "text" | "image" };
+
+/** Quanto chiedere prima di lasciar agire il modello. */
+export type PermissionLevel = "ask" | "edits" | "all";
+
+/** Strumenti e permessi di una conversazione. */
+export type ToolSettings = { files: boolean; web: boolean; permission: PermissionLevel };
+
+/** Risposta dell'utente a una richiesta di usare uno strumento. */
+export type Approval = "deny" | "once" | "always";
+
+export type ToolRequest = { id: string; name: string; summary: string; arguments: unknown };
 
 /** Parametri di generazione e prompt di sistema salvati con un nome. */
 export type NamedPreset = { name: string; sampling: SamplingParams; systemPrompt: string };
@@ -164,7 +186,12 @@ export function cloudPresetKey(providerId: string, model: string): string {
   return `cloud:${providerId}:${model}`;
 }
 
-export type StreamEvent = { type: "text"; text: string } | { type: "reasoning"; text: string };
+export type StreamEvent =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  /** Nuovi messaggi in archivio (risposta parziale, risultato di uno strumento). */
+  | { type: "saved" }
+  | ({ type: "toolRequest" } & ToolRequest);
 
 export type CoreInfo = { version: string; schemaVersion: number };
 
@@ -216,6 +243,7 @@ export const api = {
   sendMessage: (
     conversationId: number,
     text: string,
+    attachments: string[],
     sampling: SamplingParams,
     systemPrompt: string,
     model: ModelRef,
@@ -226,6 +254,7 @@ export const api = {
     return invoke<SendOutcome>("send_message", {
       conversationId,
       text,
+      attachments,
       sampling,
       systemPrompt,
       model,
@@ -233,6 +262,15 @@ export const api = {
     });
   },
   stopGeneration: () => invoke<void>("stop_generation"),
+  answerToolRequest: (id: string, approval: Approval) => invoke<void>("answer_tool_request", { id, approval }),
+
+  grantedFolders: () => invoke<string[]>("granted_folders"),
+  setGrantedFolders: (folders: string[]) => invoke<void>("set_granted_folders", { folders }),
+  toolDefaults: () => invoke<ToolSettings>("tool_defaults"),
+  setToolDefaults: (settings: ToolSettings) => invoke<void>("set_tool_defaults", { settings }),
+  conversationTools: (conversationId: number) => invoke<ToolSettings>("conversation_tools", { conversationId }),
+  setConversationTools: (conversationId: number, settings: ToolSettings) =>
+    invoke<void>("set_conversation_tools", { conversationId, settings }),
 
   listNamedPresets: () => invoke<NamedPreset[]>("list_named_presets"),
   saveNamedPreset: (preset: NamedPreset) => invoke<NamedPreset>("save_named_preset", { preset }),

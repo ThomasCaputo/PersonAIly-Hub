@@ -808,3 +808,104 @@ input[type="range"] {
   padding: 4px 10px;
   border: 1px solid var(--border);
 }
+
+/* ── Strumenti ─────────────────────────────────────────────────────── */
+
+.tools-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.tools-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.tools-bar select {
+  width: auto;
+}
+
+.tool-request {
+  max-width: 760px;
+  margin: 8px auto 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-request-title {
+  font-weight: 600;
+}
+
+.tool-preview {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.tool-result {
+  max-width: 760px;
+  margin: -10px auto 18px;
+  font-size: 13px;
+}
+
+.tool-result summary {
+  cursor: pointer;
+}
+
+.tool-result-label {
+  font-weight: 600;
+}
+
+.tool-result.failed .tool-result-label {
+  color: var(--error);
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.composer-attachments {
+  padding: 6px 16px 0;
+  margin: 0;
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.attachment .conversation-delete {
+  display: inline;
+  visibility: visible;
+}
+
+.tool-result,
+.tool-request {
+  overflow-wrap: anywhere;
+}

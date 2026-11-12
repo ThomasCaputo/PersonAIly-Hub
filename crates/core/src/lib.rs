@@ -4,6 +4,7 @@
 //! l'estensione VS Code sono solo client di questa libreria
 //! (vedi `docs/architettura.md`).
 
+pub mod attachments;
 pub mod chat;
 pub mod error;
 pub mod gguf;
@@ -14,14 +15,17 @@ pub mod named_presets;
 pub mod providers;
 pub mod secrets;
 pub mod store;
+pub mod tools;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use providers::Provider;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 
+use attachments::{Attachment, AttachmentKind};
 use chat::{ChatEvent, ChatMessage, GenerationStats};
 use error::{Error, Result};
 use hub::{DownloadEnd, HubFile, HubRepo};
@@ -31,10 +35,18 @@ use local::sysmon::{self, MemorySnapshot, ProcessGpuMemory};
 use local::{LoadParams, MemoryEstimate, Placement, Preset, SamplingParams};
 use models::ModelInfo;
 use named_presets::NamedPreset;
-use store::{Conversation, Message, Store};
+use store::{Conversation, Message, Store, ToolData};
+use tools::{
+    Decision, PermissionLevel, Risk, ToolCall, ToolContext, ToolDef, ToolOutput, ToolSettings,
+};
 
 const SETTING_MODEL_FOLDERS: &str = "model_folders";
 const SETTING_PROVIDERS: &str = "providers";
+const SETTING_GRANTED_FOLDERS: &str = "granted_folders";
+const SETTING_TOOL_DEFAULTS: &str = "tool_defaults";
+/// Quante volte di seguito un modello può chiedere strumenti in una risposta.
+const MAX_TOOL_ROUNDS: usize = 25;
+const NOTICE_TOO_MANY_TOOLS: &str = "Il modello ha usato strumenti troppe volte di seguito: mi sono fermato. Scrivi per farlo continuare.";
 /// Inizio della chiave che identifica il preset di un modello cloud.
 const CLOUD_KEY_PREFIX: &str = "cloud:";
 const DEFAULT_TITLE: &str = "Nuova conversazione";
@@ -145,6 +157,28 @@ pub struct Core {
     download: Mutex<Option<DownloadState>>,
     /// Segnale per interrompere il download in corso.
     download_cancel: Mutex<Option<Arc<Notify>>>,
+    /// Per scaricare pagine web su richiesta dei modelli.
+    web_http: reqwest::Client,
+    /// Strumenti in attesa della conferma dell'utente, per identificatore della chiamata.
+    approvals: Mutex<HashMap<String, oneshot::Sender<Approval>>>,
+}
+
+/// Risposta dell'utente alla richiesta di usare uno strumento.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Approval {
+    Deny,
+    /// Solo questa volta.
+    Once,
+    /// Anche le prossime volte, in questa conversazione.
+    Always,
+}
+
+/// A chi va una richiesta.
+enum Target {
+    Local(LoadedModel),
+    /// Provider, chiave API e identificatore del modello.
+    Cloud(Provider, String, String),
 }
 
 /// Stato dell'installazione di llama.cpp.
@@ -177,6 +211,8 @@ impl Core {
             installing: tokio::sync::Mutex::new(()),
             download: Mutex::new(None),
             download_cancel: Mutex::new(None),
+            web_http: tools::web::client()?,
+            approvals: Mutex::new(HashMap::new()),
         })
     }
 
@@ -567,22 +603,147 @@ impl Core {
         self.store().messages(conversation_id)
     }
 
-    /// Salva il messaggio dell'utente, lo invia al modello caricato insieme alla
-    /// cronologia e salva la risposta. `on_event` riceve la risposta mentre arriva.
+    // ── Strumenti e permessi ────────────────────────────────────────────
+
+    /// Cartelle in cui i modelli possono leggere e scrivere file.
+    pub fn granted_folders(&self) -> Result<Vec<String>> {
+        Ok(match self.store().setting(SETTING_GRANTED_FOLDERS)? {
+            Some(json) => serde_json::from_str(&json)?,
+            None => Vec::new(),
+        })
+    }
+
+    pub fn set_granted_folders(&self, folders: &[String]) -> Result<()> {
+        self.store()
+            .set_setting(SETTING_GRANTED_FOLDERS, &serde_json::to_string(folders)?)
+    }
+
+    /// Strumenti e permessi con cui nasce una nuova conversazione.
+    pub fn tool_defaults(&self) -> Result<ToolSettings> {
+        Ok(match self.store().setting(SETTING_TOOL_DEFAULTS)? {
+            Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+            None => ToolSettings::default(),
+        })
+    }
+
+    pub fn set_tool_defaults(&self, settings: &ToolSettings) -> Result<()> {
+        self.store()
+            .set_setting(SETTING_TOOL_DEFAULTS, &serde_json::to_string(settings)?)
+    }
+
+    /// Strumenti e permessi di una conversazione; quelli predefiniti finché
+    /// l'utente non li cambia.
+    pub fn conversation_tools(&self, conversation_id: i64) -> Result<ToolSettings> {
+        let saved = self.store().conversation_tools(conversation_id)?;
+        match saved.and_then(|json| serde_json::from_str(&json).ok()) {
+            Some(settings) => Ok(settings),
+            None => self.tool_defaults(),
+        }
+    }
+
+    pub fn set_conversation_tools(
+        &self,
+        conversation_id: i64,
+        settings: &ToolSettings,
+    ) -> Result<()> {
+        self.store()
+            .set_conversation_tools(conversation_id, &serde_json::to_string(settings)?)
+    }
+
+    /// Risposta dell'utente a una richiesta di conferma ([`ChatEvent::ToolRequest`]).
+    pub fn answer_tool_request(&self, id: &str, approval: Approval) {
+        let waiting = self
+            .approvals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(sender) = waiting {
+            // Se nessuno aspetta più (risposta interrotta) non c'è nulla da fare.
+            let _ = sender.send(approval);
+        }
+    }
+
+    /// Esegue una chiamata a uno strumento, chiedendo prima conferma
+    /// all'utente se il livello di permesso lo richiede.
+    /// `None` se l'utente ha interrotto la risposta nel frattempo.
+    async fn run_call(
+        &self,
+        conversation_id: i64,
+        call: &ToolCall,
+        settings: &mut ToolSettings,
+        folders: &[PathBuf],
+        cancel: &Notify,
+        on_event: &mut impl FnMut(ChatEvent),
+    ) -> Option<ToolOutput> {
+        // Una chiamata che fallirebbe comunque non merita di disturbare l'utente.
+        if let Some(refused) = tools::precheck(call, settings, folders) {
+            return Some(refused);
+        }
+        let risk = tools::risk_of(&call.name)?;
+
+        if tools::decide(settings.permission, risk) == Decision::Ask {
+            let (sender, receiver) = oneshot::channel();
+            self.approvals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(call.id.clone(), sender);
+            on_event(ChatEvent::ToolRequest {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                summary: tools::summary(call),
+                arguments: call.arguments.clone(),
+            });
+            let answer = tokio::select! {
+                answer = receiver => answer.unwrap_or(Approval::Deny),
+                _ = cancel.notified() => return None,
+            };
+            match answer {
+                Approval::Deny => {
+                    return Some(ToolOutput::error(
+                        "L'utente ha negato il permesso per questa azione. Non riprovare: \
+                         chiedigli come vuole procedere.",
+                    ));
+                }
+                Approval::Once => {}
+                Approval::Always => {
+                    // Vale per il resto della conversazione, anche dopo il riavvio.
+                    settings.permission = match risk {
+                        Risk::Execute => PermissionLevel::All,
+                        _ => settings.permission.max_with(PermissionLevel::Edits),
+                    };
+                    let _ = self.set_conversation_tools(conversation_id, settings);
+                }
+            }
+        }
+
+        let ctx = ToolContext {
+            folders,
+            web_http: &self.web_http,
+        };
+        tokio::select! {
+            output = tools::run(call, settings, &ctx) => Some(output),
+            _ = cancel.notified() => None,
+        }
+    }
+
+    // ── Invio dei messaggi ──────────────────────────────────────────────
+
+    /// Salva il messaggio dell'utente, lo invia al modello insieme alla
+    /// cronologia e salva la risposta. Se il modello chiede degli strumenti li
+    /// esegue (con conferma, dove serve) e gli rimanda i risultati, finché non
+    /// arriva la risposta finale. `on_event` segue tutto mentre accade.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         &self,
         conversation_id: i64,
         text: &str,
+        attachment_paths: &[String],
         sampling: &SamplingParams,
         system_prompt: &str,
         model: &ModelRef,
-        on_event: impl FnMut(ChatEvent),
+        mut on_event: impl FnMut(ChatEvent),
     ) -> Result<SendOutcome> {
         // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
-        enum Target {
-            Local(LoadedModel),
-            Cloud(Provider, String),
-        }
         let target = match model {
             ModelRef::Local => Target::Local(
                 self.runtime
@@ -591,7 +752,10 @@ impl Core {
                     .and_then(|mut runtime| runtime.loaded())
                     .ok_or_else(|| Error::msg("Nessun modello locale caricato."))?,
             ),
-            ModelRef::Cloud { provider_id, .. } => {
+            ModelRef::Cloud {
+                provider_id,
+                model: id,
+            } => {
                 let provider = self.provider(provider_id)?;
                 let key = secrets::api_key(provider_id)?.ok_or_else(|| {
                     Error::msg(format!(
@@ -599,102 +763,228 @@ impl Core {
                         provider.name
                     ))
                 })?;
-                Target::Cloud(provider, key)
+                Target::Cloud(provider, key, id.clone())
             }
         };
 
-        let history = {
+        let attachments = attachment_paths
+            .iter()
+            .map(|path| attachments::load(Path::new(path)))
+            .collect::<Result<Vec<Attachment>>>()?;
+        let reads_images = matches!(target, Target::Cloud(..));
+        if !reads_images && attachments.iter().any(|a| a.kind == AttachmentKind::Image) {
+            return Err(Error::msg(
+                "Il modello locale caricato non legge le immagini: scegli un modello cloud \
+                 che le supporti, oppure togli l'immagine.",
+            ));
+        }
+
+        let mut settings = self.conversation_tools(conversation_id)?;
+        let folders: Vec<PathBuf> = self
+            .granted_folders()?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let defs = tools::available(&settings, &folders);
+        let system = [
+            system_prompt.trim(),
+            &tools::system_preamble(&defs, &folders),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+        let chat = {
             let store = self.store();
             let is_first = store.messages(conversation_id)?.is_empty();
-            store.add_message(conversation_id, "user", text, None)?;
+            store.add_message_with(conversation_id, "user", text, None, None, &attachments)?;
             if is_first {
                 store.rename_conversation(conversation_id, &title_from(text))?;
             }
-            store.messages(conversation_id)?
+            chat_history(store.messages(conversation_id)?, reads_images)
         };
-
-        let messages: Vec<ChatMessage> = history
-            .into_iter()
-            .map(|m| ChatMessage {
-                role: m.role,
-                content: m.content,
-            })
-            .collect();
 
         let cancel = Arc::new(Notify::new());
         *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
 
-        let (result, model_name) = match &target {
-            Target::Local(loaded) => {
-                let mut all = Vec::with_capacity(messages.len() + 1);
-                if !system_prompt.trim().is_empty() {
-                    all.push(ChatMessage {
-                        role: "system".to_string(),
-                        content: system_prompt.to_string(),
-                    });
-                }
-                all.extend(messages);
-                let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
-                let body = chat::request_body(&all, sampling, None, chat::Flavor::Llama);
-                let result =
-                    chat::stream_chat(&self.http, &url, None, &body, cancel, on_event).await;
-                (result, loaded.model_name.clone())
-            }
-            Target::Cloud(provider, key) => {
-                let ModelRef::Cloud { model: id, .. } = model else {
-                    unreachable!("il bersaglio cloud nasce solo da un riferimento cloud");
-                };
-                let result = providers::stream(
-                    &self.cloud_http,
-                    provider,
-                    key,
-                    id,
-                    &messages,
-                    system_prompt,
-                    sampling,
-                    cancel,
-                    on_event,
-                )
-                .await;
-                (result, id.clone())
-            }
-        };
+        let result = self
+            .run_rounds(
+                conversation_id,
+                &target,
+                chat,
+                &defs,
+                &mut settings,
+                &folders,
+                &system,
+                sampling,
+                cancel,
+                &mut on_event,
+            )
+            .await;
 
         *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let outcome = result?;
+        self.approvals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        result
+    }
 
-        // Il costo si stima solo per i modelli cloud di cui si conosce il prezzo.
-        let stats = &outcome.stats;
-        let cost_usd = match (&target, model) {
-            (Target::Cloud(provider, _), ModelRef::Cloud { model: id, .. }) => provider
-                .model(id)
-                .and_then(|m| m.cost(stats.prompt_tokens, stats.completion_tokens)),
-            _ => None,
-        };
+    /// Il ciclo modello → strumenti → modello di una risposta.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_rounds(
+        &self,
+        conversation_id: i64,
+        target: &Target,
+        mut chat: Vec<ChatMessage>,
+        defs: &[ToolDef],
+        settings: &mut ToolSettings,
+        folders: &[PathBuf],
+        system: &str,
+        sampling: &SamplingParams,
+        cancel: Arc<Notify>,
+        on_event: &mut impl FnMut(ChatEvent),
+    ) -> Result<SendOutcome> {
+        let mut last_reply: Option<Message> = None;
+        let mut stats = GenerationStats::default();
+        let mut notice = None;
+        let mut cancelled = false;
 
-        let store = self.store();
-        let assistant_message = if outcome.text.is_empty() {
-            None
-        } else {
-            let message = store.add_message(
-                conversation_id,
-                "assistant",
-                &outcome.text,
-                Some(&model_name),
-            )?;
-            Some(store.set_message_usage(
-                message.id,
-                stats.prompt_tokens,
-                stats.completion_tokens,
-                cost_usd,
-            )?)
-        };
+        for round in 1..=MAX_TOOL_ROUNDS {
+            let (result, model_name) = match target {
+                Target::Local(loaded) => {
+                    let mut all = Vec::with_capacity(chat.len() + 1);
+                    if !system.is_empty() {
+                        all.push(ChatMessage::new("system", system));
+                    }
+                    all.extend(chat.iter().cloned());
+                    let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
+                    let body = chat::request_body(&all, defs, sampling, None, chat::Flavor::Llama);
+                    let result = chat::stream_chat(
+                        &self.http,
+                        &url,
+                        None,
+                        &body,
+                        cancel.clone(),
+                        &mut *on_event,
+                    )
+                    .await;
+                    (result, loaded.model_name.clone())
+                }
+                Target::Cloud(provider, key, id) => {
+                    let result = providers::stream(
+                        &self.cloud_http,
+                        provider,
+                        key,
+                        id,
+                        &chat,
+                        defs,
+                        system,
+                        sampling,
+                        cancel.clone(),
+                        &mut *on_event,
+                    )
+                    .await;
+                    (result, id.clone())
+                }
+            };
+            let mut outcome = result?;
+            stats = outcome.stats.clone();
+            cancelled = outcome.cancelled;
+            // Una risposta troncata o rifiutata può contenere chiamate a metà:
+            // i suoi strumenti non si eseguono.
+            if outcome.notice.is_some() {
+                notice = outcome.notice.take();
+                outcome.tool_calls.clear();
+            }
+            let calls = std::mem::take(&mut outcome.tool_calls);
+
+            if !outcome.text.is_empty() || !calls.is_empty() {
+                // Il costo si stima solo per i modelli cloud di cui si conosce il prezzo.
+                let cost_usd = match target {
+                    Target::Cloud(provider, _, id) => provider
+                        .model(id)
+                        .and_then(|m| m.cost(stats.prompt_tokens, stats.completion_tokens)),
+                    Target::Local(_) => None,
+                };
+                let tool = (!calls.is_empty()).then(|| ToolData {
+                    calls: calls.clone(),
+                    ..Default::default()
+                });
+                let store = self.store();
+                let message = store.add_message_with(
+                    conversation_id,
+                    "assistant",
+                    &outcome.text,
+                    Some(&model_name),
+                    tool.as_ref(),
+                    &[],
+                )?;
+                last_reply = Some(store.set_message_usage(
+                    message.id,
+                    stats.prompt_tokens,
+                    stats.completion_tokens,
+                    cost_usd,
+                )?);
+            }
+            if calls.is_empty() || cancelled {
+                break;
+            }
+            if round == MAX_TOOL_ROUNDS {
+                notice = Some(NOTICE_TOO_MANY_TOOLS.to_string());
+                break;
+            }
+
+            on_event(ChatEvent::Saved);
+            chat.push(ChatMessage {
+                tool_calls: calls.clone(),
+                native: outcome.native.take(),
+                ..ChatMessage::new("assistant", outcome.text)
+            });
+
+            for call in &calls {
+                // Dopo un'interruzione le chiamate rimaste ricevono comunque
+                // un risultato: la cronologia deve restare coerente.
+                let output = if cancelled {
+                    None
+                } else {
+                    self.run_call(conversation_id, call, settings, folders, &cancel, on_event)
+                        .await
+                };
+                cancelled |= output.is_none();
+                let output = output.unwrap_or_else(|| ToolOutput::error("Interrotto dall'utente."));
+                self.store().add_message_with(
+                    conversation_id,
+                    "tool",
+                    &output.content,
+                    None,
+                    Some(&ToolData {
+                        call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        is_error: output.is_error,
+                        ..Default::default()
+                    }),
+                    &[],
+                )?;
+                chat.push(ChatMessage {
+                    tool_call_id: Some(call.id.clone()),
+                    is_error: output.is_error,
+                    ..ChatMessage::new("tool", output.content)
+                });
+                on_event(ChatEvent::Saved);
+            }
+            if cancelled {
+                break;
+            }
+        }
+
         Ok(SendOutcome {
-            conversation: store.conversation(conversation_id)?,
-            assistant_message,
-            stats: outcome.stats,
-            cancelled: outcome.cancelled,
-            notice: outcome.notice,
+            conversation: self.store().conversation(conversation_id)?,
+            assistant_message: last_reply,
+            stats,
+            cancelled,
+            notice,
         })
     }
 
@@ -805,6 +1095,81 @@ impl Core {
     }
 }
 
+/// La cronologia salvata, nella forma da inviare a un modello.
+///
+/// Ogni chiamata a uno strumento deve avere il suo risultato, altrimenti i
+/// servizi rifiutano la conversazione: a quelle rimaste senza (app chiusa a
+/// metà) se ne aggiunge uno di ripiego.
+fn chat_history(history: Vec<Message>, with_images: bool) -> Vec<ChatMessage> {
+    fn close(open: &mut Vec<ToolCall>, out: &mut Vec<ChatMessage>) {
+        for call in open.drain(..) {
+            out.push(ChatMessage {
+                tool_call_id: Some(call.id),
+                is_error: true,
+                ..ChatMessage::new("tool", "Interrotto prima del risultato.")
+            });
+        }
+    }
+
+    let mut out = Vec::with_capacity(history.len());
+    let mut open: Vec<ToolCall> = Vec::new();
+    for m in history {
+        if m.role == "tool" {
+            // Un risultato senza la sua chiamata non si può inviare.
+            let position = m
+                .tool_call_id
+                .as_ref()
+                .and_then(|id| open.iter().position(|call| call.id == *id));
+            if let Some(position) = position {
+                open.remove(position);
+                out.push(ChatMessage {
+                    tool_call_id: m.tool_call_id,
+                    is_error: m.is_error,
+                    ..ChatMessage::new("tool", m.content)
+                });
+            }
+            continue;
+        }
+        close(&mut open, &mut out);
+
+        if m.role == "assistant" {
+            if m.content.is_empty() && m.tool_calls.is_empty() {
+                continue;
+            }
+            open = m.tool_calls.clone();
+            out.push(ChatMessage {
+                tool_calls: m.tool_calls,
+                ..ChatMessage::new("assistant", m.content)
+            });
+        } else {
+            let mut content = attachments::with_text_attachments(&m.content, &m.attachment_data);
+            let mut images = Vec::new();
+            for a in m.attachment_data {
+                if a.kind != AttachmentKind::Image {
+                    continue;
+                }
+                if with_images {
+                    images.push(chat::Image {
+                        media_type: a.media_type.unwrap_or_else(|| "image/png".to_string()),
+                        data: a.data,
+                    });
+                } else {
+                    content.push_str(&format!(
+                        "\n[Immagine allegata che questo modello non può vedere: {}]",
+                        a.name
+                    ));
+                }
+            }
+            out.push(ChatMessage {
+                images,
+                ..ChatMessage::new(&m.role, content)
+            });
+        }
+    }
+    close(&mut open, &mut out);
+    out
+}
+
 /// Byte in gigabyte con una cifra decimale e la virgola, come si scrive in italiano.
 fn gib(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / (1024.0 * 1024.0 * 1024.0)).replace('.', ",")
@@ -857,6 +1222,63 @@ mod tests {
 
         drop(core);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn la_cronologia_chiude_le_chiamate_rimaste_aperte() {
+        let store = Store::open_in_memory().unwrap();
+        let conv = store.create_conversation("prova").unwrap();
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.txt"}),
+        };
+        let image = Attachment {
+            name: "foto.png".into(),
+            kind: AttachmentKind::Image,
+            data: "AQID".into(),
+            media_type: Some("image/png".into()),
+        };
+        store
+            .add_message_with(conv.id, "user", "guarda", None, None, &[image])
+            .unwrap();
+        // Due chiamate, ma l'app si è chiusa dopo il primo risultato.
+        let calls = ToolData {
+            calls: vec![call("a"), call("b")],
+            ..Default::default()
+        };
+        store
+            .add_message_with(conv.id, "assistant", "", Some("m"), Some(&calls), &[])
+            .unwrap();
+        let result = ToolData {
+            call_id: Some("a".into()),
+            ..Default::default()
+        };
+        store
+            .add_message_with(conv.id, "tool", "contenuto", None, Some(&result), &[])
+            .unwrap();
+        // Un risultato orfano non va inviato.
+        let orphan = ToolData {
+            call_id: Some("z".into()),
+            ..Default::default()
+        };
+        store
+            .add_message_with(conv.id, "tool", "???", None, Some(&orphan), &[])
+            .unwrap();
+        store.add_message(conv.id, "user", "allora?", None).unwrap();
+
+        let history = store.messages(conv.id).unwrap();
+        let chat = chat_history(history.clone(), true);
+        let roles: Vec<&str> = chat.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "tool", "user"]);
+        assert_eq!(chat[0].images.len(), 1);
+        assert_eq!(chat[3].tool_call_id.as_deref(), Some("b"));
+        assert!(chat[3].is_error);
+
+        // Un modello che non vede le immagini riceve almeno un avviso.
+        let blind = chat_history(history, false);
+        assert!(blind[0].images.is_empty());
+        assert!(blind[0].content.contains("foto.png"));
     }
 
     #[test]
