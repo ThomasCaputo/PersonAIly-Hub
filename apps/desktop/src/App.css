@@ -1165,3 +1165,12 @@ input[type="range"] {
   display: flex;
   gap: 10px;
 }
+
+/* Durata del registro delle azioni */
+.retention {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}

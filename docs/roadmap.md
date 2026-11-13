@@ -145,13 +145,15 @@ Rimandato (non blocca la Tappa 6):
 - Guida per l'utente; nome definitivo e licenza.
 - Prima versione pubblica per Windows.
 
-Piccole cose da aggiungere (si possono fare anche prima):
+Piccole cose da aggiungere (fatte):
 
-- [ ] Pulizia del registro delle azioni per data: oggi cresce senza limite (ADR 0008).
-- [ ] Variabili d'ambiente dei server MCP nel Gestore credenziali invece che
-      nell'archivio SQLite: spesso contengono chiavi API (ADR 0009).
-- [ ] Interfaccia divisa in parti caricate quando servono: oggi il file principale
-      supera i 500 kB.
+- [x] Pulizia del registro delle azioni per data: 90 giorni di base, scelta nella scheda
+      "Registro azioni" (anche "per sempre"), più il pulsante "Svuota registro" (ADR 0008).
+- [x] Variabili d'ambiente dei server MCP nel Gestore credenziali invece che
+      nell'archivio SQLite; quelle già salvate si spostano da sole (ADR 0009).
+- [x] Interfaccia divisa in parti caricate quando servono: il file principale passa da
+      899 kB a 252 kB. Agenti, Modelli e Impostazioni si caricano all'apertura; il
+      Markdown (KaTeX ed evidenziazione, circa 600 kB) subito dopo la comparsa della finestra.
 
 ## Dopo
 

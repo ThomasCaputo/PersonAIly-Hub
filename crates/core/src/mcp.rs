@@ -74,6 +74,63 @@ impl McpServerConfig {
     }
 }
 
+/// Dove stanno i valori delle variabili d'ambiente dei server: il
+/// portachiavi del sistema ([`crate::secrets::KeyringVault`]); nei test, la memoria.
+pub trait EnvVault {
+    fn get(&self, server_id: &str, name: &str) -> Result<Option<String>>;
+    fn set(&self, server_id: &str, name: &str, value: &str) -> Result<()>;
+    fn delete(&self, server_id: &str, name: &str) -> Result<()>;
+}
+
+/// Toglie i valori delle variabili da `config` e li mette nella cassaforte;
+/// in archivio restano solo i nomi. `previous` è la configurazione salvata
+/// prima: le variabili che non ci sono più vengono tolte anche dalla cassaforte.
+pub fn seal_env(
+    vault: &dyn EnvVault,
+    config: &McpServerConfig,
+    previous: Option<&McpServerConfig>,
+) -> Result<McpServerConfig> {
+    let mut sealed = config.clone();
+    for (name, value) in &mut sealed.env {
+        let name = name.trim();
+        if value.is_empty() {
+            vault.delete(&config.id, name)?;
+        } else {
+            vault.set(&config.id, name, value)?;
+        }
+        value.clear();
+    }
+    if let Some(previous) = previous {
+        for (old, _) in &previous.env {
+            let old = old.trim();
+            if !config.env.iter().any(|(name, _)| name.trim() == old) {
+                vault.delete(&config.id, old)?;
+            }
+        }
+    }
+    Ok(sealed)
+}
+
+/// Rimette nella configurazione i valori presi dalla cassaforte. Un valore
+/// che non si trova resta vuoto: il server parte lo stesso e, se gli serviva,
+/// lo dice nei suoi errori.
+pub fn open_env(vault: &dyn EnvVault, config: &mut McpServerConfig) -> Result<()> {
+    for (name, value) in &mut config.env {
+        if value.is_empty() {
+            *value = vault.get(&config.id, name.trim())?.unwrap_or_default();
+        }
+    }
+    Ok(())
+}
+
+/// Toglie dalla cassaforte tutte le variabili di un server eliminato.
+pub fn forget_env(vault: &dyn EnvVault, config: &McpServerConfig) -> Result<()> {
+    for (name, _) in &config.env {
+        vault.delete(&config.id, name.trim())?;
+    }
+    Ok(())
+}
+
 /// Uno strumento dichiarato da un server, per l'interfaccia.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -598,6 +655,71 @@ pub(crate) mod tests {
         assert!(failed.is_error);
         let structured = tool_output(&json!({"content": [], "structuredContent": {"n": 1}}));
         assert_eq!(structured.content, "{\"n\":1}");
+    }
+
+    /// Cassaforte in memoria, al posto del portachiavi.
+    #[derive(Default)]
+    pub struct MemoryVault(pub Mutex<std::collections::HashMap<String, String>>);
+
+    impl EnvVault for MemoryVault {
+        fn get(&self, server_id: &str, name: &str) -> Result<Option<String>> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .get(&format!("{server_id}:{name}"))
+                .cloned())
+        }
+        fn set(&self, server_id: &str, name: &str, value: &str) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(format!("{server_id}:{name}"), value.to_string());
+            Ok(())
+        }
+        fn delete(&self, server_id: &str, name: &str) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .remove(&format!("{server_id}:{name}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn le_variabili_stanno_nella_cassaforte_e_non_in_archivio() {
+        let vault = MemoryVault::default();
+        let config = McpServerConfig {
+            id: "srv".into(),
+            name: "Prova".into(),
+            command: "npx".into(),
+            env: vec![
+                ("TOKEN".into(), "segreto".into()),
+                ("VUOTA".into(), "".into()),
+            ],
+            ..Default::default()
+        };
+        let sealed = seal_env(&vault, &config, None).unwrap();
+        assert_eq!(
+            sealed.env,
+            [("TOKEN".into(), "".into()), ("VUOTA".into(), "".into())]
+        );
+        assert!(!serde_json::to_string(&sealed).unwrap().contains("segreto"));
+        assert_eq!(vault.0.lock().unwrap().len(), 1);
+
+        let mut opened = sealed.clone();
+        open_env(&vault, &mut opened).unwrap();
+        assert_eq!(opened.env, config.env);
+
+        // Tolta una variabile, sparisce anche dalla cassaforte.
+        let mut changed = config.clone();
+        changed.env = vec![("ALTRA".into(), "x".into())];
+        seal_env(&vault, &changed, Some(&sealed)).unwrap();
+        assert_eq!(vault.get("srv", "TOKEN").unwrap(), None);
+        assert_eq!(vault.get("srv", "ALTRA").unwrap().as_deref(), Some("x"));
+
+        forget_env(&vault, &changed).unwrap();
+        assert!(vault.0.lock().unwrap().is_empty());
     }
 
     #[test]

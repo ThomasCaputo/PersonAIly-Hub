@@ -302,6 +302,22 @@ fn list_actions(
     core.actions(limit, session_id).map_err(text)
 }
 
+#[tauri::command]
+fn action_log_days(core: CoreState<'_>) -> CmdResult<u32> {
+    core.action_log_days().map_err(text)
+}
+
+/// Restituisce quante voci sono state eliminate perché troppo vecchie.
+#[tauri::command]
+fn set_action_log_days(core: CoreState<'_>, days: u32) -> CmdResult<usize> {
+    core.set_action_log_days(days).map_err(text)
+}
+
+#[tauri::command]
+fn clear_actions(core: CoreState<'_>) -> CmdResult<usize> {
+    core.clear_actions().map_err(text)
+}
+
 // ── Server MCP ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -611,6 +627,9 @@ pub fn run() {
             set_conversation_tools,
             answer_tool_request,
             list_actions,
+            action_log_days,
+            set_action_log_days,
+            clear_actions,
             list_mcp_servers,
             save_mcp_server,
             delete_mcp_server,

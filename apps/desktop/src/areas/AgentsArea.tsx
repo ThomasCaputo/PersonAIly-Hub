@@ -828,16 +828,88 @@ const APPROVAL_LABELS: Record<ActionRecord["approval"], string> = {
   interrupted: "interrotta",
 };
 
+/** Durate proposte per il registro, in giorni (0 = per sempre). */
+const RETENTION_CHOICES = [7, 30, 90, 365, 0];
+
+function retentionLabel(days: number): string {
+  if (days === 0) return "per sempre";
+  if (days === 365) return "per un anno";
+  return `per ${days} giorni`;
+}
+
+/** Per quanto tempo si tengono le voci del registro, e pulsante per svuotarlo. */
+function ActionLogRetention({
+  empty,
+  onChanged,
+  onError,
+}: {
+  empty: boolean;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [days, setDays] = useState<number | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.actionLogDays().then(setDays).catch((e) => onError(String(e)));
+  }, [onError]);
+
+  const choose = async (next: number) => {
+    setDays(next);
+    try {
+      const removed = await api.setActionLogDays(next);
+      setMessage(removed > 0 ? `Eliminate ${removed} voci più vecchie.` : null);
+      onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const clear = async () => {
+    if (!window.confirm("Eliminare tutte le voci del registro? Non si possono recuperare.")) return;
+    try {
+      const removed = await api.clearActions();
+      setMessage(`Eliminate ${removed} voci.`);
+      onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  // Un valore scritto a mano nell'archivio resta tra le scelte.
+  const choices = days !== null && !RETENTION_CHOICES.includes(days) ? [...RETENTION_CHOICES, days] : RETENTION_CHOICES;
+
+  return (
+    <div className="retention">
+      <label htmlFor="log-days">Conserva le voci</label>
+      <select id="log-days" value={days ?? ""} disabled={days === null} onChange={(e) => choose(Number(e.target.value))}>
+        {choices.map((d) => (
+          <option key={d} value={d}>
+            {retentionLabel(d)}
+          </option>
+        ))}
+      </select>
+      <button className="btn-link" disabled={empty} onClick={clear}>
+        Svuota registro
+      </button>
+      {message && <span className="dim">{message}</span>}
+    </div>
+  );
+}
+
 function ActionsTab() {
   const [actions, setActions] = useState<ActionRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const load = () => api.listActions(300).then(setActions).catch((e) => setError(String(e)));
-    load();
-    const timer = window.setInterval(load, LIST_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+  const reload = useCallback(() => {
+    api.listActions(300).then(setActions).catch((e) => setError(String(e)));
   }, []);
+
+  useEffect(() => {
+    reload();
+    const timer = window.setInterval(reload, LIST_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [reload]);
 
   return (
     <div className="page">
@@ -846,6 +918,7 @@ function ActionsTab() {
         Ogni strumento usato dai modelli, in chat e dagli agenti, dalla più recente. Le voci restano anche se elimini la
         conversazione o la sessione.
       </p>
+      <ActionLogRetention empty={actions.length === 0} onChanged={reload} onError={setError} />
       {actions.length === 0 && <p className="dim">Ancora nessuna azione.</p>}
       {actions.length > 0 && (
         <table className="actions-table">

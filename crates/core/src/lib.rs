@@ -51,6 +51,12 @@ const SETTING_PROVIDERS: &str = "providers";
 const SETTING_GRANTED_FOLDERS: &str = "granted_folders";
 const SETTING_TOOL_DEFAULTS: &str = "tool_defaults";
 const SETTING_MCP_SERVERS: &str = "mcp_servers";
+const SETTING_ACTION_LOG_DAYS: &str = "action_log_days";
+/// Per quanti giorni si tengono le voci del registro delle azioni, se l'utente
+/// non sceglie altrimenti. `0` vuol dire "per sempre".
+pub const DEFAULT_ACTION_LOG_DAYS: u32 = 90;
+/// Ogni quanto, al massimo, si ripulisce il registro mentre il nucleo è acceso.
+const ACTION_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 /// Quante volte di seguito un modello può chiedere strumenti in una risposta.
 const MAX_TOOL_ROUNDS: usize = 25;
 const NOTICE_TOO_MANY_TOOLS: &str = "Il modello ha usato strumenti troppe volte di seguito: mi sono fermato. Scrivi per farlo continuare.";
@@ -173,6 +179,10 @@ pub struct Core {
     /// `<ambito>:<identificatore della chiamata>` (`c12:…` in chat, `s3:…` in
     /// una sessione): due cicli in parallelo non si confondono.
     approvals: Mutex<HashMap<String, oneshot::Sender<Approval>>>,
+    /// Ultima pulizia del registro delle azioni.
+    last_action_prune: Mutex<std::time::Instant>,
+    /// Dove stanno i valori delle variabili d'ambiente dei server MCP.
+    env_vault: Arc<dyn mcp::EnvVault + Send + Sync>,
 }
 
 /// Dove gira un ciclo modello → strumenti: una risposta in chat o una sessione.
@@ -287,6 +297,9 @@ impl Core {
         let store = Store::open(&data_dir.join("data.sqlite"))?;
         // Nessuna sessione lavora più dopo un riavvio.
         store.mark_sessions_interrupted()?;
+        // Il registro non deve crescere senza limite: si ripulisce a ogni avvio
+        // (e poi di tanto in tanto, vedi `log_action`).
+        let _ = store.prune_actions_by_setting();
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             store: Mutex::new(store),
@@ -303,6 +316,8 @@ impl Core {
             download_cancel: Mutex::new(None),
             web_http: tools::web::client()?,
             approvals: Mutex::new(HashMap::new()),
+            last_action_prune: Mutex::new(std::time::Instant::now()),
+            env_vault: Arc::new(secrets::KeyringVault),
         })
     }
 
@@ -1273,6 +1288,7 @@ impl Core {
             is_error,
             result: text,
         });
+        self.prune_actions_if_due();
     }
 
     /// Le azioni compiute dagli strumenti, dalla più recente; con `session_id`
@@ -1281,16 +1297,73 @@ impl Core {
         self.store().actions(limit.clamp(1, 1000), session_id)
     }
 
+    /// Per quanti giorni si tengono le voci del registro; `0` = per sempre.
+    pub fn action_log_days(&self) -> Result<u32> {
+        self.store().action_log_days()
+    }
+
+    /// Cambia la durata del registro e toglie subito le voci troppo vecchie.
+    /// Restituisce quante voci sono state eliminate.
+    pub fn set_action_log_days(&self, days: u32) -> Result<usize> {
+        let store = self.store();
+        store.set_setting(SETTING_ACTION_LOG_DAYS, &days.to_string())?;
+        store.prune_actions_by_setting()
+    }
+
+    /// Svuota il registro delle azioni; restituisce quante voci c'erano.
+    pub fn clear_actions(&self) -> Result<usize> {
+        self.store().clear_actions()
+    }
+
+    /// Ripulisce il registro se dall'ultima volta è passato abbastanza tempo:
+    /// l'app può restare aperta per settimane.
+    fn prune_actions_if_due(&self) {
+        let mut last = self
+            .last_action_prune
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if last.elapsed() >= ACTION_PRUNE_INTERVAL {
+            *last = std::time::Instant::now();
+            let _ = self.store().prune_actions_by_setting();
+        }
+    }
+
     // ── Server MCP ──────────────────────────────────────────────────────
 
-    /// I server MCP configurati, in ordine alfabetico.
+    /// I server MCP configurati, in ordine alfabetico, con i valori delle
+    /// variabili d'ambiente presi dal portachiavi.
     pub fn mcp_servers(&self) -> Result<Vec<mcp::McpServerConfig>> {
+        let mut servers = self.stored_mcp_servers()?;
+        for server in &mut servers {
+            mcp::open_env(&*self.env_vault, server)?;
+        }
+        servers.sort_by_key(|s| s.name.to_lowercase());
+        Ok(servers)
+    }
+
+    /// I server come stanno in archivio: le variabili d'ambiente hanno solo il nome.
+    ///
+    /// Fino alla Tappa 5 i valori stavano nell'archivio: la prima volta li
+    /// sposta nel portachiavi. Se il portachiavi non risponde li lascia dove
+    /// sono, per non perderli, e riprova alla volta successiva.
+    fn stored_mcp_servers(&self) -> Result<Vec<mcp::McpServerConfig>> {
         let mut servers: Vec<mcp::McpServerConfig> =
             match self.store().setting(SETTING_MCP_SERVERS)? {
                 Some(json) => serde_json::from_str(&json)?,
                 None => Vec::new(),
             };
-        servers.sort_by_key(|s| s.name.to_lowercase());
+        let mut moved = false;
+        for server in &mut servers {
+            if server.env.iter().any(|(_, value)| !value.is_empty())
+                && let Ok(sealed) = mcp::seal_env(&*self.env_vault, server, None)
+            {
+                *server = sealed;
+                moved = true;
+            }
+        }
+        if moved {
+            self.store_mcp_servers(&servers)?;
+        }
         Ok(servers)
     }
 
@@ -1299,7 +1372,8 @@ impl Core {
             .set_setting(SETTING_MCP_SERVERS, &serde_json::to_string(servers)?)
     }
 
-    /// Crea (con `id` vuoto) o aggiorna un server MCP.
+    /// Crea (con `id` vuoto) o aggiorna un server MCP. I valori delle
+    /// variabili d'ambiente vanno nel portachiavi, non nell'archivio.
     pub fn save_mcp_server(
         &self,
         mut config: mcp::McpServerConfig,
@@ -1307,26 +1381,35 @@ impl Core {
         config.name = config.name.trim().to_string();
         config.command = config.command.trim().to_string();
         config.args.retain(|a| !a.trim().is_empty());
+        for (name, _) in &mut config.env {
+            *name = name.trim().to_string();
+        }
         config.validate()?;
-        let mut all = self.mcp_servers()?;
+        let mut all = self.stored_mcp_servers()?;
         match all
             .iter_mut()
             .find(|s| s.id == config.id && !config.id.is_empty())
         {
-            Some(existing) => *existing = config.clone(),
+            Some(existing) => {
+                let sealed = mcp::seal_env(&*self.env_vault, &config, Some(existing))?;
+                *existing = sealed;
+            }
             None => {
                 config.id = providers::new_id(&config.name);
-                all.push(config.clone());
+                all.push(mcp::seal_env(&*self.env_vault, &config, None)?);
             }
         }
         self.store_mcp_servers(&all)?;
         Ok(config)
     }
 
-    /// Elimina un server MCP. Gli agenti che lo usavano non lo trovano più
-    /// e le loro sessioni lo segnalano.
+    /// Elimina un server MCP, con le sue variabili nel portachiavi. Gli agenti
+    /// che lo usavano non lo trovano più e le loro sessioni lo segnalano.
     pub fn delete_mcp_server(&self, id: &str) -> Result<()> {
-        let mut all = self.mcp_servers()?;
+        let mut all = self.stored_mcp_servers()?;
+        if let Some(server) = all.iter().find(|s| s.id == id) {
+            mcp::forget_env(&*self.env_vault, server)?;
+        }
         all.retain(|s| s.id != id);
         self.store_mcp_servers(&all)
     }
@@ -1894,6 +1977,47 @@ mod tests {
         let title = title_from(&long);
         assert!(title.ends_with('…'));
         assert!(title.chars().count() <= TITLE_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn le_variabili_mcp_lasciano_l_archivio() {
+        let dir = std::env::temp_dir().join(format!("core-mcp-env-{}", std::process::id()));
+        let mut core = Core::new(&dir).unwrap();
+        let vault = Arc::new(mcp::tests::MemoryVault::default());
+        core.env_vault = vault.clone();
+
+        // Una configurazione salvata come faceva la Tappa 5, col valore in archivio.
+        let legacy = mcp::McpServerConfig {
+            id: "vecchio".into(),
+            name: "Vecchio".into(),
+            command: "npx".into(),
+            env: vec![("API_KEY".into(), "segreto".into())],
+            ..Default::default()
+        };
+        core.store_mcp_servers(std::slice::from_ref(&legacy))
+            .unwrap();
+        assert_eq!(core.mcp_servers().unwrap(), std::slice::from_ref(&legacy));
+        let stored = core.store().setting(SETTING_MCP_SERVERS).unwrap().unwrap();
+        assert!(!stored.contains("segreto"));
+
+        let mut nuovo = mcp::McpServerConfig {
+            name: "Nuovo".into(),
+            command: "npx".into(),
+            env: vec![(" TOKEN ".into(), "abc".into())],
+            ..Default::default()
+        };
+        nuovo = core.save_mcp_server(nuovo).unwrap();
+        assert_eq!(nuovo.env, [("TOKEN".into(), "abc".into())]);
+        let stored = core.store().setting(SETTING_MCP_SERVERS).unwrap().unwrap();
+        assert!(!stored.contains("abc"));
+        assert_eq!(core.mcp_servers().unwrap().len(), 2);
+
+        core.delete_mcp_server(&nuovo.id).unwrap();
+        core.delete_mcp_server("vecchio").unwrap();
+        assert!(vault.0.lock().unwrap().is_empty());
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -60,3 +60,35 @@ pub fn regenerate_api_token() -> Result<String> {
         .map_err(to_error)?;
     Ok(token)
 }
+
+/// Le variabili d'ambiente dei server MCP (spesso chiavi API), una voce del
+/// portachiavi per variabile: così nessun valore finisce nell'archivio SQLite
+/// e non si urta il limite di dimensione di una singola credenziale.
+pub struct KeyringVault;
+
+fn mcp_entry(server_id: &str, name: &str) -> Result<Entry> {
+    Entry::new(SERVICE, &format!("mcp:{server_id}:{name}")).map_err(to_error)
+}
+
+impl crate::mcp::EnvVault for KeyringVault {
+    fn get(&self, server_id: &str, name: &str) -> Result<Option<String>> {
+        match mcp_entry(server_id, name)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(to_error(e)),
+        }
+    }
+
+    fn set(&self, server_id: &str, name: &str, value: &str) -> Result<()> {
+        mcp_entry(server_id, name)?
+            .set_password(value)
+            .map_err(to_error)
+    }
+
+    fn delete(&self, server_id: &str, name: &str) -> Result<()> {
+        match mcp_entry(server_id, name)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(to_error(e)),
+        }
+    }
+}

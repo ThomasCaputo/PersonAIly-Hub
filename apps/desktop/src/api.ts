@@ -367,6 +367,11 @@ export const api = {
 
   listActions: (limit: number, sessionId: number | null = null) =>
     invoke<ActionRecord[]>("list_actions", { limit, sessionId }),
+  /** Per quanti giorni si tengono le voci del registro; 0 = per sempre. */
+  actionLogDays: () => invoke<number>("action_log_days"),
+  /** Restituisce quante voci troppo vecchie sono state eliminate. */
+  setActionLogDays: (days: number) => invoke<number>("set_action_log_days", { days }),
+  clearActions: () => invoke<number>("clear_actions"),
 
   listMcpServers: () => invoke<McpServer[]>("list_mcp_servers"),
   saveMcpServer: (server: McpServer) => invoke<McpServer>("save_mcp_server", { server }),

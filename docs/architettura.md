@@ -155,7 +155,7 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 | Preset con nome | `presets\named\*.json` (parametri di generazione e prompt di sistema, applicabili a qualsiasi modello) |
 | Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` |
 | File di blocco del nucleo | `core.lock` (porta, token, pid; esiste solo mentre il nucleo è attivo) |
-| Chiavi API e token dell'API locale | Gestore credenziali di Windows — **non** su disco |
+| Chiavi API, token dell'API locale, variabili d'ambiente dei server MCP | Gestore credenziali di Windows — **non** su disco |
 | Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati |
 
 ## API locale

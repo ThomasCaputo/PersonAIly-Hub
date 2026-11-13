@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   cloudPresetKey,
@@ -9,12 +9,15 @@ import {
   type ProviderInfo,
   type RuntimeStatus,
 } from "./api";
-import { AgentsArea } from "./areas/AgentsArea";
 import { ChatArea } from "./areas/ChatArea";
-import { ModelsArea } from "./areas/ModelsArea";
-import { SettingsArea } from "./areas/SettingsArea";
+import { preloadMarkdown } from "./components/Markdown";
 import { SpillWarning } from "./components/SpillWarning";
 import "./App.css";
+
+// La chat è la pagina d'apertura; le altre si caricano quando si aprono.
+const AgentsArea = lazy(() => import("./areas/AgentsArea").then((m) => ({ default: m.AgentsArea })));
+const ModelsArea = lazy(() => import("./areas/ModelsArea").then((m) => ({ default: m.ModelsArea })));
+const SettingsArea = lazy(() => import("./areas/SettingsArea").then((m) => ({ default: m.SettingsArea })));
 
 const AREAS = [
   { id: "chat", label: "Chat" },
@@ -64,6 +67,13 @@ export default function App() {
     const timer = window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refreshStatus, refreshProviders]);
+
+  // Il Markdown è la parte più pesante: si carica appena la finestra è pronta,
+  // invece che prima di mostrarla.
+  useEffect(() => {
+    const idle = window.setTimeout(preloadMarkdown, 300);
+    return () => window.clearTimeout(idle);
+  }, []);
 
   // A ogni cambio di pagina l'elenco dei provider viene riletto, così la
   // scelta del modello in chat è sempre aggiornata.
@@ -132,30 +142,32 @@ export default function App() {
       <main className="content">
         <SpillWarning status={status} />
         <div className="area">
-          {areaId === "chat" && (
-            <ChatArea
-              status={status}
-              providers={providers}
-              activeModel={activeModel}
-              onModelChange={chooseModel}
-              preset={preset}
-              onPresetChange={updatePreset}
-              onOpenModels={() => setAreaId("models")}
-              onOpenSettings={() => setAreaId("settings")}
-            />
-          )}
-          {areaId === "models" && (
-            <ModelsArea
-              status={status}
-              onStatusChange={refreshStatus}
-              providers={providers}
-              onProvidersChange={refreshProviders}
-            />
-          )}
-          {areaId === "agents" && (
-            <AgentsArea status={status} providers={providers} onOpenModels={() => setAreaId("models")} />
-          )}
-          {areaId === "settings" && <SettingsArea />}
+          <Suspense fallback={<p className="dim page">Caricamento…</p>}>
+            {areaId === "chat" && (
+              <ChatArea
+                status={status}
+                providers={providers}
+                activeModel={activeModel}
+                onModelChange={chooseModel}
+                preset={preset}
+                onPresetChange={updatePreset}
+                onOpenModels={() => setAreaId("models")}
+                onOpenSettings={() => setAreaId("settings")}
+              />
+            )}
+            {areaId === "models" && (
+              <ModelsArea
+                status={status}
+                onStatusChange={refreshStatus}
+                providers={providers}
+                onProvidersChange={refreshProviders}
+              />
+            )}
+            {areaId === "agents" && (
+              <AgentsArea status={status} providers={providers} onOpenModels={() => setAreaId("models")} />
+            )}
+            {areaId === "settings" && <SettingsArea />}
+          </Suspense>
         </div>
       </main>
     </div>

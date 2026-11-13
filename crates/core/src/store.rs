@@ -598,6 +598,35 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Elimina le azioni più vecchie di `days` giorni; restituisce quante.
+    pub fn prune_actions(&self, days: u32) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM actions WHERE created_at < datetime('now', ?1)",
+            [format!("-{days} days")],
+        )?)
+    }
+
+    /// Per quanti giorni si tengono le voci del registro; `0` = per sempre.
+    pub fn action_log_days(&self) -> Result<u32> {
+        Ok(self
+            .setting(crate::SETTING_ACTION_LOG_DAYS)?
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(crate::DEFAULT_ACTION_LOG_DAYS))
+    }
+
+    /// Applica la durata scelta dall'utente al registro.
+    pub fn prune_actions_by_setting(&self) -> Result<usize> {
+        match self.action_log_days()? {
+            0 => Ok(0),
+            days => self.prune_actions(days),
+        }
+    }
+
+    /// Svuota il registro delle azioni; restituisce quante voci c'erano.
+    pub fn clear_actions(&self) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM actions", [])?)
+    }
+
     // ── Impostazioni ────────────────────────────────────────────────────
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
@@ -875,6 +904,43 @@ mod tests {
         assert_eq!(actions[0].kind, "chat");
         assert!(actions[0].result.chars().count() <= ACTION_RESULT_CHARS + 1);
         assert!(store.actions(10, Some(99)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn la_pulizia_del_registro_toglie_solo_le_voci_vecchie() {
+        let store = Store::open_in_memory().unwrap();
+        let conv = store.create_conversation("prova").unwrap();
+        for _ in 0..2 {
+            store
+                .add_action(&NewAction {
+                    conversation_id: conv.id,
+                    session_id: None,
+                    source: "prova",
+                    tool: "read_file",
+                    summary: "Leggere a.txt",
+                    approval: "auto",
+                    is_error: false,
+                    result: "ok",
+                })
+                .unwrap();
+        }
+        // La prima voce risale a 40 giorni fa.
+        store
+            .conn
+            .execute(
+                "UPDATE actions SET created_at = datetime('now', '-40 days') WHERE id = 1",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(store.prune_actions(60).unwrap(), 0);
+        assert_eq!(store.prune_actions(30).unwrap(), 1);
+        let left = store.actions(10, None).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, 2);
+
+        assert_eq!(store.clear_actions().unwrap(), 1);
+        assert!(store.actions(10, None).unwrap().is_empty());
     }
 
     #[test]

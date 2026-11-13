@@ -156,7 +156,10 @@ export function McpSection() {
               value={draft.env}
               onChange={(e) => setDraft({ ...draft, env: e.target.value })}
             />
-            <p className="dim note">Vengono salvate nell'archivio dell'app, non nel Gestore credenziali.</p>
+            <p className="dim note">
+              I valori vengono salvati nel Gestore credenziali di Windows, come le chiavi API: nell'archivio dell'app
+              restano solo i nomi.
+            </p>
           </div>
           <div className="row">
             <button className="btn primary" onClick={save}>

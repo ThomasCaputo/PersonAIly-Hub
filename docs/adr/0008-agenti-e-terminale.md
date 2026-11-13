@@ -98,7 +98,9 @@ azioni" della pagina Agenti.
   server di sviluppo tra un comando e l'altro.
 - Alla chiusura dell'app le sessioni al lavoro si fermano e al riavvio risultano
   "interrotte"; si riprendono scrivendo all'agente.
-- Il registro cresce senza limite; se diventasse grande servirà una pulizia per data.
+- ~~Il registro cresce senza limite.~~ Dalla Tappa 6 le voci si tengono per 90 giorni, o
+  per quanto sceglie l'utente nella scheda "Registro azioni" (anche "per sempre"); la
+  pulizia avviene all'avvio del nucleo e poi ogni 6 ore. Il registro si può anche svuotare.
 - Su Linux e macOS il terminale usa `sh -c`, senza job: i processi figli di un comando
   interrotto potrebbero restare in vita. Da rivedere con il port (GE-2).
 - MCP (AG-7) entra come altra fonte di strumenti dentro lo stesso ciclo e con gli stessi
