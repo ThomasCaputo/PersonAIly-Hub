@@ -4,15 +4,17 @@
 use std::sync::Arc;
 
 use app_core::DownloadState;
+use app_core::agents::{Agent, AgentSession, LiveState};
 use app_core::chat::ChatEvent;
 use app_core::hub::{HubFile, HubRepo};
 use app_core::local::install::{Phase, Progress, Variant};
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
+use app_core::mcp::{McpServerConfig, McpToolInfo};
 use app_core::models::ModelInfo;
 use app_core::named_presets::NamedPreset;
 use app_core::providers::Provider;
-use app_core::store::{Conversation, Message};
+use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
     Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome,
@@ -280,6 +282,125 @@ fn answer_tool_request(core: CoreState<'_>, id: String, approval: Approval) {
     core.answer_tool_request(&id, approval);
 }
 
+#[tauri::command]
+fn list_actions(
+    core: CoreState<'_>,
+    limit: u32,
+    session_id: Option<i64>,
+) -> CmdResult<Vec<ActionRecord>> {
+    core.actions(limit, session_id).map_err(text)
+}
+
+// ── Server MCP ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_mcp_servers(core: CoreState<'_>) -> CmdResult<Vec<McpServerConfig>> {
+    core.mcp_servers().map_err(text)
+}
+
+#[tauri::command]
+fn save_mcp_server(core: CoreState<'_>, server: McpServerConfig) -> CmdResult<McpServerConfig> {
+    core.save_mcp_server(server).map_err(text)
+}
+
+#[tauri::command]
+fn delete_mcp_server(core: CoreState<'_>, id: String) -> CmdResult<()> {
+    core.delete_mcp_server(&id).map_err(text)
+}
+
+/// Avvia il server per un momento, solo per elencarne gli strumenti.
+#[tauri::command]
+async fn probe_mcp_server(
+    core: CoreState<'_>,
+    server: McpServerConfig,
+) -> CmdResult<Vec<McpToolInfo>> {
+    core.probe_mcp_server(&server).await.map_err(text)
+}
+
+// ── Agenti ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_agents(core: CoreState<'_>) -> CmdResult<Vec<Agent>> {
+    core.agents().map_err(text)
+}
+
+#[tauri::command]
+fn save_agent(core: CoreState<'_>, agent: Agent) -> CmdResult<Agent> {
+    core.save_agent(agent).map_err(text)
+}
+
+#[tauri::command]
+fn duplicate_agent(core: CoreState<'_>, id: i64) -> CmdResult<Agent> {
+    core.duplicate_agent(id).map_err(text)
+}
+
+#[tauri::command]
+fn delete_agent(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.delete_agent(id).map_err(text)
+}
+
+/// Fa lavorare una sessione in sottofondo: l'esito finisce nell'archivio e
+/// l'interfaccia lo segue con `agent_session_live` e `list_agent_sessions`.
+fn spawn_session(core: &Arc<Core>, id: i64) {
+    let core = core.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = core.run_session(id).await;
+    });
+}
+
+#[tauri::command]
+fn start_agent_session(
+    core: CoreState<'_>,
+    agent_id: i64,
+    task: String,
+) -> CmdResult<AgentSession> {
+    let session = core.create_session(agent_id, &task).map_err(text)?;
+    spawn_session(core.inner(), session.id);
+    Ok(session)
+}
+
+#[tauri::command]
+fn reply_agent_session(core: CoreState<'_>, id: i64, text: String) -> CmdResult<AgentSession> {
+    let session = core.reply_session(id, &text).map_err(self::text)?;
+    spawn_session(core.inner(), id);
+    Ok(session)
+}
+
+#[tauri::command]
+fn list_agent_sessions(core: CoreState<'_>) -> CmdResult<Vec<AgentSession>> {
+    core.sessions().map_err(text)
+}
+
+#[tauri::command]
+fn get_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<AgentSession> {
+    core.session(id).map_err(text)
+}
+
+#[tauri::command]
+fn agent_session_live(core: CoreState<'_>, id: i64) -> Option<LiveState> {
+    core.session_live(id)
+}
+
+#[tauri::command]
+fn pause_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.pause_session(id).map_err(text)
+}
+
+#[tauri::command]
+fn resume_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.resume_session(id).map_err(text)
+}
+
+#[tauri::command]
+fn stop_agent_session(core: CoreState<'_>, id: i64) {
+    core.stop_session(id);
+}
+
+#[tauri::command]
+fn delete_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.delete_session(id).map_err(text)
+}
+
 // ── Provider cloud ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -419,6 +540,24 @@ pub fn run() {
             conversation_tools,
             set_conversation_tools,
             answer_tool_request,
+            list_actions,
+            list_mcp_servers,
+            save_mcp_server,
+            delete_mcp_server,
+            probe_mcp_server,
+            list_agents,
+            save_agent,
+            duplicate_agent,
+            delete_agent,
+            start_agent_session,
+            reply_agent_session,
+            list_agent_sessions,
+            get_agent_session,
+            agent_session_live,
+            pause_agent_session,
+            resume_agent_session,
+            stop_agent_session,
+            delete_agent_session,
             list_providers,
             save_provider,
             delete_provider,
@@ -443,6 +582,8 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(core) = handle.try_state::<Arc<Core>>()
         {
+            // Gli agenti al lavoro si fermano: comandi in corso compresi.
+            core.stop_all_sessions();
             tauri::async_runtime::block_on(core.unload_model());
         }
     });

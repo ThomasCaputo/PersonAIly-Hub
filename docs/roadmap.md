@@ -78,16 +78,30 @@ Rimandato:
 
 - [ ] Strumenti con Anthropic provati solo dai test automatici (manca la chiave vera, come in Tappa 2).
 - [ ] Immagini con i modelli locali (richiede i file `mmproj` di llama.cpp).
-- [ ] Registro delle azioni consultabile a parte (SI-6): oggi le azioni si rivedono nelle conversazioni.
+- [x] Registro delle azioni consultabile a parte (SI-6): fatto nella Tappa 4.
 
 **Fatto quando:** il modello cerca sul web, legge un file concesso e ne crea uno nuovo
 dopo la conferma dell'utente.
 
-## Tappa 4 — Agenti
+## Tappa 4 — Agenti ✅
 
-- Definizione degli agenti e sessioni (AG-1, AG-2, AG-3, AG-4).
-- Terminale con permessi (AG-5); registro delle azioni (SI-6).
-- MCP (AG-7); agenti in parallelo (AG-6).
+Fatto ([ADR 0008](adr/0008-agenti-e-terminale.md)):
+
+- [x] Agenti: crea, modifica, duplica, elimina (AG-1).
+- [x] Sessioni su un compito, seguite passo per passo con messaggi, strumenti e file
+      toccati (AG-2); pausa, arresto e ripresa scrivendo all'agente (AG-3).
+- [x] Vista d'insieme delle sessioni in corso e concluse (AG-4).
+- [x] Terminale (PowerShell) con permessi, tempo massimo e chiusura dei processi figli (AG-5).
+- [x] Registro delle azioni consultabile, per chat e agenti (SI-6).
+- [x] Più sessioni insieme (AG-6); con il modello locale le richieste fanno la coda.
+- [x] Prova con Qwen 2.5 7B: compito in più passi su una cartella, pausa, arresto, ripresa.
+- [x] MCP con server stdio scelti per agente, strumenti in classe "esecuzione", "Consenti
+      sempre" per singolo strumento, pulsante Prova (AG-7, [ADR 0009](adr/0009-mcp.md)).
+
+Rimandato (non blocca la Tappa 5):
+
+- [ ] Agenti con modelli cloud provati con una chiave vera (come in Tappa 2 e 3).
+- [ ] MCP provato con server pubblicati (npm, PyPI); trasporto HTTP e risorse MCP.
 
 **Fatto quando:** un agente porta a termine un compito in più passi su una cartella di
 progetto, e l'utente può seguirlo e fermarlo.
@@ -105,6 +119,14 @@ progetto, e l'utente può seguirlo e fermarlo.
 - Installer, aggiornamento automatico (GE-7), lingue e temi (GE-5, GE-6).
 - Guida per l'utente; nome definitivo e licenza.
 - Prima versione pubblica per Windows.
+
+Piccole cose da aggiungere (si possono fare anche prima):
+
+- [ ] Pulizia del registro delle azioni per data: oggi cresce senza limite (ADR 0008).
+- [ ] Variabili d'ambiente dei server MCP nel Gestore credenziali invece che
+      nell'archivio SQLite: spesso contengono chiavi API (ADR 0009).
+- [ ] Interfaccia divisa in parti caricate quando servono: oggi il file principale
+      supera i 500 kB.
 
 ## Dopo
 

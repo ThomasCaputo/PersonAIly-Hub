@@ -4,12 +4,14 @@
 //! l'estensione VS Code sono solo client di questa libreria
 //! (vedi `docs/architettura.md`).
 
+pub mod agents;
 pub mod attachments;
 pub mod chat;
 pub mod error;
 pub mod gguf;
 pub mod hub;
 pub mod local;
+pub mod mcp;
 pub mod models;
 pub mod named_presets;
 pub mod providers;
@@ -25,6 +27,9 @@ use providers::Provider;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot};
 
+use agents::{
+    Agent, AgentSession, LiveSession, LiveState, PendingRequest, RunControl, SessionStatus,
+};
 use attachments::{Attachment, AttachmentKind};
 use chat::{ChatEvent, ChatMessage, GenerationStats};
 use error::{Error, Result};
@@ -35,7 +40,7 @@ use local::sysmon::{self, MemorySnapshot, ProcessGpuMemory};
 use local::{LoadParams, MemoryEstimate, Placement, Preset, SamplingParams};
 use models::ModelInfo;
 use named_presets::NamedPreset;
-use store::{Conversation, Message, Store, ToolData};
+use store::{ActionRecord, Conversation, Message, NewAction, Store, ToolData};
 use tools::{
     Decision, PermissionLevel, Risk, ToolCall, ToolContext, ToolDef, ToolOutput, ToolSettings,
 };
@@ -44,6 +49,7 @@ const SETTING_MODEL_FOLDERS: &str = "model_folders";
 const SETTING_PROVIDERS: &str = "providers";
 const SETTING_GRANTED_FOLDERS: &str = "granted_folders";
 const SETTING_TOOL_DEFAULTS: &str = "tool_defaults";
+const SETTING_MCP_SERVERS: &str = "mcp_servers";
 /// Quante volte di seguito un modello può chiedere strumenti in una risposta.
 const MAX_TOOL_ROUNDS: usize = 25;
 const NOTICE_TOO_MANY_TOOLS: &str = "Il modello ha usato strumenti troppe volte di seguito: mi sono fermato. Scrivi per farlo continuare.";
@@ -149,8 +155,10 @@ pub struct Core {
     cloud_http: reqwest::Client,
     store: Mutex<Store>,
     runtime: tokio::sync::Mutex<LocalRuntime>,
-    /// Segnale per interrompere la generazione in corso.
-    generation: Mutex<Option<Arc<Notify>>>,
+    /// Comandi della risposta in corso in chat, per interromperla.
+    generation: Mutex<Option<Arc<RunControl>>>,
+    /// Sessioni degli agenti al lavoro, per identificatore.
+    sessions: Mutex<HashMap<i64, Arc<LiveSession>>>,
     /// Occupato mentre llama.cpp viene scaricato e installato.
     installing: tokio::sync::Mutex<()>,
     /// Stato dell'ultimo download di un modello, letto dall'interfaccia.
@@ -159,8 +167,41 @@ pub struct Core {
     download_cancel: Mutex<Option<Arc<Notify>>>,
     /// Per scaricare pagine web su richiesta dei modelli.
     web_http: reqwest::Client,
-    /// Strumenti in attesa della conferma dell'utente, per identificatore della chiamata.
+    /// Strumenti in attesa della conferma dell'utente. La chiave è
+    /// `<ambito>:<identificatore della chiamata>` (`c12:…` in chat, `s3:…` in
+    /// una sessione): due cicli in parallelo non si confondono.
     approvals: Mutex<HashMap<String, oneshot::Sender<Approval>>>,
+}
+
+/// Dove gira un ciclo modello → strumenti: una risposta in chat o una sessione.
+struct RunScope<'a> {
+    conversation_id: i64,
+    session_id: Option<i64>,
+    /// Nome della conversazione o dell'agente, per il registro delle azioni.
+    source: String,
+    /// Inizio delle chiavi delle conferme di questo ciclo.
+    key_prefix: String,
+    control: &'a RunControl,
+    max_rounds: usize,
+    /// Avviso quando i giri finiscono.
+    limit_notice: String,
+    /// I server MCP avviati per questo ciclo (solo nelle sessioni degli agenti).
+    mcp: Option<&'a mcp::McpSet>,
+}
+
+/// Descrizione breve di una chiamata, per la conferma e il registro.
+fn summary_of(run: &RunScope<'_>, call: &ToolCall) -> String {
+    run.mcp
+        .and_then(|set| set.summary(&call.name))
+        .unwrap_or_else(|| tools::summary(call))
+}
+
+/// Esito di una chiamata a uno strumento.
+struct CallResult {
+    /// `None` se l'utente ha interrotto nel frattempo.
+    output: Option<ToolOutput>,
+    /// Come è stata decisa, per il registro: `auto`, `user`, `denied`, `refused`.
+    approval: &'static str,
 }
 
 /// Risposta dell'utente alla richiesta di usare uno strumento.
@@ -198,9 +239,12 @@ impl Core {
     pub fn new(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let http = reqwest::Client::builder().no_proxy().build()?;
+        let store = Store::open(&data_dir.join("data.sqlite"))?;
+        // Nessuna sessione lavora più dopo un riavvio.
+        store.mark_sessions_interrupted()?;
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
-            store: Mutex::new(Store::open(&data_dir.join("data.sqlite"))?),
+            store: Mutex::new(store),
             runtime: tokio::sync::Mutex::new(LocalRuntime::new(
                 data_dir.to_path_buf(),
                 http.clone(),
@@ -208,6 +252,7 @@ impl Core {
             http,
             cloud_http: reqwest::Client::new(),
             generation: Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             download: Mutex::new(None),
             download_cancel: Mutex::new(None),
@@ -661,90 +706,126 @@ impl Core {
             // Se nessuno aspetta più (risposta interrotta) non c'è nulla da fare.
             let _ = sender.send(approval);
         }
+        // Una sessione che aspettava questa conferma torna al lavoro.
+        for live in self.live_sessions() {
+            let mut state = live.state();
+            if state.request.as_ref().is_some_and(|r| r.id == id) {
+                state.request = None;
+                state.status = Some(SessionStatus::Running);
+            }
+        }
     }
 
     /// Esegue una chiamata a uno strumento, chiedendo prima conferma
     /// all'utente se il livello di permesso lo richiede.
-    /// `None` se l'utente ha interrotto la risposta nel frattempo.
     async fn run_call(
         &self,
-        conversation_id: i64,
+        run: &RunScope<'_>,
         call: &ToolCall,
         settings: &mut ToolSettings,
         folders: &[PathBuf],
-        cancel: &Notify,
         on_event: &mut impl FnMut(ChatEvent),
-    ) -> Option<ToolOutput> {
-        // Una chiamata che fallirebbe comunque non merita di disturbare l'utente.
-        if let Some(refused) = tools::precheck(call, settings, folders) {
-            return Some(refused);
-        }
-        let risk = tools::risk_of(&call.name)?;
+    ) -> CallResult {
+        // Uno strumento di un server MCP della sessione.
+        let external = run.mcp.filter(|set| set.has(&call.name));
+        let risk = if external.is_some() {
+            if !call.arguments.is_object() {
+                return CallResult {
+                    output: Some(ToolOutput::error(
+                        "I parametri della chiamata non sono un oggetto JSON valido: riprova.",
+                    )),
+                    approval: "refused",
+                };
+            }
+            Risk::Execute
+        } else {
+            // Una chiamata che fallirebbe comunque non merita di disturbare l'utente.
+            if let Some(refused) = tools::precheck(call, settings, folders) {
+                return CallResult {
+                    output: Some(refused),
+                    approval: "refused",
+                };
+            }
+            let Some(risk) = tools::risk_of(&call.name) else {
+                return CallResult {
+                    output: Some(ToolOutput::error("Strumento sconosciuto.")),
+                    approval: "refused",
+                };
+            };
+            risk
+        };
+        let cancel = &run.control.cancel;
+        // "Consenti sempre" su uno strumento MCP vale solo per quello strumento.
+        let allowed_always = external.is_some() && settings.allowed_tools.contains(&call.name);
 
-        if tools::decide(settings.permission, risk) == Decision::Ask {
+        let mut approval = "auto";
+        if !allowed_always && tools::decide(settings.permission, risk) == Decision::Ask {
+            let key = format!("{}:{}", run.key_prefix, call.id);
             let (sender, receiver) = oneshot::channel();
             self.approvals
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(call.id.clone(), sender);
+                .insert(key.clone(), sender);
             on_event(ChatEvent::ToolRequest {
-                id: call.id.clone(),
+                id: key,
                 name: call.name.clone(),
-                summary: tools::summary(call),
+                summary: summary_of(run, call),
                 arguments: call.arguments.clone(),
             });
             let answer = tokio::select! {
                 answer = receiver => answer.unwrap_or(Approval::Deny),
-                _ = cancel.notified() => return None,
+                _ = cancel.notified() => return CallResult { output: None, approval: "interrupted" },
             };
             match answer {
                 Approval::Deny => {
-                    return Some(ToolOutput::error(
-                        "L'utente ha negato il permesso per questa azione. Non riprovare: \
-                         chiedigli come vuole procedere.",
-                    ));
+                    return CallResult {
+                        output: Some(ToolOutput::error(
+                            "L'utente ha negato il permesso per questa azione. Non riprovare: \
+                             chiedigli come vuole procedere.",
+                        )),
+                        approval: "denied",
+                    };
                 }
                 Approval::Once => {}
                 Approval::Always => {
-                    // Vale per il resto della conversazione, anche dopo il riavvio.
-                    settings.permission = match risk {
-                        Risk::Execute => PermissionLevel::All,
-                        _ => settings.permission.max_with(PermissionLevel::Edits),
-                    };
-                    let _ = self.set_conversation_tools(conversation_id, settings);
+                    // Vale per il resto della conversazione (o della sessione),
+                    // anche dopo il riavvio.
+                    if external.is_some() {
+                        settings.allowed_tools.push(call.name.clone());
+                    } else {
+                        settings.permission = match risk {
+                            Risk::Execute => PermissionLevel::All,
+                            _ => settings.permission.max_with(PermissionLevel::Edits),
+                        };
+                    }
+                    let _ = self.set_conversation_tools(run.conversation_id, settings);
                 }
             }
+            approval = "user";
         }
 
         let ctx = ToolContext {
             folders,
             web_http: &self.web_http,
         };
-        tokio::select! {
-            output = tools::run(call, settings, &ctx) => Some(output),
-            _ = cancel.notified() => None,
-        }
+        let output = match external {
+            Some(set) => tokio::select! {
+                output = set.call(&call.name, &call.arguments) => Some(output),
+                _ = cancel.notified() => None,
+            },
+            None => tokio::select! {
+                output = tools::run(call, settings, &ctx) => Some(output),
+                _ = cancel.notified() => None,
+            },
+        };
+        CallResult { output, approval }
     }
 
     // ── Invio dei messaggi ──────────────────────────────────────────────
 
-    /// Salva il messaggio dell'utente, lo invia al modello insieme alla
-    /// cronologia e salva la risposta. Se il modello chiede degli strumenti li
-    /// esegue (con conferma, dove serve) e gli rimanda i risultati, finché non
-    /// arriva la risposta finale. `on_event` segue tutto mentre accade.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_message(
-        &self,
-        conversation_id: i64,
-        text: &str,
-        attachment_paths: &[String],
-        sampling: &SamplingParams,
-        system_prompt: &str,
-        model: &ModelRef,
-        mut on_event: impl FnMut(ChatEvent),
-    ) -> Result<SendOutcome> {
-        // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
-        let target = match model {
+    /// A chi mandare le richieste per un modello; errore se non è raggiungibile.
+    fn target(&self, model: &ModelRef) -> Result<Target> {
+        Ok(match model {
             ModelRef::Local => Target::Local(
                 self.runtime
                     .try_lock()
@@ -765,7 +846,26 @@ impl Core {
                 })?;
                 Target::Cloud(provider, key, id.clone())
             }
-        };
+        })
+    }
+
+    /// Salva il messaggio dell'utente, lo invia al modello insieme alla
+    /// cronologia e salva la risposta. Se il modello chiede degli strumenti li
+    /// esegue (con conferma, dove serve) e gli rimanda i risultati, finché non
+    /// arriva la risposta finale. `on_event` segue tutto mentre accade.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_message(
+        &self,
+        conversation_id: i64,
+        text: &str,
+        attachment_paths: &[String],
+        sampling: &SamplingParams,
+        system_prompt: &str,
+        model: &ModelRef,
+        mut on_event: impl FnMut(ChatEvent),
+    ) -> Result<SendOutcome> {
+        // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
+        let target = self.target(model)?;
 
         let attachments = attachment_paths
             .iter()
@@ -780,37 +880,45 @@ impl Core {
         }
 
         let mut settings = self.conversation_tools(conversation_id)?;
+        // Il terminale è degli agenti: in chat non si offre.
+        settings.terminal = false;
         let folders: Vec<PathBuf> = self
             .granted_folders()?
             .into_iter()
             .map(PathBuf::from)
             .collect();
         let defs = tools::available(&settings, &folders);
-        let system = [
-            system_prompt.trim(),
-            &tools::system_preamble(&defs, &folders),
-        ]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        let system = join_prompt(&[system_prompt, &tools::system_preamble(&defs, &folders)]);
 
-        let chat = {
+        let (chat, title) = {
             let store = self.store();
             let is_first = store.messages(conversation_id)?.is_empty();
             store.add_message_with(conversation_id, "user", text, None, None, &attachments)?;
             if is_first {
                 store.rename_conversation(conversation_id, &title_from(text))?;
             }
-            chat_history(store.messages(conversation_id)?, reads_images)
+            (
+                chat_history(store.messages(conversation_id)?, reads_images),
+                store.conversation(conversation_id)?.title,
+            )
         };
 
-        let cancel = Arc::new(Notify::new());
-        *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+        let control = Arc::new(RunControl::new());
+        *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
 
+        let scope = RunScope {
+            conversation_id,
+            session_id: None,
+            source: title,
+            key_prefix: format!("c{conversation_id}"),
+            control: &control,
+            max_rounds: MAX_TOOL_ROUNDS,
+            limit_notice: NOTICE_TOO_MANY_TOOLS.to_string(),
+            mcp: None,
+        };
         let result = self
             .run_rounds(
-                conversation_id,
+                &scope,
                 &target,
                 chat,
                 &defs,
@@ -818,24 +926,29 @@ impl Core {
                 &folders,
                 &system,
                 sampling,
-                cancel,
                 &mut on_event,
             )
             .await;
 
         *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.forget_approvals(&scope.key_prefix);
+        result
+    }
+
+    /// Dimentica le conferme rimaste in sospeso di un ciclo concluso.
+    fn forget_approvals(&self, key_prefix: &str) {
+        let prefix = format!("{key_prefix}:");
         self.approvals
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        result
+            .retain(|key, _| !key.starts_with(&prefix));
     }
 
     /// Il ciclo modello → strumenti → modello di una risposta.
     #[allow(clippy::too_many_arguments)]
     async fn run_rounds(
         &self,
-        conversation_id: i64,
+        run: &RunScope<'_>,
         target: &Target,
         mut chat: Vec<ChatMessage>,
         defs: &[ToolDef],
@@ -843,15 +956,21 @@ impl Core {
         folders: &[PathBuf],
         system: &str,
         sampling: &SamplingParams,
-        cancel: Arc<Notify>,
         on_event: &mut impl FnMut(ChatEvent),
     ) -> Result<SendOutcome> {
+        let conversation_id = run.conversation_id;
+        let cancel = run.control.cancel.clone();
         let mut last_reply: Option<Message> = None;
         let mut stats = GenerationStats::default();
         let mut notice = None;
         let mut cancelled = false;
 
-        for round in 1..=MAX_TOOL_ROUNDS {
+        for round in 1..=run.max_rounds {
+            // Una pausa chiesta dall'utente ferma il lavoro qui, tra un passo e l'altro.
+            if !run.control.checkpoint().await {
+                cancelled = true;
+                break;
+            }
             let (result, model_name) = match target {
                 Target::Local(loaded) => {
                     let mut all = Vec::with_capacity(chat.len() + 1);
@@ -891,7 +1010,7 @@ impl Core {
             };
             let mut outcome = result?;
             stats = outcome.stats.clone();
-            cancelled = outcome.cancelled;
+            cancelled = outcome.cancelled || run.control.is_stopped();
             // Una risposta troncata o rifiutata può contenere chiamate a metà:
             // i suoi strumenti non si eseguono.
             if outcome.notice.is_some() {
@@ -931,8 +1050,17 @@ impl Core {
             if calls.is_empty() || cancelled {
                 break;
             }
-            if round == MAX_TOOL_ROUNDS {
-                notice = Some(NOTICE_TOO_MANY_TOOLS.to_string());
+            if round == run.max_rounds {
+                notice = Some(run.limit_notice.clone());
+                // Le chiamate di quest'ultima risposta restano senza seguito:
+                // ricevono comunque un risultato, per la coerenza della cronologia.
+                for call in &calls {
+                    self.save_tool_result(
+                        conversation_id,
+                        call,
+                        &ToolOutput::error("Non eseguito: raggiunto il limite di passi."),
+                    )?;
+                }
                 break;
             }
 
@@ -946,27 +1074,21 @@ impl Core {
             for call in &calls {
                 // Dopo un'interruzione le chiamate rimaste ricevono comunque
                 // un risultato: la cronologia deve restare coerente.
+                if !cancelled && !run.control.checkpoint().await {
+                    cancelled = true;
+                }
                 let output = if cancelled {
                     None
                 } else {
-                    self.run_call(conversation_id, call, settings, folders, &cancel, on_event)
-                        .await
+                    let result = self
+                        .run_call(run, call, settings, folders, &mut *on_event)
+                        .await;
+                    self.log_action(run, call, &result);
+                    result.output
                 };
                 cancelled |= output.is_none();
                 let output = output.unwrap_or_else(|| ToolOutput::error("Interrotto dall'utente."));
-                self.store().add_message_with(
-                    conversation_id,
-                    "tool",
-                    &output.content,
-                    None,
-                    Some(&ToolData {
-                        call_id: Some(call.id.clone()),
-                        name: Some(call.name.clone()),
-                        is_error: output.is_error,
-                        ..Default::default()
-                    }),
-                    &[],
-                )?;
+                self.save_tool_result(conversation_id, call, &output)?;
                 chat.push(ChatMessage {
                     tool_call_id: Some(call.id.clone()),
                     is_error: output.is_error,
@@ -986,6 +1108,405 @@ impl Core {
             cancelled,
             notice,
         })
+    }
+
+    fn save_tool_result(
+        &self,
+        conversation_id: i64,
+        call: &ToolCall,
+        output: &ToolOutput,
+    ) -> Result<()> {
+        self.store().add_message_with(
+            conversation_id,
+            "tool",
+            &output.content,
+            None,
+            Some(&ToolData {
+                call_id: Some(call.id.clone()),
+                name: Some(call.name.clone()),
+                is_error: output.is_error,
+                ..Default::default()
+            }),
+            &[],
+        )?;
+        Ok(())
+    }
+
+    /// Annota l'azione nel registro (SI-6). Un registro che non si scrive non
+    /// deve fermare il lavoro.
+    fn log_action(&self, run: &RunScope<'_>, call: &ToolCall, result: &CallResult) {
+        let (approval, is_error, text) = match &result.output {
+            Some(output) => (result.approval, output.is_error, output.content.as_str()),
+            None => ("interrupted", true, "Interrotto dall'utente."),
+        };
+        let _ = self.store().add_action(&NewAction {
+            conversation_id: run.conversation_id,
+            session_id: run.session_id,
+            source: &run.source,
+            tool: &call.name,
+            summary: &summary_of(run, call),
+            approval,
+            is_error,
+            result: text,
+        });
+    }
+
+    /// Le azioni compiute dagli strumenti, dalla più recente; con `session_id`
+    /// solo quelle di una sessione.
+    pub fn actions(&self, limit: u32, session_id: Option<i64>) -> Result<Vec<ActionRecord>> {
+        self.store().actions(limit.clamp(1, 1000), session_id)
+    }
+
+    // ── Server MCP ──────────────────────────────────────────────────────
+
+    /// I server MCP configurati, in ordine alfabetico.
+    pub fn mcp_servers(&self) -> Result<Vec<mcp::McpServerConfig>> {
+        let mut servers: Vec<mcp::McpServerConfig> =
+            match self.store().setting(SETTING_MCP_SERVERS)? {
+                Some(json) => serde_json::from_str(&json)?,
+                None => Vec::new(),
+            };
+        servers.sort_by_key(|s| s.name.to_lowercase());
+        Ok(servers)
+    }
+
+    fn store_mcp_servers(&self, servers: &[mcp::McpServerConfig]) -> Result<()> {
+        self.store()
+            .set_setting(SETTING_MCP_SERVERS, &serde_json::to_string(servers)?)
+    }
+
+    /// Crea (con `id` vuoto) o aggiorna un server MCP.
+    pub fn save_mcp_server(
+        &self,
+        mut config: mcp::McpServerConfig,
+    ) -> Result<mcp::McpServerConfig> {
+        config.name = config.name.trim().to_string();
+        config.command = config.command.trim().to_string();
+        config.args.retain(|a| !a.trim().is_empty());
+        config.validate()?;
+        let mut all = self.mcp_servers()?;
+        match all
+            .iter_mut()
+            .find(|s| s.id == config.id && !config.id.is_empty())
+        {
+            Some(existing) => *existing = config.clone(),
+            None => {
+                config.id = providers::new_id(&config.name);
+                all.push(config.clone());
+            }
+        }
+        self.store_mcp_servers(&all)?;
+        Ok(config)
+    }
+
+    /// Elimina un server MCP. Gli agenti che lo usavano non lo trovano più
+    /// e le loro sessioni lo segnalano.
+    pub fn delete_mcp_server(&self, id: &str) -> Result<()> {
+        let mut all = self.mcp_servers()?;
+        all.retain(|s| s.id != id);
+        self.store_mcp_servers(&all)
+    }
+
+    /// Avvia un server, ne elenca gli strumenti e lo chiude.
+    pub async fn probe_mcp_server(
+        &self,
+        config: &mcp::McpServerConfig,
+    ) -> Result<Vec<mcp::McpToolInfo>> {
+        mcp::probe(config).await
+    }
+
+    fn mcp_servers_for(&self, ids: &[String]) -> Result<Vec<mcp::McpServerConfig>> {
+        let all = self.mcp_servers()?;
+        ids.iter()
+            .map(|id| {
+                all.iter().find(|s| &s.id == id).cloned().ok_or_else(|| {
+                    Error::msg(
+                        "Un server MCP di questo agente è stato eliminato: togli il segno                          dall'agente o configura di nuovo il server nelle Impostazioni.",
+                    )
+                })
+            })
+            .collect()
+    }
+
+    // ── Agenti ──────────────────────────────────────────────────────────
+
+    pub fn agents(&self) -> Result<Vec<Agent>> {
+        self.store().agents()
+    }
+
+    /// Crea (con `id` 0) o aggiorna un agente.
+    pub fn save_agent(&self, agent: Agent) -> Result<Agent> {
+        let agent = agent.normalized();
+        if agent.name.is_empty() {
+            return Err(Error::msg("Dai un nome all'agente."));
+        }
+        self.store().save_agent(&agent)
+    }
+
+    pub fn duplicate_agent(&self, id: i64) -> Result<Agent> {
+        let store = self.store();
+        let original = store.agent(id)?;
+        store.save_agent(&Agent {
+            id: 0,
+            name: format!("{} (copia)", original.name),
+            ..original
+        })
+    }
+
+    pub fn delete_agent(&self, id: i64) -> Result<()> {
+        self.store().delete_agent(id)
+    }
+
+    // ── Sessioni degli agenti ───────────────────────────────────────────
+
+    fn live_sessions(&self) -> Vec<Arc<LiveSession>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn live_session(&self, id: i64) -> Option<Arc<LiveSession>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned()
+    }
+
+    fn with_live_status(&self, mut session: AgentSession) -> AgentSession {
+        if let Some(status) = self
+            .live_session(session.id)
+            .and_then(|l| l.snapshot().status)
+        {
+            session.status = status;
+        }
+        session
+    }
+
+    /// Prepara una sessione: l'agente lavorerà sul compito appena chi la
+    /// chiama avvia [`Core::run_session`] (di solito in sottofondo).
+    pub fn create_session(&self, agent_id: i64, task: &str) -> Result<AgentSession> {
+        let task = task.trim();
+        if task.is_empty() {
+            return Err(Error::msg("Scrivi il compito da affidare all'agente."));
+        }
+        let store = self.store();
+        let agent = store.agent(agent_id)?;
+        store.create_session(&agent, task)
+    }
+
+    /// Aggiunge un messaggio dell'utente a una sessione ferma, perché l'agente
+    /// riprenda da lì con [`Core::run_session`].
+    pub fn reply_session(&self, id: i64, text: &str) -> Result<AgentSession> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(Error::msg("Scrivi qualcosa all'agente."));
+        }
+        if self.live_session(id).is_some() {
+            return Err(Error::msg("L'agente sta già lavorando."));
+        }
+        let store = self.store();
+        let session = store.session(id)?;
+        store.add_message(session.conversation_id, "user", text, None)?;
+        store.set_session_status(id, SessionStatus::Running, None)?;
+        store.session(id)
+    }
+
+    /// Le sessioni, dalla più recente, con lo stato attuale di quelle al lavoro.
+    pub fn sessions(&self) -> Result<Vec<AgentSession>> {
+        let sessions = self.store().sessions()?;
+        Ok(sessions
+            .into_iter()
+            .map(|s| self.with_live_status(s))
+            .collect())
+    }
+
+    pub fn session(&self, id: i64) -> Result<AgentSession> {
+        let session = self.store().session(id)?;
+        Ok(self.with_live_status(session))
+    }
+
+    /// Ciò che una sessione al lavoro sta facendo; `None` se è ferma.
+    pub fn session_live(&self, id: i64) -> Option<LiveState> {
+        self.live_session(id).map(|live| live.snapshot())
+    }
+
+    /// Mette in pausa una sessione: si ferma prima del passo successivo.
+    pub fn pause_session(&self, id: i64) -> Result<()> {
+        let live = self
+            .live_session(id)
+            .ok_or_else(|| Error::msg("La sessione non sta lavorando."))?;
+        live.control.pause();
+        Ok(())
+    }
+
+    pub fn resume_session(&self, id: i64) -> Result<()> {
+        let live = self
+            .live_session(id)
+            .ok_or_else(|| Error::msg("La sessione non sta lavorando."))?;
+        live.control.resume();
+        Ok(())
+    }
+
+    /// Ferma una sessione: la risposta in corso si interrompe e il comando in
+    /// esecuzione viene terminato. Ciò che è già arrivato resta salvato.
+    pub fn stop_session(&self, id: i64) {
+        if let Some(live) = self.live_session(id) {
+            live.control.stop();
+        }
+    }
+
+    pub fn stop_all_sessions(&self) {
+        for live in self.live_sessions() {
+            live.control.stop();
+        }
+    }
+
+    pub fn delete_session(&self, id: i64) -> Result<()> {
+        if self.live_session(id).is_some() {
+            return Err(Error::msg("Ferma l'agente prima di eliminare la sessione."));
+        }
+        self.store().delete_session(id)
+    }
+
+    /// Fa lavorare l'agente della sessione finché non ha finito, non viene
+    /// fermato o non arriva al limite di passi. Più sessioni possono girare
+    /// insieme (AG-6); la stessa sessione una volta sola.
+    pub async fn run_session(&self, id: i64) -> Result<()> {
+        let live = Arc::new(LiveSession::new());
+        {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if sessions.contains_key(&id) {
+                return Err(Error::msg("L'agente sta già lavorando."));
+            }
+            sessions.insert(id, live.clone());
+        }
+        let _ = self
+            .store()
+            .set_session_status(id, SessionStatus::Running, None);
+
+        let result = self.drive_session(id, &live).await;
+        let (status, note) = match &result {
+            Ok(outcome) if outcome.cancelled => (SessionStatus::Stopped, None),
+            Ok(outcome) => match &outcome.notice {
+                Some(notice) => (SessionStatus::Stopped, Some(notice.clone())),
+                None => (SessionStatus::Done, None),
+            },
+            // Fermata mentre partivano i server MCP: non è un guasto.
+            Err(_) if live.control.is_stopped() => (SessionStatus::Stopped, None),
+            Err(error) => (SessionStatus::Failed, Some(error.to_string())),
+        };
+        let saved = self.store().set_session_status(id, status, note.as_deref());
+
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        self.forget_approvals(&format!("s{id}"));
+        saved?;
+        result.map(|_| ())
+    }
+
+    async fn drive_session(&self, id: i64, live: &Arc<LiveSession>) -> Result<SendOutcome> {
+        let session = self.store().session(id)?;
+        let agent = session.definition.ok_or_else(|| {
+            Error::msg("La definizione dell'agente di questa sessione è illeggibile.")
+        })?;
+        let target = self.target(&agent.model)?;
+        let preset_key = match &target {
+            Target::Local(loaded) => loaded.model_path.clone(),
+            Target::Cloud(provider, _, model) => {
+                format!("{CLOUD_KEY_PREFIX}{}:{model}", provider.id)
+            }
+        };
+        let sampling = self.preset(&preset_key)?.sampling;
+        let reads_images = matches!(target, Target::Cloud(..));
+
+        let mut settings = self.conversation_tools(session.conversation_id)?;
+        let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
+        let mut defs = tools::available(&settings, &folders);
+
+        // I server MCP dell'agente partono con la sessione e si chiudono con lei.
+        let servers = self.mcp_servers_for(&agent.mcp_servers)?;
+        let mcp_set = if servers.is_empty() {
+            None
+        } else {
+            let start = mcp::McpSet::start(&servers, folders.first().map(PathBuf::as_path));
+            let set = tokio::select! {
+                set = start => set?,
+                _ = live.control.cancel.notified() => {
+                    return Err(Error::msg("Fermato durante l'avvio dei server MCP."));
+                }
+            };
+            defs.extend(set.defs().iter().cloned());
+            Some(set)
+        };
+
+        let system = join_prompt(&[
+            agents::AGENT_PREAMBLE,
+            &agent.instructions,
+            &tools::system_preamble(&defs, &folders),
+        ]);
+        let chat = chat_history(
+            self.store().messages(session.conversation_id)?,
+            reads_images,
+        );
+
+        let scope = RunScope {
+            conversation_id: session.conversation_id,
+            session_id: Some(id),
+            source: agent.name.clone(),
+            key_prefix: format!("s{id}"),
+            control: &live.control,
+            max_rounds: agent.max_steps as usize,
+            limit_notice: format!(
+                "L'agente ha fatto {} passi, il massimo previsto, e si è fermato. \
+                 Rispondigli per farlo continuare.",
+                agent.max_steps
+            ),
+            mcp: mcp_set.as_ref(),
+        };
+        let mut on_event = |event| {
+            let mut state = live.state();
+            match event {
+                ChatEvent::Text(text) => state.streaming.push_str(&text),
+                ChatEvent::Reasoning(text) => state.reasoning.push_str(&text),
+                ChatEvent::Saved => {
+                    state.streaming.clear();
+                    state.reasoning.clear();
+                    state.revision += 1;
+                }
+                ChatEvent::ToolRequest {
+                    id,
+                    name,
+                    summary,
+                    arguments,
+                } => {
+                    state.status = Some(SessionStatus::Waiting);
+                    state.request = Some(PendingRequest {
+                        id,
+                        name,
+                        summary,
+                        arguments,
+                    });
+                }
+            }
+        };
+        self.run_rounds(
+            &scope,
+            &target,
+            chat,
+            &defs,
+            &mut settings,
+            &folders,
+            &system,
+            &sampling,
+            &mut on_event,
+        )
+        .await
     }
 
     // ── Provider cloud ──────────────────────────────────────────────────
@@ -1090,9 +1611,23 @@ impl Core {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
         {
-            cancel.notify_one();
+            cancel.stop();
         }
     }
+}
+
+/// Unisce le parti di un prompt di sistema, saltando quelle vuote.
+fn join_prompt(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(
+            "
+
+",
+        )
 }
 
 /// La cronologia salvata, nella forma da inviare a un modello.
@@ -1279,6 +1814,293 @@ mod tests {
         let blind = chat_history(history, false);
         assert!(blind[0].images.is_empty());
         assert!(blind[0].content.contains("foto.png"));
+    }
+
+    /// Un servizio compatibile OpenAI finto: a ogni richiesta risponde con il
+    /// prossimo flusso SSE dell'elenco. Restituisce l'indirizzo base.
+    fn fake_service(replies: Vec<Vec<serde_json::Value>>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for (stream, chunks) in listener.incoming().zip(replies) {
+                let mut stream = stream.unwrap();
+                // Si legge la richiesta intera: intestazioni e corpo.
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).to_lowercase();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let mut body = String::new();
+                for chunk in chunks {
+                    body.push_str(&format!("data: {chunk}\n\n"));
+                }
+                body.push_str("data: [DONE]\n\n");
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    fn command_call(command: &str) -> Vec<serde_json::Value> {
+        let arguments = serde_json::json!({ "command": command }).to_string();
+        vec![serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0, "id": "call_1",
+            "function": {"name": "run_command", "arguments": arguments}
+        }]}, "finish_reason": "tool_calls"}]})]
+    }
+
+    fn final_text(text: &str) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]}),
+        ]
+    }
+
+    /// Nucleo, cartella di lavoro e sessione di un agente pronti per una prova.
+    fn agent_fixture(name: &str, permission: PermissionLevel) -> (Core, PathBuf, AgentSession) {
+        let dir = std::env::temp_dir().join(format!("core-agent-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let work = dir.join("progetto");
+        std::fs::create_dir_all(&work).unwrap();
+        let core = Core::new(&dir.join("dati")).unwrap();
+        let agent = core
+            .save_agent(Agent {
+                name: "Prova".into(),
+                folders: vec![work.to_string_lossy().into_owned()],
+                tools: ToolSettings {
+                    files: true,
+                    web: false,
+                    terminal: true,
+                    permission,
+                    allowed_tools: Vec::new(),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        let session = core.create_session(agent.id, "Esegui il comando").unwrap();
+        (core, dir, session)
+    }
+
+    async fn drive(
+        core: &Core,
+        session: &AgentSession,
+        base_url: String,
+        control: &RunControl,
+        on_event: &mut impl FnMut(ChatEvent),
+    ) -> SendOutcome {
+        let agent = session.definition.clone().unwrap();
+        let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
+        let mut settings = core.conversation_tools(session.conversation_id).unwrap();
+        let defs = tools::available(&settings, &folders);
+        let provider = Provider {
+            id: "finto".into(),
+            name: "Finto".into(),
+            kind: providers::ProviderKind::OpenaiCompatible,
+            base_url,
+            models: Vec::new(),
+        };
+        let target = Target::Cloud(provider, "chiave".into(), "modello".into());
+        let chat = chat_history(core.messages(session.conversation_id).unwrap(), true);
+        let scope = RunScope {
+            conversation_id: session.conversation_id,
+            session_id: Some(session.id),
+            source: agent.name.clone(),
+            key_prefix: format!("s{}", session.id),
+            control,
+            max_rounds: 10,
+            limit_notice: "limite".into(),
+            mcp: None,
+        };
+        core.run_rounds(
+            &scope,
+            &target,
+            chat,
+            &defs,
+            &mut settings,
+            &folders,
+            "",
+            &SamplingParams::default(),
+            on_event,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn un_agente_usa_il_terminale_e_poi_risponde() {
+        let (core, dir, session) = agent_fixture("ok", PermissionLevel::All);
+        let base = fake_service(vec![command_call("echo 'fatto'"), final_text("Ho finito.")]);
+        let control = RunControl::new();
+        let outcome = drive(&core, &session, base, &control, &mut |_| {}).await;
+
+        assert!(!outcome.cancelled);
+        assert_eq!(outcome.notice, None);
+        let messages = core.messages(session.conversation_id).unwrap();
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "assistant"]);
+        assert!(
+            messages[2].content.contains("fatto"),
+            "{}",
+            messages[2].content
+        );
+        assert!(!messages[2].is_error);
+        assert_eq!(messages[3].content, "Ho finito.");
+
+        let actions = core.actions(10, Some(session.id)).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].tool, "run_command");
+        assert_eq!(actions[0].approval, "auto");
+        assert_eq!(actions[0].source, "Prova");
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fermare_un_agente_in_attesa_di_conferma_non_esegue_il_comando() {
+        let (core, dir, session) = agent_fixture("stop", PermissionLevel::Ask);
+        let base = fake_service(vec![command_call("New-Item segno.txt")]);
+        let control = RunControl::new();
+        let mut asked = None;
+        let outcome = drive(&core, &session, base, &control, &mut |event| {
+            if let ChatEvent::ToolRequest { id, summary, .. } = event {
+                asked = Some((id, summary));
+                control.stop();
+            }
+        })
+        .await;
+
+        let (id, summary) = asked.expect("doveva chiedere conferma");
+        assert_eq!(id, format!("s{}:call_1", session.id));
+        assert!(summary.contains("New-Item"));
+        assert!(outcome.cancelled);
+        let messages = core.messages(session.conversation_id).unwrap();
+        let last = messages.last().unwrap();
+        assert_eq!(last.role, "tool");
+        assert!(last.is_error);
+        assert!(!dir.join("progetto").join("segno.txt").exists());
+        assert_eq!(
+            core.actions(10, Some(session.id)).unwrap()[0].approval,
+            "interrupted"
+        );
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn consenti_sempre_su_uno_strumento_mcp_vale_solo_per_quello() {
+        let (core, dir, session) = agent_fixture("mcp", PermissionLevel::Ask);
+        let server = mcp::tests::fake_server(&dir);
+        let set = mcp::McpSet::start(std::slice::from_ref(&server), None)
+            .await
+            .unwrap();
+        let call = |id: &str, text: &str| {
+            let arguments = serde_json::json!({ "text": text }).to_string();
+            vec![serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": id,
+                "function": {"name": "mcp__Finto__echo", "arguments": arguments}
+            }]}, "finish_reason": "tool_calls"}]})]
+        };
+        let base = fake_service(vec![
+            call("c1", "uno"),
+            call("c2", "due"),
+            final_text("Fatto."),
+        ]);
+
+        let agent = session.definition.clone().unwrap();
+        let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
+        let mut settings = core.conversation_tools(session.conversation_id).unwrap();
+        let mut defs = tools::available(&settings, &folders);
+        defs.extend(set.defs().iter().cloned());
+        let provider = Provider {
+            id: "finto".into(),
+            name: "Finto".into(),
+            kind: providers::ProviderKind::OpenaiCompatible,
+            base_url: base,
+            models: Vec::new(),
+        };
+        let target = Target::Cloud(provider, "chiave".into(), "modello".into());
+        let chat = chat_history(core.messages(session.conversation_id).unwrap(), true);
+        let control = RunControl::new();
+        let scope = RunScope {
+            conversation_id: session.conversation_id,
+            session_id: Some(session.id),
+            source: "Prova".into(),
+            key_prefix: format!("s{}", session.id),
+            control: &control,
+            max_rounds: 10,
+            limit_notice: "limite".into(),
+            mcp: Some(&set),
+        };
+        let mut asked = Vec::new();
+        let outcome = core
+            .run_rounds(
+                &scope,
+                &target,
+                chat,
+                &defs,
+                &mut settings,
+                &folders,
+                "",
+                &SamplingParams::default(),
+                &mut |event| {
+                    if let ChatEvent::ToolRequest { id, summary, .. } = event {
+                        asked.push(summary);
+                        core.answer_tool_request(&id, Approval::Always);
+                    }
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!outcome.cancelled);
+        // Chiesto una volta sola; il livello della sessione non cambia.
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].contains("«echo»"), "{}", asked[0]);
+        let saved = core.conversation_tools(session.conversation_id).unwrap();
+        assert_eq!(saved.permission, PermissionLevel::Ask);
+        assert_eq!(saved.allowed_tools, ["mcp__Finto__echo"]);
+        let results: Vec<String> = core
+            .messages(session.conversation_id)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| m.content)
+            .collect();
+        assert_eq!(results, ["eco: uno", "eco: due"]);
+        let approvals: Vec<String> = core
+            .actions(10, Some(session.id))
+            .unwrap()
+            .into_iter()
+            .map(|a| a.approval)
+            .collect();
+        assert_eq!(approvals, ["auto", "user"]);
+
+        drop(set);
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

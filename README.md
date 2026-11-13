@@ -1,9 +1,10 @@
 # Progetto AI
 
-> Nome provvisorio. Stato: **Tappa 3 completata** — si chatta con modelli locali `.gguf`
+> Nome provvisorio. Stato: **Tappa 4 completata** — si chatta con modelli locali `.gguf`
 > (scaricabili da Hugging Face) e con modelli cloud (Anthropic, servizi compatibili con
-> OpenAI); il modello può leggere e scrivere file nelle cartelle concesse, cercare sul web
-> e ricevere allegati, con la conferma dell'utente. Prossima: gli agenti (vedi la
+> OpenAI), con file, ricerca web e allegati. Gli agenti lavorano da soli su una cartella,
+> con comandi nel terminale e strumenti esterni MCP, chiedendo conferma secondo i
+> permessi; ogni azione finisce nel registro. Prossima: VS Code (vedi la
 > [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:

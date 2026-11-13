@@ -5,8 +5,9 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::agents::{Agent, AgentSession, SessionStatus};
 use crate::attachments::{Attachment, AttachmentInfo};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::tools::ToolCall;
 
 /// Passi di aggiornamento dello schema, in ordine.
@@ -54,7 +55,88 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN attachments TEXT;
     ALTER TABLE conversations ADD COLUMN tools TEXT;
     ",
+    // 5 — agenti, loro sessioni (ognuna con la sua conversazione) e registro
+    //     delle azioni compiute dagli strumenti, in chat e dagli agenti
+    "
+    CREATE TABLE agents (
+        id          INTEGER PRIMARY KEY,
+        name        TEXT NOT NULL,
+        definition  TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE agent_sessions (
+        id               INTEGER PRIMARY KEY,
+        agent_id         INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+        agent_name       TEXT    NOT NULL,
+        definition       TEXT    NOT NULL,
+        conversation_id  INTEGER NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+        task             TEXT    NOT NULL,
+        status           TEXT    NOT NULL,
+        note             TEXT,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE actions (
+        id               INTEGER PRIMARY KEY,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+        conversation_id  INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+        session_id       INTEGER REFERENCES agent_sessions(id) ON DELETE SET NULL,
+        kind             TEXT    NOT NULL CHECK (kind IN ('chat', 'agent')),
+        source           TEXT    NOT NULL,
+        tool             TEXT    NOT NULL,
+        summary          TEXT    NOT NULL,
+        approval         TEXT    NOT NULL,
+        is_error         INTEGER NOT NULL,
+        result           TEXT    NOT NULL
+    );
+
+    CREATE INDEX actions_by_time ON actions (id DESC);
+    ",
 ];
+
+/// Caratteri del risultato conservati nel registro delle azioni.
+const ACTION_RESULT_CHARS: usize = 400;
+
+/// Colonne lette per ogni sessione, nell'ordine atteso da `row_to_session`.
+const SESSION_COLUMNS: &str = "id, agent_id, agent_name, conversation_id, task, status, note, \
+     created_at, updated_at, definition";
+
+/// Una voce del registro delle azioni (SI-6).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRecord {
+    pub id: i64,
+    pub created_at: String,
+    pub conversation_id: Option<i64>,
+    pub session_id: Option<i64>,
+    /// `chat` o `agent`: resta anche quando conversazione o sessione non ci sono più.
+    pub kind: String,
+    /// Titolo della conversazione o nome dell'agente, com'era al momento dell'azione.
+    pub source: String,
+    pub tool: String,
+    pub summary: String,
+    /// `auto` (consentita dal livello di permesso), `user` (confermata),
+    /// `denied` (negata), `refused` (fuori confine), `interrupted`.
+    pub approval: String,
+    pub is_error: bool,
+    /// Inizio del risultato.
+    pub result: String,
+}
+
+/// Una nuova voce del registro.
+pub struct NewAction<'a> {
+    pub conversation_id: i64,
+    pub session_id: Option<i64>,
+    pub source: &'a str,
+    pub tool: &'a str,
+    pub summary: &'a str,
+    pub approval: &'a str,
+    pub is_error: bool,
+    pub result: &'a str,
+}
 
 /// Colonne lette per ogni messaggio, nell'ordine atteso da `row_to_message`.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, model, created_at, \
@@ -179,11 +261,13 @@ impl Store {
             .replace('%', r"\%")
             .replace('_', r"\_");
         let pattern = format!("%{escaped}%");
+        // Le conversazioni delle sessioni degli agenti si vedono nella pagina Agenti.
         let mut stmt = self.conn.prepare(
             r"SELECT id, title, created_at, updated_at FROM conversations c
-              WHERE c.title LIKE ?1 ESCAPE '\'
-                 OR EXISTS (SELECT 1 FROM messages m
-                            WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\')
+              WHERE NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.conversation_id = c.id)
+                AND (c.title LIKE ?1 ESCAPE '\'
+                     OR EXISTS (SELECT 1 FROM messages m
+                                WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\'))
               ORDER BY updated_at DESC, id DESC",
         )?;
         let rows = stmt.query_map([pattern], row_to_conversation)?;
@@ -312,6 +396,208 @@ impl Store {
         self.message(id)
     }
 
+    // ── Agenti ──────────────────────────────────────────────────────────
+
+    pub fn agents(&self) -> Result<Vec<Agent>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, definition FROM agents ORDER BY name COLLATE NOCASE, id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut agents = Vec::new();
+        for row in rows {
+            let (id, json) = row?;
+            // Una definizione illeggibile non deve nascondere le altre.
+            if let Ok(agent) = serde_json::from_str::<Agent>(&json) {
+                agents.push(Agent { id, ..agent });
+            }
+        }
+        Ok(agents)
+    }
+
+    pub fn agent(&self, id: i64) -> Result<Agent> {
+        let json: Option<String> = self
+            .conn
+            .query_row("SELECT definition FROM agents WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let json =
+            json.ok_or_else(|| Error::msg("Agente non trovato: forse è stato eliminato."))?;
+        Ok(Agent {
+            id,
+            ..serde_json::from_str(&json)?
+        })
+    }
+
+    /// Crea l'agente se `id` è 0, altrimenti lo aggiorna.
+    pub fn save_agent(&self, agent: &Agent) -> Result<Agent> {
+        let json = serde_json::to_string(&Agent {
+            id: 0,
+            ..agent.clone()
+        })?;
+        let id = if agent.id == 0 {
+            self.conn.execute(
+                "INSERT INTO agents (name, definition) VALUES (?1, ?2)",
+                params![agent.name, json],
+            )?;
+            self.conn.last_insert_rowid()
+        } else {
+            let changed = self.conn.execute(
+                "UPDATE agents SET name = ?2, definition = ?3, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![agent.id, agent.name, json],
+            )?;
+            if changed == 0 {
+                return Err(Error::msg("Agente non trovato: forse è stato eliminato."));
+            }
+            agent.id
+        };
+        self.agent(id)
+    }
+
+    /// Elimina l'agente. Le sue sessioni restano, con il nome che aveva.
+    pub fn delete_agent(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM agents WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ── Sessioni degli agenti ───────────────────────────────────────────
+
+    /// Crea una sessione con la sua conversazione e il compito come primo messaggio.
+    pub fn create_session(&self, agent: &Agent, task: &str) -> Result<AgentSession> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO conversations (title, tools) VALUES (?1, ?2)",
+            params![agent.name, serde_json::to_string(&agent.tools)?],
+        )?;
+        let conversation_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2)",
+            params![conversation_id, task],
+        )?;
+        tx.execute(
+            "INSERT INTO agent_sessions
+                 (agent_id, agent_name, definition, conversation_id, task, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                (agent.id != 0).then_some(agent.id),
+                agent.name,
+                serde_json::to_string(agent)?,
+                conversation_id,
+                task,
+                SessionStatus::Running.as_str()
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        self.session(id)
+    }
+
+    pub fn session(&self, id: i64) -> Result<AgentSession> {
+        self.conn
+            .query_row(
+                &format!("SELECT {SESSION_COLUMNS} FROM agent_sessions WHERE id = ?1"),
+                [id],
+                row_to_session,
+            )
+            .optional()?
+            .ok_or_else(|| Error::msg("Sessione non trovata: forse è stata eliminata."))
+    }
+
+    /// Le sessioni, dalla più recente.
+    pub fn sessions(&self) -> Result<Vec<AgentSession>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM agent_sessions ORDER BY updated_at DESC, id DESC"
+        ))?;
+        let rows = stmt.query_map([], row_to_session)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_session_status(
+        &self,
+        id: i64,
+        status: SessionStatus,
+        note: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET status = ?2, note = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, status.as_str(), note],
+        )?;
+        Ok(())
+    }
+
+    /// Le sessioni rimaste "al lavoro" quando l'app si è chiusa diventano interrotte.
+    pub fn mark_sessions_interrupted(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET status = 'interrupted'
+             WHERE status IN ('running', 'paused', 'waiting')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Elimina la sessione insieme alla sua conversazione.
+    pub fn delete_session(&self, id: i64) -> Result<()> {
+        let session = self.session(id)?;
+        self.delete_conversation(session.conversation_id)
+    }
+
+    // ── Registro delle azioni ───────────────────────────────────────────
+
+    pub fn add_action(&self, action: &NewAction<'_>) -> Result<()> {
+        let mut result: String = action.result.chars().take(ACTION_RESULT_CHARS).collect();
+        if result.len() < action.result.len() {
+            result.push('…');
+        }
+        self.conn.execute(
+            "INSERT INTO actions
+                 (conversation_id, session_id, kind, source, tool, summary, approval, is_error, result)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                action.conversation_id,
+                action.session_id,
+                if action.session_id.is_some() { "agent" } else { "chat" },
+                action.source,
+                action.tool,
+                action.summary,
+                action.approval,
+                action.is_error,
+                result
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Le azioni più recenti, al massimo `limit`; con `session_id` solo quelle della sessione.
+    pub fn actions(&self, limit: u32, session_id: Option<i64>) -> Result<Vec<ActionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, conversation_id, session_id, source, tool, summary,
+                    approval, is_error, result, kind
+             FROM actions WHERE ?2 IS NULL OR session_id = ?2
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit, session_id], |row| {
+            Ok(ActionRecord {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                conversation_id: row.get(2)?,
+                session_id: row.get(3)?,
+                source: row.get(4)?,
+                tool: row.get(5)?,
+                summary: row.get(6)?,
+                approval: row.get(7)?,
+                is_error: row.get(8)?,
+                result: row.get(9)?,
+                kind: row.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // ── Impostazioni ────────────────────────────────────────────────────
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
@@ -339,6 +625,25 @@ fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation
         title: row.get(1)?,
         created_at: row.get(2)?,
         updated_at: row.get(3)?,
+    })
+}
+
+fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSession> {
+    let definition: Option<Agent> = row
+        .get::<_, String>(9)
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok());
+    Ok(AgentSession {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        agent_name: row.get(2)?,
+        conversation_id: row.get(3)?,
+        task: row.get(4)?,
+        status: SessionStatus::parse(&row.get::<_, String>(5)?),
+        note: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        definition,
     })
 }
 
@@ -491,6 +796,85 @@ mod tests {
         // Il segno % cercato da solo non deve valere "qualsiasi cosa".
         assert_eq!(titoli("%"), ["Aiuto con Python"]);
         assert!(titoli("inesistente").is_empty());
+    }
+
+    #[test]
+    fn agenti_e_sessioni_si_salvano_e_le_sessioni_non_finiscono_in_chat() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = store.create_conversation("Chat normale").unwrap();
+        let agent = store
+            .save_agent(&Agent {
+                name: "Revisore".into(),
+                folders: vec!["C:\\progetto".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(agent.id > 0);
+        assert_eq!(store.agents().unwrap(), std::slice::from_ref(&agent));
+
+        let session = store.create_session(&agent, "Rivedi il codice").unwrap();
+        assert_eq!(session.status, SessionStatus::Running);
+        assert_eq!(session.definition.as_ref().unwrap().name, "Revisore");
+        let messages = store.messages(session.conversation_id).unwrap();
+        assert_eq!(messages[0].content, "Rivedi il codice");
+        // Gli strumenti della sessione sono quelli dell'agente.
+        let tools = store.conversation_tools(session.conversation_id).unwrap();
+        assert!(tools.unwrap().contains("\"terminal\":true"));
+
+        // La conversazione della sessione non compare in chat, nemmeno cercandola.
+        let ids: Vec<i64> = store
+            .list_conversations("")
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, [chat.id]);
+        assert!(store.list_conversations("Rivedi").unwrap().is_empty());
+
+        // Rimasta "al lavoro" a una chiusura dell'app, diventa interrotta.
+        store.mark_sessions_interrupted().unwrap();
+        assert_eq!(
+            store.session(session.id).unwrap().status,
+            SessionStatus::Interrupted
+        );
+
+        // Eliminando l'agente la sessione resta, senza collegamento.
+        store.delete_agent(agent.id).unwrap();
+        let kept = store.session(session.id).unwrap();
+        assert_eq!(kept.agent_id, None);
+        assert_eq!(kept.agent_name, "Revisore");
+
+        store.delete_session(session.id).unwrap();
+        assert!(store.sessions().unwrap().is_empty());
+        assert!(store.messages(session.conversation_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn il_registro_delle_azioni_sopravvive_alla_conversazione() {
+        let store = Store::open_in_memory().unwrap();
+        let conv = store.create_conversation("prova").unwrap();
+        let long = "r".repeat(1000);
+        store
+            .add_action(&NewAction {
+                conversation_id: conv.id,
+                session_id: None,
+                source: "prova",
+                tool: "write_file",
+                summary: "Scrivere il file a.txt",
+                approval: "user",
+                is_error: false,
+                result: &long,
+            })
+            .unwrap();
+        store.delete_conversation(conv.id).unwrap();
+
+        let actions = store.actions(10, None).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].conversation_id, None);
+        assert_eq!(actions[0].source, "prova");
+        assert_eq!(actions[0].kind, "chat");
+        assert!(actions[0].result.chars().count() <= ACTION_RESULT_CHARS + 1);
+        assert!(store.actions(10, Some(99)).unwrap().is_empty());
     }
 
     #[test]

@@ -70,13 +70,18 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
 type RequestProps = {
   request: ToolRequest;
   onAnswer: (approval: Approval) => void;
+  /** Chi chiede e dove vale "sempre": la conversazione o la sessione dell'agente. */
+  who?: string;
+  scope?: string;
 };
 
 /** Il modello chiede di fare qualcosa che richiede la conferma dell'utente. */
-export function ToolRequestCard({ request, onAnswer }: RequestProps) {
+export function ToolRequestCard({ request, onAnswer, who = "Il modello", scope = "in questa conversazione" }: RequestProps) {
   const args = request.arguments as Record<string, unknown>;
-  const preview =
-    typeof args.content === "string"
+  // Per gli strumenti MCP si mostrano i parametri: è l'unico modo di sapere che cosa faranno.
+  const preview = request.name.startsWith("mcp__")
+    ? JSON.stringify(args, null, 2)
+    : typeof args.content === "string"
       ? args.content
       : typeof args.new_text === "string"
         ? `Sostituisce:\n${String(args.old_text ?? "")}\n\nCon:\n${args.new_text}`
@@ -84,7 +89,7 @@ export function ToolRequestCard({ request, onAnswer }: RequestProps) {
 
   return (
     <div className="tool-request" role="alertdialog" aria-label="Richiesta di permesso">
-      <div className="tool-request-title">Il modello chiede il permesso di:</div>
+      <div className="tool-request-title">{who} chiede il permesso di:</div>
       <div className="mono">{request.summary}</div>
       {preview !== null && <pre className="tool-preview">{preview}</pre>}
       <div className="row">
@@ -92,7 +97,7 @@ export function ToolRequestCard({ request, onAnswer }: RequestProps) {
           Consenti
         </button>
         <button className="btn" onClick={() => onAnswer("always")}>
-          Consenti sempre in questa conversazione
+          Consenti sempre {scope}
         </button>
         <button className="btn" onClick={() => onAnswer("deny")}>
           Nega

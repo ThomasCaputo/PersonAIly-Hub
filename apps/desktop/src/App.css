@@ -315,6 +315,11 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.folder .btn-link {
+  flex: none;
+  align-self: flex-start;
+}
+
 .card {
   margin-bottom: 8px;
   border: 1px solid var(--border);
@@ -908,4 +913,240 @@ input[type="range"] {
 .tool-result,
 .tool-request {
   overflow-wrap: anywhere;
+}
+
+/* ── Agenti ───────────────────────────────────────────────── */
+
+.agents {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.agents > .page {
+  flex: 1;
+  min-height: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: 7px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.agents-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.agents-split .conversations {
+  flex-basis: 240px;
+}
+
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-item:hover {
+  background: var(--bg-side);
+}
+
+.session-item.active {
+  background: var(--accent-bg);
+}
+
+.session-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.session-agent {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-task {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-when {
+  font-size: 11px;
+}
+
+.status-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-side);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-badge.running,
+.status-badge.waiting {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.status-badge.done {
+  color: var(--ok);
+}
+
+.status-badge.failed {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.touched {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.new-task,
+.agent-editor {
+  max-width: 760px;
+}
+
+.new-task textarea,
+.agent-editor textarea,
+.agent-editor input[type="text"],
+.agent-editor input[type="number"],
+.new-task select {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.agent-editor input[type="number"] {
+  width: 100px;
+}
+
+.agent-editor .model-picker {
+  margin-bottom: 4px;
+  padding: 0;
+  border: 0;
+}
+
+.actions-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.actions-table th,
+.actions-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.actions-table th {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.actions-table tr.failed td:last-child {
+  color: var(--error);
+}
+
+.action-summary {
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.mcp-form {
+  max-width: 760px;
+  margin-top: 10px;
+  padding: 14px;
+}
+
+.mcp-form input[type="text"],
+.mcp-form textarea {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.mcp-form .mono {
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.mcp-tools {
+  margin: 4px 0 0;
+  padding-left: 20px;
 }

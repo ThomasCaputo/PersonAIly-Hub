@@ -107,8 +107,91 @@ export type AttachmentInfo = { name: string; kind: "text" | "image" };
 /** Quanto chiedere prima di lasciar agire il modello. */
 export type PermissionLevel = "ask" | "edits" | "all";
 
-/** Strumenti e permessi di una conversazione. */
-export type ToolSettings = { files: boolean; web: boolean; permission: PermissionLevel };
+/** Strumenti e permessi di una conversazione o di un agente. Il terminale vale solo per gli agenti. */
+export type ToolSettings = {
+  files: boolean;
+  web: boolean;
+  terminal: boolean;
+  permission: PermissionLevel;
+  /** Strumenti MCP con "Consenti sempre". */
+  allowedTools?: string[];
+};
+
+/** Un server MCP configurato. `id` vuoto per uno non ancora salvato. */
+export type McpServer = {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  /** Coppie [nome, valore]. */
+  env: [string, string][];
+};
+
+export type McpToolInfo = { name: string; description: string };
+
+/** Nome leggibile di uno strumento MCP (`mcp__server__strumento`), oppure null. */
+export function mcpToolLabel(name: string): string | null {
+  if (!name.startsWith("mcp__")) return null;
+  const [server, ...tool] = name.slice(5).split("__");
+  return `MCP ${server.replace(/_/g, " ")}: ${tool.join("__")}`;
+}
+
+/** La definizione di un agente. `id` 0 per uno non ancora salvato. */
+export type Agent = {
+  id: number;
+  name: string;
+  description: string;
+  instructions: string;
+  model: ModelRef;
+  folders: string[];
+  tools: ToolSettings;
+  /** Server MCP (identificatori) avviati con ogni sessione. */
+  mcpServers: string[];
+  maxSteps: number;
+};
+
+export type SessionStatus = "running" | "paused" | "waiting" | "done" | "stopped" | "failed" | "interrupted";
+
+export type AgentSession = {
+  id: number;
+  agentId: number | null;
+  agentName: string;
+  conversationId: number;
+  task: string;
+  status: SessionStatus;
+  /** Errore o avviso con cui la sessione si è fermata. */
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Ciò che una sessione al lavoro sta facendo in questo momento. */
+export type LiveState = {
+  status: SessionStatus | null;
+  streaming: string;
+  reasoning: string;
+  request: ToolRequest | null;
+  /** Cambia a ogni nuovo messaggio salvato. */
+  revision: number;
+};
+
+/** Una voce del registro delle azioni. */
+export type ActionRecord = {
+  id: number;
+  createdAt: string;
+  conversationId: number | null;
+  sessionId: number | null;
+  kind: "chat" | "agent";
+  source: string;
+  tool: string;
+  summary: string;
+  approval: "auto" | "user" | "denied" | "refused" | "interrupted";
+  isError: boolean;
+  result: string;
+};
+
+/** Le sessioni che stanno ancora lavorando (o aspettano di poterlo fare). */
+export const isActive = (status: SessionStatus) => status === "running" || status === "paused" || status === "waiting";
 
 /** Risposta dell'utente a una richiesta di usare uno strumento. */
 export type Approval = "deny" | "once" | "always";
@@ -271,6 +354,29 @@ export const api = {
   conversationTools: (conversationId: number) => invoke<ToolSettings>("conversation_tools", { conversationId }),
   setConversationTools: (conversationId: number, settings: ToolSettings) =>
     invoke<void>("set_conversation_tools", { conversationId, settings }),
+
+  listActions: (limit: number, sessionId: number | null = null) =>
+    invoke<ActionRecord[]>("list_actions", { limit, sessionId }),
+
+  listMcpServers: () => invoke<McpServer[]>("list_mcp_servers"),
+  saveMcpServer: (server: McpServer) => invoke<McpServer>("save_mcp_server", { server }),
+  deleteMcpServer: (id: string) => invoke<void>("delete_mcp_server", { id }),
+  probeMcpServer: (server: McpServer) => invoke<McpToolInfo[]>("probe_mcp_server", { server }),
+
+  listAgents: () => invoke<Agent[]>("list_agents"),
+  saveAgent: (agent: Agent) => invoke<Agent>("save_agent", { agent }),
+  duplicateAgent: (id: number) => invoke<Agent>("duplicate_agent", { id }),
+  deleteAgent: (id: number) => invoke<void>("delete_agent", { id }),
+  startAgentSession: (agentId: number, task: string) =>
+    invoke<AgentSession>("start_agent_session", { agentId, task }),
+  replyAgentSession: (id: number, text: string) => invoke<AgentSession>("reply_agent_session", { id, text }),
+  listAgentSessions: () => invoke<AgentSession[]>("list_agent_sessions"),
+  getAgentSession: (id: number) => invoke<AgentSession>("get_agent_session", { id }),
+  agentSessionLive: (id: number) => invoke<LiveState | null>("agent_session_live", { id }),
+  pauseAgentSession: (id: number) => invoke<void>("pause_agent_session", { id }),
+  resumeAgentSession: (id: number) => invoke<void>("resume_agent_session", { id }),
+  stopAgentSession: (id: number) => invoke<void>("stop_agent_session", { id }),
+  deleteAgentSession: (id: number) => invoke<void>("delete_agent_session", { id }),
 
   listNamedPresets: () => invoke<NamedPreset[]>("list_named_presets"),
   saveNamedPreset: (preset: NamedPreset) => invoke<NamedPreset>("save_named_preset", { preset }),

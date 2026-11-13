@@ -9,6 +9,7 @@ import {
   type ProviderInfo,
   type RuntimeStatus,
 } from "./api";
+import { AgentsArea } from "./areas/AgentsArea";
 import { ChatArea } from "./areas/ChatArea";
 import { ModelsArea } from "./areas/ModelsArea";
 import { SettingsArea } from "./areas/SettingsArea";
@@ -151,19 +152,12 @@ export default function App() {
               onProvidersChange={refreshProviders}
             />
           )}
-          {areaId === "agents" && <Placeholder title="Agenti" hint="Gli agenti arrivano con la Tappa 4." />}
+          {areaId === "agents" && (
+            <AgentsArea status={status} providers={providers} onOpenModels={() => setAreaId("models")} />
+          )}
           {areaId === "settings" && <SettingsArea />}
         </div>
       </main>
-    </div>
-  );
-}
-
-function Placeholder({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="page">
-      <h1>{title}</h1>
-      <p className="dim">{hint}</p>
     </div>
   );
 }

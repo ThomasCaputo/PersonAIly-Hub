@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
+  mcpToolLabel,
   usd,
   type Approval,
   type Conversation,
@@ -459,7 +460,7 @@ type PickerProps = {
 };
 
 /** Scelta del modello a cui inviare i messaggi; si può cambiare a metà conversazione. */
-function ModelPicker({ providers, loadedName, value, disabled, onChange }: PickerProps) {
+export function ModelPicker({ providers, loadedName, value, disabled, onChange }: PickerProps) {
   const encode = (model: ModelRef) => JSON.stringify(model.kind === "local" ? ["local"] : [model.providerId, model.model]);
   const decode = (text: string): ModelRef => {
     const parts = JSON.parse(text) as string[];
@@ -495,23 +496,35 @@ function ModelPicker({ providers, loadedName, value, disabled, onChange }: Picke
   );
 }
 
-const TOOL_LABELS: Record<string, string> = {
+export const TOOL_LABELS: Record<string, string> = {
   list_folder: "Elenco della cartella",
   read_file: "Lettura del file",
   write_file: "Scrittura del file",
   edit_file: "Modifica del file",
   web_search: "Ricerca web",
   read_web_page: "Lettura della pagina",
+  run_command: "Comando nel terminale",
 };
 
+/** Nome leggibile di uno strumento dell'app o di un server MCP. */
+export function toolLabel(name: string): string {
+  return TOOL_LABELS[name] ?? mcpToolLabel(name) ?? name;
+}
+
 /** Il risultato di uno strumento: una riga, con il contenuto da aprire a richiesta. */
-function ToolResult({ message }: { message: Message }) {
-  const label = TOOL_LABELS[message.toolName ?? ""] ?? message.toolName ?? "Strumento";
+export function ToolResult({ message }: { message: Message }) {
+  const label = message.toolName ? toolLabel(message.toolName) : "Strumento";
   const firstLine = message.content.split("\n")[0];
   return (
     <details className={message.isError ? "tool-result failed" : "tool-result"}>
       <summary>
-        <span className="tool-result-label">{message.isError ? `${label} non riuscita` : label}</span>
+        <span className="tool-result-label">
+          {message.isError
+            ? message.toolName?.startsWith("mcp__")
+              ? `${label} · errore`
+              : `${label} non ${message.toolName === "run_command" ? "riuscito" : "riuscita"}`
+            : label}
+        </span>
         <span className="dim"> · {firstLine.length > 90 ? `${firstLine.slice(0, 90)}…` : firstLine}</span>
       </summary>
       <pre className="tool-preview">{message.content}</pre>

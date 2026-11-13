@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ToolSettings } from "../api";
+import { McpSection } from "../components/McpSection";
 import { ToolsBar } from "../components/ToolsBar";
 
 /** Cartelle concesse ai modelli e strumenti predefiniti delle nuove conversazioni. */
@@ -68,6 +69,8 @@ export function SettingsArea() {
           />
         )}
       </section>
+
+      <McpSection />
 
       {error && <p className="error pre">{error}</p>}
     </div>
