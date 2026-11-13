@@ -106,11 +106,36 @@ Rimandato (non blocca la Tappa 5):
 **Fatto quando:** un agente porta a termine un compito in più passi su una cartella di
 progetto, e l'utente può seguirlo e fermarlo.
 
-## Tappa 5 — VS Code
+## Tappa 5 — VS Code ✅
 
-- API locale completa e protetta, endpoint compatibile OpenAI (VS-1, SI-4).
-- Eseguibile `server` senza interfaccia (VS-5).
-- Estensione: pannello chat, contesto dell'editor, diff (VS-2, VS-3, VS-4).
+Fatto ([ADR 0010](adr/0010-api-locale-e-vscode.md)):
+
+- [x] API locale su `127.0.0.1` con token, rifiuto delle pagine web e del DNS rebinding (SI-4).
+- [x] Endpoint compatibile OpenAI: `/v1/models`, `/v1/chat/completions` con e senza
+      streaming, strumenti del client, immagini (VS-1).
+- [x] API propria: conversazioni con strumenti e conferme, modelli (anche caricamento),
+      agenti e sessioni, registro delle azioni; streaming con Server-Sent Events.
+- [x] Eseguibile `app-server` senza interfaccia, con chiusura dopo inattività (VS-5).
+- [x] Un solo nucleo attivo: file di blocco `core.lock`; l'app desktop prende il posto di
+      `app-server` all'apertura.
+- [x] Indirizzo e token visibili nelle Impostazioni dell'app, con "Rigenera".
+- [x] Più risposte in chat insieme, una per conversazione (app e VS Code).
+- [x] Estensione: pannello chat con le conversazioni dell'app, scelta del modello (anche
+      locale da caricare), avvio di un agente (VS-2).
+- [x] File aperto o selezione passati al modello (VS-3).
+- [x] Modifiche proposte come diff, da accettare o rifiutare (VS-4); `Ctrl+Alt+I` per
+      chiedere una modifica alla selezione o al file.
+- [x] Prova in VS Code vero con Qwen 2.5 7B: modifica a una selezione accettata come diff
+      e salvata.
+
+Rimandato (non blocca la Tappa 6):
+
+- [ ] Percorso di `app-server.exe` da indicare a mano nell'estensione (ad app chiusa):
+      l'installer dovrà fornirlo.
+- [ ] Client TypeScript generato dai tipi Rust (`packages/api-client`): oggi i tipi usati
+      dall'estensione sono scritti a mano.
+- [ ] Le conferme degli agenti avviati da VS Code si danno solo nell'app.
+- [ ] API ed estensione con modelli cloud provate solo dai test automatici (manca la chiave vera).
 
 **Fatto quando:** da VS Code si chiede una modifica al file aperto e la si accetta come diff.
 

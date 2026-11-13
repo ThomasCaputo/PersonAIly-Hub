@@ -34,3 +34,29 @@ pub fn delete_api_key(provider_id: &str) -> Result<()> {
         Err(e) => Err(to_error(e)),
     }
 }
+
+/// Token dell'API locale (SI-4). Si crea al primo uso e resta lo stesso fra
+/// un avvio e l'altro, così i programmi configurati a mano continuano a
+/// funzionare.
+pub fn api_token() -> Result<String> {
+    let entry = Entry::new(SERVICE, "api-token").map_err(to_error)?;
+    match entry.get_password() {
+        Ok(token) if !token.is_empty() => Ok(token),
+        Ok(_) | Err(keyring::Error::NoEntry) => {
+            let token = crate::instance::new_token()?;
+            entry.set_password(&token).map_err(to_error)?;
+            Ok(token)
+        }
+        Err(e) => Err(to_error(e)),
+    }
+}
+
+/// Sostituisce il token dell'API locale: quello vecchio smette di valere.
+pub fn regenerate_api_token() -> Result<String> {
+    let token = crate::instance::new_token()?;
+    Entry::new(SERVICE, "api-token")
+        .map_err(to_error)?
+        .set_password(&token)
+        .map_err(to_error)?;
+    Ok(token)
+}

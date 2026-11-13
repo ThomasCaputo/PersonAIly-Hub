@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 app-core = { path = "crates/core" }
+app-server = { path = "crates/server" }
 
 # Ottimizzazioni per la versione distribuita: eseguibile più piccolo.
 [profile.release]

@@ -421,7 +421,7 @@ export function ChatArea({
             }}
           />
           {generating ? (
-            <button className="btn" onClick={() => api.stopGeneration()}>
+            <button className="btn" onClick={() => api.stopGeneration(activeId)}>
               Interrompi
             </button>
           ) : (

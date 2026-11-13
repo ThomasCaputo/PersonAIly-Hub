@@ -3,6 +3,14 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Placement = "vram" | "ram";
+
+/** Stato dell'API locale avviata dall'app. */
+export type ApiInfo = {
+  running: boolean;
+  port: number | null;
+  token: string | null;
+  error: string | null;
+};
 export type KvCacheType = "f16" | "q8_0" | "q4_0";
 
 export type LoadParams = {
@@ -344,7 +352,9 @@ export const api = {
       onEvent: channel,
     });
   },
-  stopGeneration: () => invoke<void>("stop_generation"),
+  stopGeneration: (conversationId: number | null = null) => invoke<void>("stop_generation", { conversationId }),
+  apiInfo: () => invoke<ApiInfo>("api_info"),
+  regenerateApiToken: () => invoke<string>("regenerate_api_token"),
   answerToolRequest: (id: string, approval: Approval) => invoke<void>("answer_tool_request", { id, approval }),
 
   grantedFolders: () => invoke<string[]>("granted_folders"),

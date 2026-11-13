@@ -31,6 +31,9 @@ jobs:
       - name: Interfaccia (TypeScript + build)
         run: npm run build:ui
 
+      - name: Estensione VS Code (TypeScript + prove)
+        run: npm test -w progetto-ai-vscode
+
       - name: Formattazione
         run: cargo fmt --all --check
 

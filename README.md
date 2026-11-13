@@ -1,11 +1,12 @@
 # Progetto AI
 
-> Nome provvisorio. Stato: **Tappa 4 completata** — si chatta con modelli locali `.gguf`
+> Nome provvisorio. Stato: **Tappa 5 completata** — si chatta con modelli locali `.gguf`
 > (scaricabili da Hugging Face) e con modelli cloud (Anthropic, servizi compatibili con
 > OpenAI), con file, ricerca web e allegati. Gli agenti lavorano da soli su una cartella,
-> con comandi nel terminale e strumenti esterni MCP, chiedendo conferma secondo i
-> permessi; ogni azione finisce nel registro. Prossima: VS Code (vedi la
-> [roadmap](docs/roadmap.md)).
+> con comandi nel terminale e strumenti esterni MCP. Un'API locale compatibile con OpenAI
+> rende i modelli usabili da altri programmi, e un'estensione VS Code porta la chat
+> nell'editor e propone le modifiche come diff. Prossima: rifinitura e pubblicazione
+> (vedi la [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:
 
@@ -59,7 +60,12 @@ npm install      # una volta sola
 npm run dev      # avvia l'app in modalità sviluppo
 npm run check    # formattazione, lint e test del codice Rust
 npm run build    # crea l'installer
+cargo build -p app-server                 # nucleo senza interfaccia (target/debug/app-server.exe)
+npm run package -w progetto-ai-vscode     # estensione VS Code (extensions/vscode/progetto-ai.vsix)
 ```
+
+L'estensione VS Code è descritta in [extensions/vscode/README.md](extensions/vscode/README.md).
+Ad app chiusa le serve il percorso di `app-server.exe` (impostazione `progettoAi.serverPath`).
 
 Per usare i modelli locali serve llama.cpp: l'app lo scarica da sé dalla pagina
 **Modelli → Motore** (dettagli nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso)).
@@ -69,12 +75,13 @@ Per usare i modelli locali serve llama.cpp: l'app lo scarica da sé dalla pagina
 ```
 apps/desktop/        App Tauri (interfaccia React + guscio Rust)
 crates/core/         Nucleo: provider, modelli locali, strumenti, agenti, archivio
-crates/server/       Nucleo avviabile senza interfaccia (per VS Code e altri client)
+crates/server/       API locale (usata anche dall'app) ed eseguibile app-server senza interfaccia
+extensions/vscode/   Estensione VS Code: chat, contesto dell'editor, modifiche come diff
 docs/                Documentazione
 ```
 
-Arriveranno con le tappe successive: `extensions/vscode/` (estensione VS Code) e
-`packages/api-client/` (client TypeScript dell'API locale).
+Arriverà più avanti `packages/api-client/` (client TypeScript dell'API locale, generato
+dai tipi Rust).
 
 ## Licenza
 

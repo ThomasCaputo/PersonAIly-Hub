@@ -1,12 +1,13 @@
 //! Guscio dell'app desktop: crea la finestra e inoltra i comandi al nucleo.
 //! Qui non va logica propria: sta tutta in `app-core`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use app_core::DownloadState;
 use app_core::agents::{Agent, AgentSession, LiveState};
 use app_core::chat::ChatEvent;
 use app_core::hub::{HubFile, HubRepo};
+use app_core::instance::InstanceKind;
 use app_core::local::install::{Phase, Progress, Variant};
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
@@ -19,11 +20,21 @@ use app_core::tools::ToolSettings;
 use app_core::{
     Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome,
 };
+use app_server::ApiHandle;
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent, State};
 
 type CoreState<'a> = State<'a, Arc<Core>>;
+
+/// L'API locale avviata dall'app (VS-1), oppure il motivo per cui non è partita.
+#[derive(Default)]
+struct LocalApi {
+    handle: tokio::sync::Mutex<Option<ApiHandle>>,
+    error: Mutex<Option<String>>,
+}
+
+type ApiState<'a> = State<'a, Arc<LocalApi>>;
 type CmdResult<T> = Result<T, String>;
 
 fn text(e: impl std::fmt::Display) -> String {
@@ -431,9 +442,62 @@ async fn refresh_provider_models(core: CoreState<'_>, id: String) -> CmdResult<P
     core.refresh_provider_models(&id).await.map_err(text)
 }
 
+/// Senza `conversation_id` ferma tutte le risposte in corso in chat.
 #[tauri::command]
-fn stop_generation(core: CoreState<'_>) {
-    core.stop_generation();
+fn stop_generation(core: CoreState<'_>, conversation_id: Option<i64>) {
+    match conversation_id {
+        Some(id) => core.stop_conversation(id),
+        None => core.stop_generation(),
+    }
+}
+
+// ── API locale ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiInfo {
+    running: bool,
+    port: Option<u16>,
+    token: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn api_info(api: ApiState<'_>) -> CmdResult<ApiInfo> {
+    let handle = api.handle.lock().await;
+    Ok(ApiInfo {
+        running: handle.is_some(),
+        port: handle.as_ref().map(ApiHandle::port),
+        token: handle.as_ref().map(ApiHandle::token),
+        error: api.error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+    })
+}
+
+/// Il token vecchio smette subito di valere: i programmi configurati a mano
+/// vanno aggiornati; l'estensione VS Code rilegge da sola il file di blocco.
+#[tauri::command]
+async fn regenerate_api_token(api: ApiState<'_>) -> CmdResult<String> {
+    let handle = api.handle.lock().await;
+    let handle = handle.as_ref().ok_or("L'API locale non è attiva.")?;
+    handle.regenerate_token()
+}
+
+/// Avvia l'API locale dentro l'app. Se l'estensione VS Code aveva avviato il
+/// nucleo senza interfaccia, gli chiede di chiudersi: resta un nucleo solo.
+fn spawn_local_api(core: Arc<Core>, data_dir: std::path::PathBuf, api: Arc<LocalApi>) {
+    tauri::async_runtime::spawn(async move {
+        let result = match app_server::replace_server(&data_dir).await {
+            Ok(()) => {
+                app_server::start(core, &data_dir, InstanceKind::App, app_server::DEFAULT_PORT)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(handle) => *api.handle.lock().await = Some(handle),
+            Err(e) => *api.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e),
+        }
+    });
 }
 
 // ── Preset con nome ─────────────────────────────────────────────────────
@@ -509,8 +573,12 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let core = Core::new(&app.path().app_data_dir()?)?;
-            app.manage(Arc::new(core));
+            let data_dir = app.path().app_data_dir()?;
+            let core = Arc::new(Core::new(&data_dir)?);
+            let api = Arc::new(LocalApi::default());
+            spawn_local_api(core.clone(), data_dir, api.clone());
+            app.manage(core);
+            app.manage(api);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -533,6 +601,8 @@ pub fn run() {
             get_messages,
             send_message,
             stop_generation,
+            api_info,
+            regenerate_api_token,
             granted_folders,
             set_granted_folders,
             tool_defaults,
@@ -582,6 +652,13 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(core) = handle.try_state::<Arc<Core>>()
         {
+            // Prima si toglie il file di blocco: i client non devono trovare
+            // un nucleo che sta per sparire.
+            if let Some(api) = handle.try_state::<Arc<LocalApi>>()
+                && let Some(running) = tauri::async_runtime::block_on(api.handle.lock()).take()
+            {
+                tauri::async_runtime::block_on(running.stop());
+            }
             // Gli agenti al lavoro si fermano: comandi in corso compresi.
             core.stop_all_sessions();
             tauri::async_runtime::block_on(core.unload_model());

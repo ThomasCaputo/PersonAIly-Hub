@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ToolSettings } from "../api";
+import { ApiSection } from "../components/ApiSection";
 import { McpSection } from "../components/McpSection";
 import { ToolsBar } from "../components/ToolsBar";
 
@@ -71,6 +72,8 @@ export function SettingsArea() {
       </section>
 
       <McpSection />
+
+      <ApiSection />
 
       {error && <p className="error pre">{error}</p>}
     </div>

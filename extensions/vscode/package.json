@@ -1,0 +1,169 @@
+{
+  "name": "progetto-ai-vscode",
+  "displayName": "Progetto AI",
+  "description": "Chat e modifiche al codice con i modelli locali e cloud di Progetto AI.",
+  "version": "0.1.0",
+  "publisher": "progettoai",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "progettoAi",
+          "title": "Progetto AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "progettoAi": [
+        {
+          "type": "webview",
+          "id": "progettoAi.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "progettoAi.edit",
+        "title": "Chiedi una modifica…",
+        "category": "Progetto AI"
+      },
+      {
+        "command": "progettoAi.chooseModel",
+        "title": "Scegli il modello",
+        "category": "Progetto AI",
+        "icon": "$(chip)"
+      },
+      {
+        "command": "progettoAi.newChat",
+        "title": "Nuova conversazione",
+        "category": "Progetto AI",
+        "icon": "$(add)"
+      },
+      {
+        "command": "progettoAi.history",
+        "title": "Apri una conversazione",
+        "category": "Progetto AI",
+        "icon": "$(history)"
+      },
+      {
+        "command": "progettoAi.startAgent",
+        "title": "Avvia un agente",
+        "category": "Progetto AI"
+      },
+      {
+        "command": "progettoAi.acceptProposal",
+        "title": "Accetta la modifica",
+        "category": "Progetto AI",
+        "icon": "$(check)"
+      },
+      {
+        "command": "progettoAi.rejectProposal",
+        "title": "Rifiuta la modifica",
+        "category": "Progetto AI",
+        "icon": "$(close)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "progettoAi.newChat",
+          "when": "view == progettoAi.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "progettoAi.history",
+          "when": "view == progettoAi.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "progettoAi.chooseModel",
+          "when": "view == progettoAi.chat",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "progettoAi.acceptProposal",
+          "when": "resourceScheme == progetto-ai-proposta",
+          "group": "navigation@1"
+        },
+        {
+          "command": "progettoAi.rejectProposal",
+          "when": "resourceScheme == progetto-ai-proposta",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "progettoAi.edit",
+          "when": "editorTextFocus",
+          "group": "1_modification@9"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "progettoAi.acceptProposal",
+          "when": "resourceScheme == progetto-ai-proposta"
+        },
+        {
+          "command": "progettoAi.rejectProposal",
+          "when": "resourceScheme == progetto-ai-proposta"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "progettoAi.edit",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Progetto AI",
+      "properties": {
+        "progettoAi.serverPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Percorso di `app-server.exe`, il nucleo senza interfaccia. Serve solo quando l'app desktop è chiusa: l'estensione lo avvia da sé."
+        },
+        "progettoAi.dataDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.progettoai.desktop`)."
+        },
+        "progettoAi.maxContextChars": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "markdownDescription": "Caratteri massimi del file aperto inviati come contesto. Per i file più lunghi si invia solo la selezione."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "test": "tsc -p . && node --test test/",
+    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license -o progetto-ai.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/vscode": "~1.100.0",
+    "@vscode/vsce": "^4.1.1",
+    "typescript": "~6.0.3"
+  }
+}

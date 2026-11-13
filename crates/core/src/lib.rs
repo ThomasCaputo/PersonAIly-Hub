@@ -10,6 +10,7 @@ pub mod chat;
 pub mod error;
 pub mod gguf;
 pub mod hub;
+pub mod instance;
 pub mod local;
 pub mod mcp;
 pub mod models;
@@ -155,8 +156,9 @@ pub struct Core {
     cloud_http: reqwest::Client,
     store: Mutex<Store>,
     runtime: tokio::sync::Mutex<LocalRuntime>,
-    /// Comandi della risposta in corso in chat, per interromperla.
-    generation: Mutex<Option<Arc<RunControl>>>,
+    /// Comandi delle risposte in corso in chat, per conversazione: l'app e
+    /// l'estensione VS Code possono generare nello stesso momento.
+    generation: Mutex<HashMap<i64, Arc<RunControl>>>,
     /// Sessioni degli agenti al lavoro, per identificatore.
     sessions: Mutex<HashMap<i64, Arc<LiveSession>>>,
     /// Occupato mentre llama.cpp viene scaricato e installato.
@@ -222,6 +224,49 @@ enum Target {
     Cloud(Provider, String, String),
 }
 
+impl Target {
+    /// Chiave del preset del modello (vedi [`Core::preset`]).
+    fn preset_key(&self) -> String {
+        match self {
+            Target::Local(loaded) => loaded.model_path.clone(),
+            Target::Cloud(provider, _, model) => {
+                format!("{CLOUD_KEY_PREFIX}{}:{model}", provider.id)
+            }
+        }
+    }
+}
+
+/// Parametri di generazione indicati da un client esterno: quelli assenti
+/// si prendono dal preset del modello.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SamplingOverrides {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub seed: Option<i64>,
+    pub stop: Option<Vec<String>>,
+}
+
+impl SamplingOverrides {
+    pub fn apply(&self, base: &mut SamplingParams) {
+        if let Some(v) = self.temperature {
+            base.temperature = v;
+        }
+        if let Some(v) = self.top_p {
+            base.top_p = v;
+        }
+        if let Some(v) = self.max_tokens {
+            base.max_tokens = Some(v);
+        }
+        if let Some(v) = self.seed {
+            base.seed = Some(v);
+        }
+        if let Some(v) = &self.stop {
+            base.stop = v.clone();
+        }
+    }
+}
+
 /// Stato dell'installazione di llama.cpp.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,7 +296,7 @@ impl Core {
             )),
             http,
             cloud_http: reqwest::Client::new(),
-            generation: Mutex::new(None),
+            generation: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             download: Mutex::new(None),
@@ -823,6 +868,73 @@ impl Core {
 
     // ── Invio dei messaggi ──────────────────────────────────────────────
 
+    /// Il preset salvato per un modello (per quello locale, il modello caricato).
+    pub fn preset_for(&self, model: &ModelRef) -> Result<Preset> {
+        self.preset(&self.target(model)?.preset_key())
+    }
+
+    /// Una risposta "senza archivio", per l'endpoint compatibile con OpenAI:
+    /// la cronologia arriva intera dal client, nulla si salva e gli strumenti
+    /// indicati dal client li esegue il client stesso. I messaggi `system`
+    /// diventano il prompt di sistema; i parametri assenti si prendono dal
+    /// preset del modello.
+    pub async fn complete(
+        &self,
+        model: &ModelRef,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+        overrides: &SamplingOverrides,
+        cancel: Arc<Notify>,
+        on_event: impl FnMut(ChatEvent),
+    ) -> Result<chat::ChatOutcome> {
+        let target = self.target(model)?;
+        let mut sampling = self.preset(&target.preset_key())?.sampling;
+        overrides.apply(&mut sampling);
+
+        let system: Vec<&str> = messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .collect();
+        let system = join_prompt(&system);
+        let rest: Vec<ChatMessage> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .cloned()
+            .collect();
+        if rest.is_empty() {
+            return Err(Error::msg("La richiesta non contiene messaggi."));
+        }
+
+        match &target {
+            Target::Local(loaded) => {
+                let mut all = Vec::with_capacity(rest.len() + 1);
+                if !system.is_empty() {
+                    all.push(ChatMessage::new("system", system));
+                }
+                all.extend(rest);
+                let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
+                let body = chat::request_body(&all, tools, &sampling, None, chat::Flavor::Llama);
+                chat::stream_chat(&self.http, &url, None, &body, cancel, on_event).await
+            }
+            Target::Cloud(provider, key, id) => {
+                providers::stream(
+                    &self.cloud_http,
+                    provider,
+                    key,
+                    id,
+                    &rest,
+                    tools,
+                    &system,
+                    &sampling,
+                    cancel,
+                    on_event,
+                )
+                .await
+            }
+        }
+    }
+
     /// A chi mandare le richieste per un modello; errore se non è raggiungibile.
     fn target(&self, model: &ModelRef) -> Result<Target> {
         Ok(match model {
@@ -867,6 +979,22 @@ impl Core {
         // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
         let target = self.target(model)?;
 
+        let control = Arc::new(RunControl::new());
+        {
+            let mut running = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+            if running.contains_key(&conversation_id) {
+                return Err(Error::msg(
+                    "Questa conversazione sta già rispondendo: aspetta o interrompi la risposta.",
+                ));
+            }
+            running.insert(conversation_id, control.clone());
+        }
+        // Libera la conversazione a qualunque uscita, errori compresi.
+        let _running = Running {
+            core: self,
+            conversation_id,
+        };
+
         let attachments = attachment_paths
             .iter()
             .map(|path| attachments::load(Path::new(path)))
@@ -903,9 +1031,6 @@ impl Core {
             )
         };
 
-        let control = Arc::new(RunControl::new());
-        *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
-
         let scope = RunScope {
             conversation_id,
             session_id: None,
@@ -930,7 +1055,6 @@ impl Core {
             )
             .await;
 
-        *self.generation.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.forget_approvals(&scope.key_prefix);
         result
     }
@@ -1416,13 +1540,7 @@ impl Core {
             Error::msg("La definizione dell'agente di questa sessione è illeggibile.")
         })?;
         let target = self.target(&agent.model)?;
-        let preset_key = match &target {
-            Target::Local(loaded) => loaded.model_path.clone(),
-            Target::Cloud(provider, _, model) => {
-                format!("{CLOUD_KEY_PREFIX}{}:{model}", provider.id)
-            }
-        };
-        let sampling = self.preset(&preset_key)?.sampling;
+        let sampling = self.preset(&target.preset_key())?.sampling;
         let reads_images = matches!(target, Target::Cloud(..));
 
         let mut settings = self.conversation_tools(session.conversation_id)?;
@@ -1603,20 +1721,58 @@ impl Core {
         Ok(Self::provider_info(updated))
     }
 
-    /// Interrompe la risposta in corso, se c'è. Il testo già arrivato viene salvato.
+    /// Interrompe tutte le risposte in corso in chat. Il testo già arrivato viene salvato.
     pub fn stop_generation(&self) {
-        if let Some(cancel) = self
+        for control in self
             .generation
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
+            .values()
         {
-            cancel.stop();
+            control.stop();
         }
+    }
+
+    /// Interrompe la risposta in corso in una conversazione, se c'è.
+    pub fn stop_conversation(&self, conversation_id: i64) {
+        if let Some(control) = self
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&conversation_id)
+        {
+            control.stop();
+        }
+    }
+
+    /// `true` se una risposta in chat o una sessione di un agente è al lavoro.
+    pub fn is_busy(&self) -> bool {
+        !self
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+            || !self.live_sessions().is_empty()
     }
 }
 
 /// Unisce le parti di un prompt di sistema, saltando quelle vuote.
+/// Segna una conversazione come "sta rispondendo" finché esiste.
+struct Running<'a> {
+    core: &'a Core,
+    conversation_id: i64,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.core
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.conversation_id);
+    }
+}
+
 fn join_prompt(parts: &[&str]) -> String {
     parts
         .iter()

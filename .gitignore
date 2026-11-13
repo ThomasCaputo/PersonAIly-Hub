@@ -11,6 +11,7 @@ apps/desktop/src-tauri/gen/
 
 # Estensione VS Code
 *.vsix
+extensions/vscode/out/
 .vscode-test/
 
 # Modelli e binari scaricati: mai nel repository

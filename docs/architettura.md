@@ -58,8 +58,11 @@ Un eseguibile piccolo che avvia il nucleo ed espone l'**API locale**. Serve a du
 
 Quando l'app desktop è aperta, è lei ad avviare lo stesso server dentro il proprio
 processo: esiste sempre **un solo nucleo attivo**, così non si rischia di caricare due
-volte un modello. Un file di blocco nella cartella dati indica porta e token del nucleo
-in esecuzione.
+volte un modello. Un file di blocco nella cartella dati (`core.lock`) indica porta e
+token del nucleo in esecuzione; se all'apertura l'app trova `app-server` attivo, gli
+chiede di chiudersi e prende il suo posto ([ADR 0010](adr/0010-api-locale-e-vscode.md)).
+
+Il crate è insieme libreria (l'API, usata anche dall'app) ed eseguibile `app-server`.
 
 ### App desktop — `apps/desktop`
 
@@ -73,14 +76,17 @@ Il lato web (React + TypeScript) ha quattro aree:
 
 ### Estensione VS Code — `extensions/vscode`
 
-TypeScript. Legge il file di blocco, si collega all'API locale (avviando `server` se
-serve) e mostra un pannello chat. Aggiunge al contesto il file aperto e la selezione, e
-presenta le modifiche proposte come diff.
+TypeScript, senza dipendenze a runtime. Legge il file di blocco, si collega all'API
+locale (avviando `app-server` se serve) e mostra un pannello chat che usa le
+conversazioni dell'app. Aggiunge al contesto il file aperto o la selezione e presenta le
+modifiche proposte come diff, da accettare o rifiutare. La logica che non dipende da VS
+Code (`core.ts`, `edits.ts`) si prova con Node da sola.
 
 ### Client API — `packages/api-client`
 
 Tipi TypeScript e funzioni per chiamare l'API locale, generati dalle definizioni Rust per
-non doverli tenere allineati a mano. Usato sia dall'app sia dall'estensione.
+non doverli tenere allineati a mano. **Non ancora realizzato**: per ora l'estensione ha i
+suoi tipi scritti a mano.
 
 ## Modelli locali
 
@@ -148,18 +154,25 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 | Preset dei modelli | `presets\*.json` (leggibili e condivisibili) |
 | Preset con nome | `presets\named\*.json` (parametri di generazione e prompt di sistema, applicabili a qualsiasi modello) |
 | Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` |
-| File di blocco del nucleo | `core.lock` |
-| Chiavi API | Gestore credenziali di Windows — **non** su disco |
+| File di blocco del nucleo | `core.lock` (porta, token, pid; esiste solo mentre il nucleo è attivo) |
+| Chiavi API e token dell'API locale | Gestore credenziali di Windows — **non** su disco |
 | Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati |
 
 ## API locale
 
-Due famiglie di endpoint, solo su `127.0.0.1`, con token:
+Due famiglie di endpoint, solo su `127.0.0.1` (porta preferita 41241), con token:
 
-- `/v1/...` — compatibile con OpenAI, per i programmi esistenti;
-- `/api/...` — API propria: conversazioni, agenti, modelli, caricamento e scaricamento,
-  richieste di permesso. Gli eventi in tempo reale (token generati, attività degli agenti,
-  uso della memoria) arrivano via Server-Sent Events.
+- `/v1/...` — compatibile con OpenAI, per i programmi esistenti: `GET /v1/models`,
+  `POST /v1/chat/completions`. Senza archivio: la cronologia la manda il client. Modelli:
+  `local` (quello caricato) oppure `<provider>/<modello>`;
+- `/api/...` — API propria: conversazioni, invio di messaggi con strumenti e conferme
+  (`POST /api/tool-requests`), modelli, caricamento e scaricamento, agenti e sessioni,
+  registro delle azioni, chiusura del nucleo senza interfaccia. Le risposte in corso
+  arrivano via Server-Sent Events (`text`, `reasoning`, `saved`, `toolRequest`, `done`,
+  `error`); lo stato degli agenti si legge con `GET /api/sessions/{id}/live`.
+
+Sono respinte le richieste senza token, quelle con intestazione `Origin` (pagine web) e
+quelle con `Host` diverso da `127.0.0.1`/`localhost` (vedi [ADR 0010](adr/0010-api-locale-e-vscode.md)).
 
 ## Questioni aperte
 

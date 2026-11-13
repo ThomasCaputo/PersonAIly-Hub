@@ -5,5 +5,22 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[lib]
+name = "app_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-server"
+path = "src/main.rs"
+
 [dependencies]
 app-core.workspace = true
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures-util = { version = "0.3", default-features = false }
+reqwest = { version = "0.13.5", features = ["json"], default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", features = ["json", "stream"], default-features = false }

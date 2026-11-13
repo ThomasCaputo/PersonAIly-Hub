@@ -1,6 +1,6 @@
 # 0004 — Nucleo unico con API locale per app e VS Code
 
-**Stato:** accettata
+**Stato:** accettata e realizzata nella Tappa 5 (dettagli nell'[ADR 0010](0010-api-locale-e-vscode.md)).
 
 ## Contesto
 
