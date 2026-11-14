@@ -143,7 +143,9 @@ Rimandato (non blocca la Tappa 6):
 
 ## Tappa 6 — Rifinitura e pubblicazione
 
-- Installer, aggiornamento automatico (GE-7), lingue e temi (GE-5, GE-6).
+- Installer, aggiornamento automatico (GE-7), temi (GE-6).
+- [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
+      ([ADR 0012](adr/0012-lingue-interfaccia.md)). Manca l'estensione VS Code.
 - Guida per l'utente; nome definitivo e licenza.
 - Prima versione pubblica per Windows.
 
@@ -157,7 +159,45 @@ Piccole cose da aggiungere (fatte):
       899 kB a 252 kB. Agenti, Modelli e Impostazioni si caricano all'apertura; il
       Markdown (KaTeX ed evidenziazione, circa 600 kB) subito dopo la comparsa della finestra.
 
+Revisione di sicurezza e prestazioni (14-11-2026, [ADR 0011](adr/0011-revisione-sicurezza-e-prestazioni.md)):
+
+- [x] Protezione dalla fuga di dati (SI-7) e conferma dei collegamenti (SI-8), accese di
+      base e disattivabili in Impostazioni → Sicurezza (SI-9).
+- [x] La finestra non naviga più fuori dall'app; i link si aprono nel browser di sistema.
+- [x] Lettura delle pagine collegata agli indirizzi già controllati (niente DNS rebinding);
+      intervalli riservati completati.
+- [x] Scritture dei file atomiche; limite di dimensione anche per `edit_file`.
+- [x] Download senza impronta pubblicata segnalati come "solo dimensione controllata".
+- [x] Comandi dell'app fuori dal thread dell'interfaccia; SQLite in WAL; ricerca nei
+      messaggi con indice FTS5 a trigrammi; allegati non riletti per la visualizzazione.
+- [x] llama.cpp non risulta più "non installato" se si apre Modelli mentre un modello si carica.
+
+Rimandato:
+
+- [ ] Estensione VS Code in inglese.
+- [ ] Messaggi d'errore rari del nucleo in inglese (oggi tradotti solo quelli frequenti,
+      in `apps/desktop/src/locales/core-en.ts`).
+- [ ] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
+- [ ] Prova completa del clic su un collegamento dentro la risposta di un modello.
+
 ## Dopo
 
 Linux e macOS (GE-2), Gemini (CL-3), modalità ibrida esplicita (LO-10), completamento del
 codice in linea (VS-6), agenti che delegano ad altri agenti (AG-8).
+
+Idee emerse dalla revisione del 14-11-2026, da valutare:
+
+- **Immagini con i modelli locali** tramite i file `mmproj` di llama.cpp (già rimandato in Tappa 3).
+- **Più download insieme** e **GGUF divisi in più file** (già rimandati in Tappa 2).
+- **Documenti personali consultabili (RAG locale):** indicizzare una cartella concessa con
+  un modello di embedding GGUF e cercare nei propri documenti.
+- **Rigenerare una risposta e modificare un messaggio**, con rami della conversazione;
+  esportazione delle chat in Markdown o JSON.
+- **Confronto tra modelli:** lo stesso messaggio a due modelli affiancati (locale e cloud).
+- **MCP via HTTP/SSE** e risorse MCP (già rimandati in Tappa 4), più un piccolo catalogo
+  di server noti.
+- **Punti di ripristino per gli agenti:** un'istantanea della cartella (per esempio un
+  commit git automatico) prima di ogni sessione, per annullare tutto con un clic.
+- **Limite di spesa per i provider cloud**, per conversazione o per mese.
+- **Tavolozza dei comandi** (`Ctrl+K`) e trascinamento dei file nella chat.
+

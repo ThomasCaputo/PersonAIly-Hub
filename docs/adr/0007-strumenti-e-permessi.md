@@ -3,6 +3,8 @@
 **Stato:** accettata — provata nell'app con un servizio finto (permessi, confini delle
 cartelle, interruzione) e con un modello locale vero, Qwen 2.5 7B (lettura di file,
 ricerca web, lettura di pagine). Il formato Anthropic è provato solo dai test automatici.
+Integrata dall'[ADR 0011](0011-revisione-sicurezza-e-prestazioni.md): protezione dalla fuga
+di dati, collegamento all'indirizzo controllato, scritture atomiche.
 
 ## Contesto
 

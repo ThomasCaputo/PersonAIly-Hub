@@ -19,6 +19,7 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ToolRequestCard } from "../components/ToolsBar";
 import { ModelPicker, ToolResult, toolLabel } from "./ChatArea";
+import { locale, msg, t, tc } from "../i18n";
 
 type Props = {
   status: RuntimeStatus | null;
@@ -32,28 +33,37 @@ const LIST_INTERVAL_MS = 2000;
 const LIVE_INTERVAL_MS = 500;
 
 export const STATUS_LABELS: Record<SessionStatus, string> = {
-  running: "Al lavoro",
-  paused: "In pausa",
-  waiting: "Aspetta la tua conferma",
-  done: "Finito",
-  stopped: "Fermato",
-  failed: "Errore",
-  interrupted: "Interrotto",
+  running: msg("Al lavoro"),
+  paused: msg("In pausa"),
+  waiting: msg("Aspetta la tua conferma"),
+  done: msg("Finito"),
+  stopped: msg("Fermato"),
+  failed: msg("Errore"),
+  interrupted: msg("Interrotto"),
 };
 
 const PERMISSIONS: { value: PermissionLevel; label: string; hint: string }[] = [
-  { value: "ask", label: "Chiedi sempre", hint: "Ogni modifica ai file e ogni comando chiedono la tua conferma" },
+  {
+    value: "ask",
+    label: msg("Chiedi sempre"),
+    hint: msg("Ogni modifica ai file e ogni comando chiedono la tua conferma"),
+  },
   {
     value: "edits",
-    label: "Consenti modifiche ai file",
-    hint: "Crea e modifica file nelle sue cartelle senza chiedere; i comandi chiedono conferma",
+    label: msg("Consenti modifiche ai file"),
+    hint: msg("Crea e modifica file nelle sue cartelle senza chiedere; i comandi chiedono conferma"),
   },
   {
     value: "all",
-    label: "Consenti tutto",
-    hint: "Nessuna conferma, nemmeno per i comandi: un comando può toccare anche file fuori dalle cartelle",
+    label: msg("Consenti tutto"),
+    hint: msg("Nessuna conferma, nemmeno per i comandi: un comando può toccare anche file fuori dalle cartelle"),
   },
 ];
+
+const permissionLabel = (level: PermissionLevel) => {
+  const found = PERMISSIONS.find((p) => p.value === level);
+  return found ? t(found.label) : level;
+};
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
@@ -62,7 +72,7 @@ function when(stamp: string): string {
   const date = new Date(`${stamp.replace(" ", "T")}Z`);
   return Number.isNaN(date.getTime())
     ? stamp
-    : date.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    : date.toLocaleString(locale(), { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function newAgent(): Agent {
@@ -117,25 +127,28 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
     <div className="agents">
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "sessions"} className={tab === "sessions" ? "tab active" : "tab"} onClick={() => setTab("sessions")}>
-          Sessioni{running > 0 && ` (${running} al lavoro)`}
+          {t("Sessioni")}
+          {running > 0 && ` (${t("{n} al lavoro", { n: running })})`}
         </button>
         <button role="tab" aria-selected={tab === "agents"} className={tab === "agents" ? "tab active" : "tab"} onClick={() => setTab("agents")}>
-          Agenti
+          {t("Agenti")}
         </button>
         <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "tab active" : "tab"} onClick={() => setTab("actions")}>
-          Registro azioni
+          {t("Registro azioni")}
         </button>
       </div>
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
 
       {tab === "sessions" && (
         <div className="agents-split">
           <aside className="conversations">
             <button className="btn primary wide" onClick={() => setSelectedSession("new")}>
-              Nuovo compito
+              {t("Nuovo compito")}
             </button>
             <div className="conversation-list">
-              {sessions.length === 0 && <p className="dim note">Nessuna sessione: affida un compito a un agente.</p>}
+              {sessions.length === 0 && (
+                <p className="dim note">{t("Nessuna sessione: affida un compito a un agente.")}</p>
+              )}
               {sessions.map((s) => (
                 <button
                   key={s.id}
@@ -174,7 +187,7 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
               />
             ) : (
               <div className="empty">
-                <p className="dim">Scegli una sessione o affida un nuovo compito.</p>
+                <p className="dim">{t("Scegli una sessione o affida un nuovo compito.")}</p>
               </div>
             )}
           </section>
@@ -202,7 +215,7 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
 }
 
 function StatusBadge({ status }: { status: SessionStatus }) {
-  return <span className={`status-badge ${status}`}>{STATUS_LABELS[status]}</span>;
+  return <span className={`status-badge ${status}`}>{t(STATUS_LABELS[status])}</span>;
 }
 
 // ── Nuovo compito ─────────────────────────────────────────────────────────
@@ -230,9 +243,9 @@ function NewTask({
   if (agents.length === 0) {
     return (
       <div className="empty">
-        <p className="dim">Non c'è ancora nessun agente.</p>
+        <p className="dim">{t("Non c'è ancora nessun agente.")}</p>
         <button className="btn primary" onClick={onCreateAgent}>
-          Crea un agente
+          {t("Crea un agente")}
         </button>
       </div>
     );
@@ -254,9 +267,9 @@ function NewTask({
 
   return (
     <div className="page new-task">
-      <h1>Nuovo compito</h1>
+      <h1>{t("Nuovo compito")}</h1>
       <div className="field">
-        <label htmlFor="task-agent">Agente</label>
+        <label htmlFor="task-agent">{t("Agente")}</label>
         <select id="task-agent" value={agentId ?? ""} onChange={(e) => setAgentId(Number(e.target.value))}>
           {agents.map((a) => (
             <option key={a.id} value={a.id}>
@@ -267,18 +280,22 @@ function NewTask({
         {agent?.description && <p className="dim note">{agent.description}</p>}
         {agent && (
           <p className="dim note">
-            Lavora in: {agent.folders.length > 0 ? agent.folders.map(baseName).join(", ") : "nessuna cartella"} ·{" "}
-            {PERMISSIONS.find((p) => p.value === agent.tools.permission)?.label}
+            {t("Lavora in: {folders}", {
+              folders: agent.folders.length > 0 ? agent.folders.map(baseName).join(", ") : t("nessuna cartella"),
+            })}{" "}
+            · {permissionLabel(agent.tools.permission)}
           </p>
         )}
       </div>
       <div className="field">
-        <label htmlFor="task-text">Compito</label>
+        <label htmlFor="task-text">{t("Compito")}</label>
         <textarea
           id="task-text"
           rows={6}
           value={task}
-          placeholder="Descrivi cosa deve fare l'agente, per esempio: «Aggiungi i test alla funzione somma in calcoli.py e falli passare»."
+          placeholder={t(
+            "Descrivi cosa deve fare l'agente, per esempio: «Aggiungi i test alla funzione somma in calcoli.py e falli passare».",
+          )}
           onChange={(e) => setTask(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && e.ctrlKey) start();
@@ -286,9 +303,9 @@ function NewTask({
         />
       </div>
       <button className="btn primary" disabled={busy || !task.trim() || agentId === null} onClick={start}>
-        Avvia
+        {t("Avvia")}
       </button>
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </div>
   );
 }
@@ -351,7 +368,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, live?.streaming, live?.request]);
 
-  if (!session) return error ? <p className="error pre">{error}</p> : null;
+  if (!session) return error ? <p className="error pre">{tc(error)}</p> : null;
 
   const active = isActive(session.status);
   const act = (action: () => Promise<unknown>) => {
@@ -391,34 +408,35 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
             {session.agentName} <StatusBadge status={session.status} />
           </div>
           <div className="dim">
-            Avviata {when(session.createdAt)} · {steps} {steps === 1 ? "passo" : "passi"}
-            {cost > 0 && ` · circa ${usd(cost)}`}
+            {t("Avviata {when}", { when: when(session.createdAt) })} ·{" "}
+            {steps === 1 ? t("1 passo") : t("{n} passi", { n: steps })}
+            {cost > 0 && ` · ${t("circa {cost}", { cost: usd(cost) })}`}
           </div>
         </div>
         <div className="row">
           {session.status === "paused" ? (
             <button className="btn" onClick={() => act(() => api.resumeAgentSession(id))}>
-              Riprendi
+              {t("Riprendi")}
             </button>
           ) : (
             active && (
               <button
                 className="btn"
-                title="Si ferma prima del passo successivo"
+                title={t("Si ferma prima del passo successivo")}
                 onClick={() => act(() => api.pauseAgentSession(id))}
               >
-                Pausa
+                {t("Pausa")}
               </button>
             )
           )}
           {active && (
             <button className="btn" onClick={() => act(() => api.stopAgentSession(id))}>
-              Ferma
+              {t("Ferma")}
             </button>
           )}
           {!active && (
             <button className="btn" onClick={remove}>
-              Elimina
+              {t("Elimina")}
             </button>
           )}
         </div>
@@ -426,7 +444,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
 
       {files.length > 0 && (
         <div className="touched">
-          <span className="dim">File toccati:</span>
+          <span className="dim">{t("File toccati:")}</span>
           {files.map((f) => (
             <span key={f} className="attachment mono" title={f}>
               {baseName(f)}
@@ -442,7 +460,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
           ) : (
             <div key={m.id} className={`message ${m.role}`}>
               <div className="message-role">
-                {m.role === "user" ? (index === 0 ? "Compito" : "Tu") : (m.model ?? session.agentName)}
+                {m.role === "user" ? (index === 0 ? t("Compito") : t("Tu")) : (m.model ?? session.agentName)}
               </div>
               {m.role === "user" ? <div className="message-text">{m.content}</div> : <Markdown text={m.content} />}
             </div>
@@ -452,22 +470,24 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
           <div className="message assistant">
             <div className="message-role">{session.agentName}</div>
             {live.reasoning && !live.streaming && <div className="reasoning">{live.reasoning}</div>}
-            {live.streaming ? <Markdown text={live.streaming} /> : !live.reasoning && <div className="dim">Sto lavorando…</div>}
+            {live.streaming ? (
+              <Markdown text={live.streaming} />
+            ) : (
+              !live.reasoning && <div className="dim">{t("Sto lavorando…")}</div>
+            )}
           </div>
         )}
         {session.status === "paused" && (
-          <p className="notice">In pausa: l'agente riprende dal passo successivo quando premi «Riprendi».</p>
+          <p className="notice">{t("In pausa: l'agente riprende dal passo successivo quando premi «Riprendi».")}</p>
         )}
-        {live?.request && (
-          <ToolRequestCard request={live.request} onAnswer={answer} who="L'agente" scope="in questa sessione" />
-        )}
+        {live?.request && <ToolRequestCard request={live.request} onAnswer={answer} kind="agent" />}
         {session.note && !active && (
-          <p className={session.status === "failed" ? "error pre" : "notice"}>{session.note}</p>
+          <p className={session.status === "failed" ? "error pre" : "notice"}>{tc(session.note)}</p>
         )}
         {session.status === "interrupted" && (
-          <p className="notice">L'app è stata chiusa mentre l'agente lavorava. Scrivigli per farlo continuare.</p>
+          <p className="notice">{t("L'app è stata chiusa mentre l'agente lavorava. Scrivigli per farlo continuare.")}</p>
         )}
-        {error && <p className="error pre">{error}</p>}
+        {error && <p className="error pre">{tc(error)}</p>}
         <div ref={bottomRef} />
       </div>
 
@@ -476,8 +496,12 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
           value={reply}
           rows={2}
           disabled={active}
-          placeholder={active ? "L'agente sta lavorando: puoi scrivergli quando si ferma." : "Rispondi all'agente o dagli un nuovo compito…"}
-          title="Invio per inviare, Maiusc+Invio per andare a capo"
+          placeholder={
+            active
+              ? t("L'agente sta lavorando: puoi scrivergli quando si ferma.")
+              : t("Rispondi all'agente o dagli un nuovo compito…")
+          }
+          title={t("Invio per inviare, Maiusc+Invio per andare a capo")}
           onChange={(e) => setReply(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -487,7 +511,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
           }}
         />
         <button className="btn primary" disabled={active || !reply.trim()} onClick={sendReply}>
-          Invia
+          {t("Invia")}
         </button>
       </div>
     </>
@@ -540,16 +564,17 @@ function AgentsTab({
   return (
     <div className="page">
       <div className="section-head">
-        <h1>Agenti</h1>
+        <h1>{t("Agenti")}</h1>
         <button className="btn primary" onClick={() => setEditing(newAgent())}>
-          Nuovo agente
+          {t("Nuovo agente")}
         </button>
       </div>
       <p className="dim note">
-        Un agente è un modello con istruzioni, cartelle di lavoro e permessi. Gli affidi un compito e lavora da solo,
-        passo dopo passo, chiedendoti conferma quando serve.
+        {t(
+          "Un agente è un modello con istruzioni, cartelle di lavoro e permessi. Gli affidi un compito e lavora da solo, passo dopo passo, chiedendoti conferma quando serve.",
+        )}
       </p>
-      {agents.length === 0 && <p className="dim">Nessun agente: creane uno per iniziare.</p>}
+      {agents.length === 0 && <p className="dim">{t("Nessun agente: creane uno per iniziare.")}</p>}
       {agents.map((a) => (
         <div key={a.id} className="card">
           <div className="card-head">
@@ -559,48 +584,48 @@ function AgentsTab({
             </div>
             <div className="row">
               <button className="btn primary" onClick={() => onStart(a.id)}>
-                Affida un compito
+                {t("Affida un compito")}
               </button>
               <button className="btn" onClick={() => setEditing(a)}>
-                Modifica
+                {t("Modifica")}
               </button>
               <button className="btn" onClick={() => act(() => api.duplicateAgent(a.id))}>
-                Duplica
+                {t("Duplica")}
               </button>
               <button
                 className="btn"
                 onClick={() => {
-                  if (window.confirm(`Eliminare l'agente «${a.name}»? Le sue sessioni restano.`)) {
+                  if (window.confirm(t("Eliminare l'agente «{name}»? Le sue sessioni restano.", { name: a.name }))) {
                     act(() => api.deleteAgent(a.id));
                   }
                 }}
               >
-                Elimina
+                {t("Elimina")}
               </button>
             </div>
           </div>
           <div className="card-body dim">
-            {modelLabel(a, providers)} · {a.folders.length > 0 ? a.folders.map(baseName).join(", ") : "nessuna cartella"} ·{" "}
+            {modelLabel(a, providers)} ·{" "}
+            {a.folders.length > 0 ? a.folders.map(baseName).join(", ") : t("nessuna cartella")} ·{" "}
             {[
-              a.tools.files && "file",
-              a.tools.terminal && "terminale",
-              a.tools.web && "web",
-              a.mcpServers.length > 0 && `${a.mcpServers.length} server MCP`,
+              a.tools.files && t("file"),
+              a.tools.terminal && t("terminale"),
+              a.tools.web && t("web"),
+              a.mcpServers.length > 0 && t("{n} server MCP", { n: a.mcpServers.length }),
             ]
               .filter(Boolean)
-              .join(", ") ||
-              "nessuno strumento"}{" "}
-            · {PERMISSIONS.find((p) => p.value === a.tools.permission)?.label}
+              .join(", ") || t("nessuno strumento")}{" "}
+            · {permissionLabel(a.tools.permission)}
           </div>
         </div>
       ))}
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </div>
   );
 }
 
 function modelLabel(agent: Agent, providers: ProviderInfo[]): string {
-  if (agent.model.kind === "local") return "Modello locale caricato";
+  if (agent.model.kind === "local") return t("Modello locale caricato");
   const { providerId, model } = agent.model;
   const provider = providers.find((p) => p.id === providerId);
   return provider?.models.find((m) => m.id === model)?.name ?? model;
@@ -634,7 +659,7 @@ function AgentEditor({
   const setTools = (change: Partial<Agent["tools"]>) => setAgent((a) => ({ ...a, tools: { ...a.tools, ...change } }));
 
   const addFolder = async () => {
-    const picked = await open({ directory: true, title: "Scegli una cartella su cui l'agente può lavorare" });
+    const picked = await open({ directory: true, title: t("Scegli una cartella su cui l'agente può lavorare") });
     if (typeof picked === "string" && !agent.folders.includes(picked)) set({ folders: [...agent.folders, picked] });
   };
 
@@ -652,19 +677,19 @@ function AgentEditor({
 
   return (
     <div className="page agent-editor">
-      <h1>{initial.id === 0 ? "Nuovo agente" : `Modifica «${initial.name}»`}</h1>
+      <h1>{initial.id === 0 ? t("Nuovo agente") : t("Modifica «{name}»", { name: initial.name })}</h1>
 
       <div className="field">
-        <label htmlFor="agent-name">Nome</label>
+        <label htmlFor="agent-name">{t("Nome")}</label>
         <input id="agent-name" type="text" value={agent.name} onChange={(e) => set({ name: e.target.value })} />
       </div>
       <div className="field">
-        <label htmlFor="agent-description">Descrizione</label>
+        <label htmlFor="agent-description">{t("Descrizione")}</label>
         <input
           id="agent-description"
           type="text"
           value={agent.description}
-          placeholder="A cosa serve, in una riga"
+          placeholder={t("A cosa serve, in una riga")}
           onChange={(e) => set({ description: e.target.value })}
         />
       </div>
@@ -678,90 +703,91 @@ function AgentEditor({
       />
       {agent.model.kind === "local" && (
         <p className="dim note">
-          Usa il modello locale caricato quando parte la sessione.{" "}
+          {t("Usa il modello locale caricato quando parte la sessione.")}{" "}
           <button className="btn-link" onClick={onOpenModels}>
-            Vai ai modelli
+            {t("Vai ai modelli")}
           </button>
         </p>
       )}
 
       <div className="field">
-        <label htmlFor="agent-instructions">Istruzioni</label>
+        <label htmlFor="agent-instructions">{t("Istruzioni")}</label>
         <textarea
           id="agent-instructions"
           rows={6}
           value={agent.instructions}
-          placeholder="Come deve lavorare: stile del codice, comandi per provare, cosa evitare…"
+          placeholder={t("Come deve lavorare: stile del codice, comandi per provare, cosa evitare…")}
           onChange={(e) => set({ instructions: e.target.value })}
         />
       </div>
 
       <section className="section">
         <div className="section-head">
-          <h2>Cartelle di lavoro</h2>
+          <h2>{t("Cartelle di lavoro")}</h2>
           <button className="btn" onClick={addFolder}>
-            Aggiungi cartella
+            {t("Aggiungi cartella")}
           </button>
         </div>
         <p className="dim note">
-          L'agente legge e scrive file solo qui dentro; i comandi partono dalla prima cartella.
+          {t("L'agente legge e scrive file solo qui dentro; i comandi partono dalla prima cartella.")}
         </p>
-        {agent.folders.length === 0 && <p className="dim">Nessuna cartella.</p>}
+        {agent.folders.length === 0 && <p className="dim">{t("Nessuna cartella.")}</p>}
         {agent.folders.map((folder) => (
           <div key={folder} className="folder">
             <span className="mono">{folder}</span>
             <button className="btn-link" onClick={() => set({ folders: agent.folders.filter((f) => f !== folder) })}>
-              Togli
+              {t("Togli")}
             </button>
           </div>
         ))}
-        {needsFolder && <p className="notice">Senza una cartella l'agente non può usare file e terminale.</p>}
+        {needsFolder && <p className="notice">{t("Senza una cartella l'agente non può usare file e terminale.")}</p>}
       </section>
 
       <section className="section">
-        <h2>Strumenti e permessi</h2>
+        <h2>{t("Strumenti e permessi")}</h2>
         <div className="tools-bar">
           <label>
             <input type="checkbox" checked={agent.tools.files} onChange={(e) => setTools({ files: e.target.checked })} />
-            File
+            {t("File")}
           </label>
-          <label title="Comandi PowerShell nella cartella di lavoro">
+          <label title={t("Comandi PowerShell nella cartella di lavoro")}>
             <input
               type="checkbox"
               checked={agent.tools.terminal}
               onChange={(e) => setTools({ terminal: e.target.checked })}
             />
-            Terminale
+            {t("Terminale")}
           </label>
-          <label title="Le parole cercate vengono inviate a DuckDuckGo">
+          <label title={t("Le parole cercate vengono inviate a DuckDuckGo")}>
             <input type="checkbox" checked={agent.tools.web} onChange={(e) => setTools({ web: e.target.checked })} />
-            Ricerca web
+            {t("Ricerca web")}
           </label>
           <select
-            aria-label="Permessi"
+            aria-label={t("Permessi")}
             value={agent.tools.permission}
             onChange={(e) => setTools({ permission: e.target.value as PermissionLevel })}
           >
             {PERMISSIONS.map((p) => (
               <option key={p.value} value={p.value}>
-                {p.label}
+                {t(p.label)}
               </option>
             ))}
           </select>
         </div>
-        <p className="dim note">{PERMISSIONS.find((p) => p.value === agent.tools.permission)?.hint}</p>
+        <p className="dim note">{t(PERMISSIONS.find((p) => p.value === agent.tools.permission)?.hint ?? "")}</p>
         {agent.tools.terminal && agent.tools.permission === "all" && (
           <p className="notice">
-            Attenzione: con «Consenti tutto» i comandi partono senza chiederti nulla, e un comando può agire anche fuori
-            dalle cartelle di lavoro.
+            {t(
+              "Attenzione: con «Consenti tutto» i comandi partono senza chiederti nulla, e un comando può agire anche fuori dalle cartelle di lavoro.",
+            )}
           </p>
         )}
       </section>
 
       <section className="section">
-        <h2>Server MCP</h2>
+        <h2>{t("Server MCP")}</h2>
         {mcpServers.length === 0 ? (
-          <p className="dim note">Nessun server MCP configurato: si aggiungono nelle Impostazioni.</p>
+          <p className="dim note">{t("Nessun server MCP configurato: si aggiungono nelle Impostazioni.")}</p>
         ) : (
           <>
             <div className="tools-bar">
@@ -777,23 +803,24 @@ function AgentEditor({
               ))}
             </div>
             <p className="dim note">
-              Partono con ogni sessione e si chiudono con lei. I loro strumenti chiedono conferma salvo con «Consenti
-              tutto».
+              {t(
+                "Partono con ogni sessione e si chiudono con lei. I loro strumenti chiedono conferma salvo con «Consenti tutto».",
+              )}
             </p>
           </>
         )}
         {missingMcp.length > 0 && (
           <p className="notice">
-            {missingMcp.length === 1 ? "Un server scelto non esiste più" : "Alcuni server scelti non esistono più"}.{" "}
+            {missingMcp.length === 1 ? t("Un server scelto non esiste più.") : t("Alcuni server scelti non esistono più.")}{" "}
             <button className="btn-link" onClick={() => set({ mcpServers: agent.mcpServers.filter((id) => !missingMcp.includes(id)) })}>
-              Togli
+              {t("Togli")}
             </button>
           </p>
         )}
       </section>
 
       <div className="field">
-        <label htmlFor="agent-steps">Passi massimi per volta</label>
+        <label htmlFor="agent-steps">{t("Passi massimi per volta")}</label>
         <input
           id="agent-steps"
           type="number"
@@ -802,18 +829,18 @@ function AgentEditor({
           value={agent.maxSteps}
           onChange={(e) => set({ maxSteps: Number(e.target.value) || 1 })}
         />
-        <p className="dim note">Arrivato qui l'agente si ferma e aspetta che tu gli risponda.</p>
+        <p className="dim note">{t("Arrivato qui l'agente si ferma e aspetta che tu gli risponda.")}</p>
       </div>
 
       <div className="row">
         <button className="btn primary" onClick={save} disabled={!agent.name.trim()}>
-          Salva
+          {t("Salva")}
         </button>
         <button className="btn" onClick={onCancel}>
-          Annulla
+          {t("Annulla")}
         </button>
       </div>
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </div>
   );
 }
@@ -821,20 +848,20 @@ function AgentEditor({
 // ── Registro delle azioni ─────────────────────────────────────────────────
 
 const APPROVAL_LABELS: Record<ActionRecord["approval"], string> = {
-  auto: "consentita dai permessi",
-  user: "confermata da te",
-  denied: "negata da te",
-  refused: "rifiutata dall'app",
-  interrupted: "interrotta",
+  auto: msg("consentita dai permessi"),
+  user: msg("confermata da te"),
+  denied: msg("negata da te"),
+  refused: msg("rifiutata dall'app"),
+  interrupted: msg("interrotta"),
 };
 
 /** Durate proposte per il registro, in giorni (0 = per sempre). */
 const RETENTION_CHOICES = [7, 30, 90, 365, 0];
 
 function retentionLabel(days: number): string {
-  if (days === 0) return "per sempre";
-  if (days === 365) return "per un anno";
-  return `per ${days} giorni`;
+  if (days === 0) return t("per sempre");
+  if (days === 365) return t("per un anno");
+  return t("per {n} giorni", { n: days });
 }
 
 /** Per quanto tempo si tengono le voci del registro, e pulsante per svuotarlo. */
@@ -858,7 +885,7 @@ function ActionLogRetention({
     setDays(next);
     try {
       const removed = await api.setActionLogDays(next);
-      setMessage(removed > 0 ? `Eliminate ${removed} voci più vecchie.` : null);
+      setMessage(removed > 0 ? t("Eliminate {n} voci più vecchie.", { n: removed }) : null);
       onChanged();
     } catch (e) {
       onError(String(e));
@@ -866,10 +893,10 @@ function ActionLogRetention({
   };
 
   const clear = async () => {
-    if (!window.confirm("Eliminare tutte le voci del registro? Non si possono recuperare.")) return;
+    if (!window.confirm(t("Eliminare tutte le voci del registro? Non si possono recuperare."))) return;
     try {
       const removed = await api.clearActions();
-      setMessage(`Eliminate ${removed} voci.`);
+      setMessage(t("Eliminate {n} voci.", { n: removed }));
       onChanged();
     } catch (e) {
       onError(String(e));
@@ -881,7 +908,7 @@ function ActionLogRetention({
 
   return (
     <div className="retention">
-      <label htmlFor="log-days">Conserva le voci</label>
+      <label htmlFor="log-days">{t("Conserva le voci")}</label>
       <select id="log-days" value={days ?? ""} disabled={days === null} onChange={(e) => choose(Number(e.target.value))}>
         {choices.map((d) => (
           <option key={d} value={d}>
@@ -890,7 +917,7 @@ function ActionLogRetention({
         ))}
       </select>
       <button className="btn-link" disabled={empty} onClick={clear}>
-        Svuota registro
+        {t("Svuota registro")}
       </button>
       {message && <span className="dim">{message}</span>}
     </div>
@@ -913,21 +940,22 @@ function ActionsTab() {
 
   return (
     <div className="page">
-      <h1>Registro azioni</h1>
+      <h1>{t("Registro azioni")}</h1>
       <p className="dim note">
-        Ogni strumento usato dai modelli, in chat e dagli agenti, dalla più recente. Le voci restano anche se elimini la
-        conversazione o la sessione.
+        {t(
+          "Ogni strumento usato dai modelli, in chat e dagli agenti, dalla più recente. Le voci restano anche se elimini la conversazione o la sessione.",
+        )}
       </p>
       <ActionLogRetention empty={actions.length === 0} onChanged={reload} onError={setError} />
-      {actions.length === 0 && <p className="dim">Ancora nessuna azione.</p>}
+      {actions.length === 0 && <p className="dim">{t("Ancora nessuna azione.")}</p>}
       {actions.length > 0 && (
         <table className="actions-table">
           <thead>
             <tr>
-              <th>Quando</th>
-              <th>Dove</th>
-              <th>Azione</th>
-              <th>Esito</th>
+              <th>{t("Quando")}</th>
+              <th>{t("Dove")}</th>
+              <th>{t("Azione")}</th>
+              <th>{t("Esito")}</th>
             </tr>
           </thead>
           <tbody>
@@ -935,21 +963,23 @@ function ActionsTab() {
               <tr key={a.id} className={a.isError ? "failed" : undefined}>
                 <td className="nowrap">{when(a.createdAt)}</td>
                 <td>
-                  <span className="dim">{a.kind === "agent" ? "Agente" : "Chat"}</span> {a.source}
+                  <span className="dim">{a.kind === "agent" ? t("Agente") : t("Chat")}</span> {tc(a.source)}
                 </td>
                 <td>
                   <div>{toolLabel(a.tool)}</div>
-                  <div className="dim mono action-summary">{a.summary}</div>
+                  <div className="dim mono action-summary">{tc(a.summary)}</div>
                 </td>
                 <td title={a.result}>
-                  {a.isError ? "Errore" : "Riuscita"} · <span className="dim">{APPROVAL_LABELS[a.approval]}</span>
+                  {a.isError ? t("Errore") : t("Riuscita")} ·{" "}
+                  <span className="dim">{t(APPROVAL_LABELS[a.approval])}</span>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
+
     </div>
   );
 }

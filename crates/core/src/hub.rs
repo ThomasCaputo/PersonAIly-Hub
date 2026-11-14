@@ -157,19 +157,16 @@ pub async fn download(
         done = 0;
     }
 
-    // L'impronta va calcolata sull'intero file: prima la parte già scaricata.
-    let mut hasher = Sha256::new();
-    if done > 0 {
-        let mut existing = File::open(&part)?;
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            let read = existing.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-    }
+    // L'impronta va calcolata sull'intero file: prima la parte già scaricata,
+    // che può essere di molti GB, quindi fuori dal ciclo asincrono.
+    let mut hasher = if done > 0 {
+        let part = part.clone();
+        tokio::task::spawn_blocking(move || hash_file(&part))
+            .await
+            .map_err(|e| Error::msg(e.to_string()))??
+    } else {
+        Sha256::new()
+    };
     let mut out = OpenOptions::new()
         .create(true)
         .write(true)
@@ -215,6 +212,20 @@ pub async fn download(
 
     std::fs::rename(&part, &dest)?;
     Ok(DownloadEnd::Completed(dest))
+}
+
+/// L'impronta SHA-256 (ancora da completare) di un file già sul disco.
+fn hash_file(path: &Path) -> Result<Sha256> {
+    let mut hasher = Sha256::new();
+    let mut file = File::open(path)?;
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hasher);
+        }
+        hasher.update(&buffer[..read]);
+    }
 }
 
 /// Un identificatore di repository ha la forma `autore/nome`, con soli

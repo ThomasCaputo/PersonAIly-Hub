@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, type NamedPreset, type Preset } from "../api";
+import { t, tc } from "../i18n";
 
 type Props = {
   preset: Preset;
@@ -33,7 +34,7 @@ export function NamedPresets({ preset, onApply }: Props) {
       const done = await action();
       if (done) setMessage({ text: done, error: false });
     } catch (e) {
-      setMessage({ text: String(e), error: true });
+      setMessage({ text: tc(String(e)), error: true });
     }
   };
 
@@ -49,12 +50,12 @@ export function NamedPresets({ preset, onApply }: Props) {
       setNaming(null);
       await refresh();
       setSelected(saved.name);
-      return `Salvato come "${saved.name}".`;
+      return t('Salvato come "{name}".', { name: saved.name });
     });
 
   const remove = () =>
     run(async () => {
-      if (!current || !window.confirm(`Eliminare il preset "${current.name}"?`)) return;
+      if (!current || !window.confirm(t('Eliminare il preset "{name}"?', { name: current.name }))) return;
       await api.deleteNamedPreset(current.name);
       setSelected("");
       await refresh();
@@ -66,24 +67,24 @@ export function NamedPresets({ preset, onApply }: Props) {
       const path = await save({ defaultPath: `${current.name}.json`, filters: JSON_FILTER });
       if (!path) return;
       await api.exportNamedPreset(current.name, path);
-      return "Preset esportato.";
+      return t("Preset esportato.");
     });
 
   const importIt = () =>
     run(async () => {
-      const path = await open({ filters: JSON_FILTER, title: "Importa un preset" });
+      const path = await open({ filters: JSON_FILTER, title: t("Importa un preset") });
       if (typeof path !== "string") return;
       const imported = await api.importNamedPreset(path);
       await refresh();
       setSelected(imported.name);
-      return `Importato come "${imported.name}".`;
+      return t('Importato come "{name}".', { name: imported.name });
     });
 
   return (
     <div className="named-presets">
-      <label htmlFor="named-preset">Preset</label>
+      <label htmlFor="named-preset">{t("Preset")}</label>
       <select id="named-preset" value={selected} onChange={(e) => setSelected(e.target.value)}>
-        <option value="">{presets.length === 0 ? "Nessun preset salvato" : "Scegli un preset…"}</option>
+        <option value="">{presets.length === 0 ? t("Nessun preset salvato") : t("Scegli un preset…")}</option>
         {presets.map((p) => (
           <option key={p.name} value={p.name}>
             {p.name}
@@ -93,21 +94,21 @@ export function NamedPresets({ preset, onApply }: Props) {
 
       <div className="row">
         <button className="btn" disabled={!current} onClick={() => current && onApply(current)}>
-          Applica
+          {t("Applica")}
         </button>
         <button className="btn" onClick={() => setNaming(current?.name ?? "")}>
-          Salva come…
+          {t("Salva come…")}
         </button>
         <button className="btn-link" onClick={importIt}>
-          Importa
+          {t("Importa")}
         </button>
         {current && (
           <>
             <button className="btn-link" onClick={exportIt}>
-              Esporta
+              {t("Esporta")}
             </button>
             <button className="btn-link" onClick={remove}>
-              Elimina
+              {t("Elimina")}
             </button>
           </>
         )}
@@ -123,18 +124,19 @@ export function NamedPresets({ preset, onApply }: Props) {
         >
           <input
             type="text"
-            aria-label="Nome del preset"
-            placeholder="Nome del preset"
+            aria-label={t("Nome del preset")}
+            placeholder={t("Nome del preset")}
             autoFocus
             value={naming}
             onChange={(e) => setNaming(e.target.value)}
           />
           <button className="btn primary" type="submit" disabled={!naming.trim()}>
-            Salva
+            {t("Salva")}
           </button>
           <button className="btn-link" type="button" onClick={() => setNaming(null)}>
-            Annulla
+            {t("Annulla")}
           </button>
+
         </form>
       )}
 

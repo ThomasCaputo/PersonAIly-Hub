@@ -1,4 +1,5 @@
 import { gb, type RuntimeStatus } from "../api";
+import { t, tn } from "../i18n";
 
 /**
  * Avviso mostrato quando un modello caricato in "Solo VRAM" sta in realtà
@@ -11,17 +12,24 @@ export function SpillWarning({ status }: { status: RuntimeStatus | null }) {
 
   return (
     <div className="spill" role="alert">
-      <strong>Il modello sta sconfinando nella RAM.</strong> La VRAM è piena e il driver della scheda video sta usando
-      circa {gb(spill)} GB di RAM al suo posto: le risposte saranno molto più lente.
+      <strong>{t("Il modello sta sconfinando nella RAM.")}</strong>{" "}
+      {t(
+        "La VRAM è piena e il driver della scheda video sta usando circa {gb} GB di RAM al suo posto: le risposte saranno molto più lente.",
+        { gb: gb(spill) },
+      )}
       <details>
-        <summary>Come risolvere</summary>
+        <summary>{t("Come risolvere")}</summary>
         <ul>
-          <li>Riduci il contesto o usa una cache KV più compatta, poi ricarica il modello.</li>
-          <li>Chiudi i programmi che occupano la VRAM (giochi, browser con molte schede, altri modelli).</li>
+          <li>{t("Riduci il contesto o usa una cache KV più compatta, poi ricarica il modello.")}</li>
+          <li>{t("Chiudi i programmi che occupano la VRAM (giochi, browser con molte schede, altri modelli).")}</li>
           <li>
-            Per impedirlo del tutto: Pannello di controllo NVIDIA → Gestisci le impostazioni 3D → voce{" "}
-            <em>CUDA - Sysmem Fallback Policy</em> → <em>Prefer No Sysmem Fallback</em>. Da quel momento un modello
-            troppo grande darà errore invece di rallentare.
+            {tn(
+              "Per impedirlo del tutto: Pannello di controllo NVIDIA → Gestisci le impostazioni 3D → voce {policy} → {value}. Da quel momento un modello troppo grande darà errore invece di rallentare.",
+              {
+                policy: <em>CUDA - Sysmem Fallback Policy</em>,
+                value: <em>Prefer No Sysmem Fallback</em>,
+              },
+            )}
           </li>
         </ul>
       </details>

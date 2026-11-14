@@ -5,7 +5,7 @@
 //! deve poter usare questo strumento per raggiungere il computer dell'utente
 //! o la sua rete di casa.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use reqwest::Url;
@@ -24,12 +24,15 @@ const TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Client per il web: i redirect si seguono a mano, per controllare ogni tappa.
 pub fn client() -> reqwest::Result<reqwest::Client> {
+    builder().build()
+}
+
+fn builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(TIMEOUT)
         // I siti rispondono in modo diverso, o non rispondono, ai client senza nome.
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
-        .build()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,13 +145,22 @@ fn real_url(href: &str) -> Option<String> {
 }
 
 /// Scarica una pagina pubblica e ne restituisce il testo.
-pub async fn read_page(http: &reqwest::Client, address: &str) -> Result<String> {
+///
+/// A ogni tappa il nome del sito si risolve una volta sola e il collegamento
+/// va proprio agli indirizzi appena controllati. Se lo si lasciasse risolvere
+/// di nuovo al client, un DNS malevolo potrebbe rispondere la prima volta con
+/// un indirizzo pubblico e la seconda con `127.0.0.1` (DNS rebinding).
+pub async fn read_page(address: &str) -> Result<String> {
     let mut url = Url::parse(address.trim())
         .map_err(|_| Error::msg("Indirizzo non valido: deve essere completo, con https://."))?;
 
     for _ in 0..=MAX_REDIRECTS {
-        check_public(&url).await?;
-        let mut response = http.get(url.clone()).send().await?;
+        let addresses = check_public(&url).await?;
+        let mut pinned = builder();
+        if let Some(host) = url.host_str().filter(|h| h.parse::<IpAddr>().is_err()) {
+            pinned = pinned.resolve_to_addrs(host, &addresses);
+        }
+        let mut response = pinned.build()?.get(url.clone()).send().await?;
         let status = response.status();
 
         if status.is_redirection() {
@@ -214,7 +226,8 @@ pub async fn read_page(http: &reqwest::Client, address: &str) -> Result<String> 
 
 /// Rifiuta gli indirizzi che non sono su internet: questo computer, la rete
 /// locale, gli indirizzi riservati. Vale per ogni tappa di un rinvio.
-async fn check_public(url: &Url) -> Result<()> {
+/// Restituisce gli indirizzi controllati: sono quelli a cui collegarsi.
+async fn check_public(url: &Url) -> Result<Vec<SocketAddr>> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Error::msg(
             "Si possono leggere solo pagine http:// o https://.",
@@ -226,18 +239,17 @@ async fn check_public(url: &Url) -> Result<()> {
     let port = url.port_or_known_default().unwrap_or(443);
     // Per un IPv6 scritto tra parentesi quadre il nome va passato senza.
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let addresses: Vec<IpAddr> = tokio::net::lookup_host((bare, port))
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((bare, port))
         .await
         .map_err(|_| Error::msg(format!("Sito non trovato: {host}")))?
-        .map(|a| a.ip())
         .collect();
-    if addresses.is_empty() || !addresses.iter().all(is_public) {
+    if addresses.is_empty() || !addresses.iter().all(|a| is_public(&a.ip())) {
         return Err(Error::msg(format!(
             "{host} non è un sito pubblico: questo strumento non raggiunge il computer \
              dell'utente né la sua rete locale."
         )));
     }
-    Ok(())
+    Ok(addresses)
 }
 
 fn is_public(ip: &IpAddr) -> bool {
@@ -247,7 +259,8 @@ fn is_public(ip: &IpAddr) -> bool {
             !(v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                || v4.is_unspecified()
+                // 0.0.0.0/8, "questa rete": su alcuni sistemi porta a questo computer.
+                || o[0] == 0
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_documentation()
@@ -262,13 +275,31 @@ fn is_public(ip: &IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_public(&IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let s = v6.segments();
+            let embedded = |hi: u16, lo: u16| {
+                let [a, b] = hi.to_be_bytes();
+                let [c, d] = lo.to_be_bytes();
+                IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+            };
+            // Indirizzi IPv6 che contengono un IPv4 e portano a quello:
+            // ::a.b.c.d (il vecchio "compatibile"), 64:ff9b::/96 (NAT64), 2002::/16 (6to4).
+            if s[..6] == [0; 6] && !v6.is_loopback() && !v6.is_unspecified() {
+                return is_public(&embedded(s[6], s[7]));
+            }
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_public(&embedded(s[6], s[7]));
+            }
+            if s[0] == 0x2002 {
+                return is_public(&embedded(s[1], s[2]));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 // fc00::/7 locali, fe80::/10 di collegamento.
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80)
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                // 2001:db8::/32, per la documentazione.
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
         }
     }
 }
@@ -484,6 +515,8 @@ mod tests {
         let public = |text: &str| is_public(&text.parse().unwrap());
         assert!(public("93.184.216.34"));
         assert!(public("2606:2800:220:1:248:1893:25c8:1946"));
+        assert!(public("64:ff9b::5db8:d822"));
+        assert!(public("2002:5db8:d822::1"));
         for private in [
             "127.0.0.1",
             "10.0.0.5",
@@ -496,6 +529,11 @@ mod tests {
             "fe80::1",
             "fd00::1",
             "::ffff:192.168.1.1",
+            "0.1.2.3",
+            "::127.0.0.1",
+            "64:ff9b::a00:1",
+            "2002:c0a8:101::1",
+            "2001:db8::1",
         ] {
             assert!(!public(private), "{private} dovrebbe essere rifiutato");
         }
@@ -503,18 +541,10 @@ mod tests {
 
     #[tokio::test]
     async fn non_legge_questo_computer_ne_file_locali() {
-        let http = client().unwrap();
-        assert!(
-            read_page(&http, "http://127.0.0.1:8080/segreto")
-                .await
-                .is_err()
-        );
-        assert!(read_page(&http, "http://localhost/").await.is_err());
-        assert!(
-            read_page(&http, "file:///C:/Windows/win.ini")
-                .await
-                .is_err()
-        );
-        assert!(read_page(&http, "non un indirizzo").await.is_err());
+        assert!(read_page("http://127.0.0.1:8080/segreto").await.is_err());
+        assert!(read_page("http://localhost/").await.is_err());
+        assert!(read_page("http://[::127.0.0.1]/").await.is_err());
+        assert!(read_page("file:///C:/Windows/win.ini").await.is_err());
+        assert!(read_page("non un indirizzo").await.is_err());
     }
 }

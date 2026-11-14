@@ -13,9 +13,9 @@ import {
 } from "../api";
 
 import { EngineSection } from "../components/EngineSection";
-
 import { HubSection } from "../components/HubSection";
 import { ProvidersSection } from "../components/ProvidersSection";
+import { t, tc, tn } from "../i18n";
 
 type Props = {
   status: RuntimeStatus | null;
@@ -47,7 +47,7 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
   };
 
   const addFolder = async () => {
-    const picked = await open({ directory: true, title: "Scegli una cartella di modelli" });
+    const picked = await open({ directory: true, title: t("Scegli una cartella di modelli") });
     if (typeof picked === "string" && !folders.includes(picked)) {
       await saveFolders([...folders, picked]);
     }
@@ -57,7 +57,7 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
 
   return (
     <div className="page">
-      <h1>Modelli</h1>
+      <h1>{t("Modelli")}</h1>
 
       <ProvidersSection providers={providers} onChange={onProvidersChange} />
 
@@ -65,38 +65,36 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
 
       <section className="section">
         <div className="section-head">
-          <h2>Cartelle</h2>
+          <h2>{t("Cartelle")}</h2>
           <div className="row">
             <button className="btn" onClick={rescan}>
-              Aggiorna
+              {t("Aggiorna")}
             </button>
             <button className="btn" onClick={addFolder}>
-              Aggiungi cartella
+              {t("Aggiungi cartella")}
             </button>
           </div>
         </div>
-        {folders.length === 0 && (
-          <p className="dim">Aggiungi una cartella che contiene file .gguf per iniziare.</p>
-        )}
+        {folders.length === 0 && <p className="dim">{t("Aggiungi una cartella che contiene file .gguf per iniziare.")}</p>}
         {folders.map((folder) => (
           <div key={folder} className="folder">
             <span className="mono">{folder}</span>
             <button className="btn-link" onClick={() => saveFolders(folders.filter((f) => f !== folder))}>
-              Rimuovi
+              {t("Rimuovi")}
             </button>
           </div>
         ))}
       </section>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error">{tc(error)}</p>}
 
       <HubSection folders={folders} status={status} onDownloaded={rescan} />
 
       <section className="section">
-        <h2>Modelli locali</h2>
-        {models === null && <p className="dim">Ricerca dei modelli…</p>}
+        <h2>{t("Modelli locali")}</h2>
+        {models === null && <p className="dim">{t("Ricerca dei modelli…")}</p>}
         {models?.length === 0 && folders.length > 0 && (
-          <p className="dim">Nessun file .gguf trovato nelle cartelle indicate.</p>
+          <p className="dim">{t("Nessun file .gguf trovato nelle cartelle indicate.")}</p>
         )}
         {models?.map((model) => (
           <ModelCard
@@ -184,19 +182,19 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
         <div>
           <div className="card-title">
             {model.name}
-            {isLoaded && <span className="badge">Caricato</span>}
+            {isLoaded && <span className="badge">{t("Caricato")}</span>}
           </div>
-          <div className="dim">{model.error ? `Non leggibile: ${model.error}` : details}</div>
+          <div className="dim">{model.error ? t("Non leggibile: {error}", { error: tc(model.error) }) : details}</div>
         </div>
         <span className="dim">{open ? "▾" : "▸"}</span>
       </button>
 
       {open && preset && (
         <div className="card-body">
-          <p className="dim note">Parametri di caricamento: per cambiarli il modello va ricaricato.</p>
+          <p className="dim note">{t("Parametri di caricamento: per cambiarli il modello va ricaricato.")}</p>
 
           <div className="field">
-            <label>Collocazione</label>
+            <label>{t("Collocazione")}</label>
             <div className="segmented">
               {(["vram", "ram"] as const).map((p) => (
                 <button
@@ -204,14 +202,14 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
                   className={preset.load.placement === p ? "active" : ""}
                   onClick={() => setLoad({ placement: p })}
                 >
-                  {p === "vram" ? "Solo VRAM" : "Solo RAM"}
+                  {p === "vram" ? t("Solo VRAM") : t("Solo RAM")}
                 </button>
               ))}
             </div>
           </div>
 
           <div className="field">
-            <label htmlFor={`ctx-${model.path}`}>Contesto (token)</label>
+            <label htmlFor={`ctx-${model.path}`}>{t("Contesto (token)")}</label>
             <div className="row">
               <input
                 id={`ctx-${model.path}`}
@@ -223,76 +221,78 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
                 onChange={(e) => setLoad({ contextLength: clamp(Number(e.target.value), 512, maxContext) })}
               />
               {model.contextLength && (
-                <span className="dim">massimo del modello: {model.contextLength.toLocaleString("it-IT")}</span>
+                <span className="dim">{t("massimo del modello: {n}", { n: model.contextLength })}</span>
               )}
             </div>
           </div>
 
           <div className="field">
-            <label htmlFor={`kv-${model.path}`}>Cache KV</label>
+            <label htmlFor={`kv-${model.path}`}>{t("Cache KV")}</label>
             <select
               id={`kv-${model.path}`}
               value={preset.load.kvCacheType}
               onChange={(e) => setLoad({ kvCacheType: e.target.value as KvCacheType })}
             >
-              <option value="q8_0">q8_0 — consigliata</option>
-              <option value="f16">f16 — massima fedeltà, il doppio della memoria</option>
-              <option value="q4_0">q4_0 — minima memoria, qualità inferiore</option>
+              <option value="q8_0">{t("q8_0 — consigliata")}</option>
+              <option value="f16">{t("f16 — massima fedeltà, il doppio della memoria")}</option>
+              <option value="q4_0">{t("q4_0 — minima memoria, qualità inferiore")}</option>
             </select>
           </div>
 
           <details className="advanced">
-            <summary>Avanzate</summary>
+            <summary>{t("Avanzate")}</summary>
             <div className="field">
-              <label htmlFor={`threads-${model.path}`}>Thread del processore</label>
+              <label htmlFor={`threads-${model.path}`}>{t("Thread del processore")}</label>
               <input
                 id={`threads-${model.path}`}
                 type="number"
                 min={1}
                 max={256}
-                placeholder="Automatico"
+                placeholder={t("Automatico")}
                 value={preset.load.threads ?? ""}
                 onChange={(e) => setLoad({ threads: optionalInt(e.target.value, 1, 256) })}
               />
             </div>
             <div className="field">
-              <label htmlFor={`batch-${model.path}`}>Dimensione del batch (token)</label>
+              <label htmlFor={`batch-${model.path}`}>{t("Dimensione del batch (token)")}</label>
               <input
                 id={`batch-${model.path}`}
                 type="number"
                 min={32}
                 max={8192}
-                placeholder="Predefinita (2048)"
+                placeholder={t("Predefinita (2048)")}
                 value={preset.load.batchSize ?? ""}
                 onChange={(e) => setLoad({ batchSize: optionalInt(e.target.value, 32, 8192) })}
               />
               <span className="dim note">
-                Quanti token del messaggio vengono letti per volta. Più alto = lettura più rapida, un po' più di memoria.
+                {t(
+                  "Quanti token del messaggio vengono letti per volta. Più alto = lettura più rapida, un po' più di memoria.",
+                )}
               </span>
             </div>
           </details>
 
           {check && <Estimate check={check} placement={preset.load.placement} />}
-          {error && <p className="error pre">{error}</p>}
+          {error && <p className="error pre">{tc(error)}</p>}
 
           <div className="row">
             {isLoaded ? (
               <>
                 <button className="btn" disabled={working} onClick={doUnload}>
-                  Scarica dalla memoria
+                  {t("Scarica dalla memoria")}
                 </button>
                 <button className="btn" disabled={working || busy} onClick={() => doLoad(false)}>
-                  Ricarica con questi parametri
+                  {t("Ricarica con questi parametri")}
                 </button>
               </>
             ) : (
               <button className="btn primary" disabled={working || busy} onClick={() => doLoad(false)}>
-                {working ? "Caricamento…" : "Carica"}
+                {working ? t("Caricamento…") : t("Carica")}
               </button>
             )}
             {check && !check.fits && !working && (
               <button className="btn-link" onClick={() => doLoad(true)}>
-                Carica comunque
+                {t("Carica comunque")}
               </button>
             )}
           </div>
@@ -308,16 +308,21 @@ function Estimate({ check, placement }: { check: LoadCheck; placement: "vram" | 
   return (
     <div className={fits ? "estimate" : "estimate bad"}>
       <div>
-        Memoria necessaria: <strong>circa {gb(estimate.totalBytes)} GB</strong>
-        {availableBytes != null && ` — ${place} libera: ${gb(availableBytes)} GB`}
+        {tn("Memoria necessaria: {amount}", {
+          amount: <strong>{t("circa {gb} GB", { gb: gb(estimate.totalBytes) })}</strong>,
+        })}
+        {availableBytes != null && ` — ${t("{place} libera: {gb} GB", { place, gb: gb(availableBytes) })}`}
       </div>
       <div className="dim">
-        pesi {gb(estimate.weightsBytes)} GB
-        {estimate.kvCacheKnown ? ` + cache KV ${gb(estimate.kvCacheBytes)} GB` : " + cache KV non calcolabile"}
-        {` + margine ${gb(estimate.overheadBytes)} GB`}
+        {t("pesi {gb} GB", { gb: gb(estimate.weightsBytes) })}
+        {estimate.kvCacheKnown
+          ? ` + ${t("cache KV {gb} GB", { gb: gb(estimate.kvCacheBytes) })}`
+          : ` + ${t("cache KV non calcolabile")}`}
+        {` + ${t("margine {gb} GB", { gb: gb(estimate.overheadBytes) })}`}
       </div>
-      {!fits && <div>Il modello non entra nella {place} libera: riduci il contesto o libera memoria.</div>}
-      {availableBytes == null && <div className="dim">Memoria libera non misurabile su questa GPU.</div>}
+      {!fits && <div>{t("Il modello non entra nella {place} libera: riduci il contesto o libera memoria.", { place })}</div>}
+      {availableBytes == null && <div className="dim">{t("Memoria libera non misurabile su questa GPU.")}</div>}
+
     </div>
   );
 }

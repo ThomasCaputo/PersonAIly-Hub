@@ -348,7 +348,10 @@ async fn chat_completions(
     };
     // Si verifica subito che il modello sia raggiungibile: l'errore arriva
     // come risposta HTTP anche quando si chiede lo streaming.
-    state.core.preset_for(&model)?;
+    {
+        let model = model.clone();
+        crate::api::blocking(&state.core, move |core| core.preset_for(&model)).await?;
+    }
 
     let id = completion_id();
     let created = now_secs();

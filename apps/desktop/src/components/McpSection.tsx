@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type McpServer, type McpToolInfo } from "../api";
+import { t, tc } from "../i18n";
 
 const EMPTY: McpServer = { id: "", name: "", command: "", args: [], env: [] };
 
@@ -62,7 +63,10 @@ export function McpSection() {
   };
 
   const remove = async (server: McpServer) => {
-    if (!window.confirm(`Eliminare il server MCP «${server.name}»? Gli agenti che lo usano non lo troveranno più.`)) return;
+    const question = t("Eliminare il server MCP «{name}»? Gli agenti che lo usano non lo troveranno più.", {
+      name: server.name,
+    });
+    if (!window.confirm(question)) return;
     await api.deleteMcpServer(server.id).catch((e) => setError(String(e)));
     refresh();
   };
@@ -80,20 +84,20 @@ export function McpSection() {
   return (
     <section className="section">
       <div className="section-head">
-        <h2>Server MCP</h2>
+        <h2>{t("Server MCP")}</h2>
         {!draft && (
           <button className="btn" onClick={() => edit(EMPTY)}>
-            Aggiungi server
+            {t("Aggiungi server")}
           </button>
         )}
       </div>
       <p className="dim note">
-        Programmi che aggiungono strumenti agli agenti (Model Context Protocol). Partono sul tuo computer con i tuoi
-        permessi: aggiungi solo server di cui ti fidi. Ogni agente sceglie quali usare, e i loro strumenti chiedono
-        conferma salvo che l'agente abbia «Consenti tutto».
+        {t(
+          "Programmi che aggiungono strumenti agli agenti (Model Context Protocol). Partono sul tuo computer con i tuoi permessi: aggiungi solo server di cui ti fidi. Ogni agente sceglie quali usare, e i loro strumenti chiedono conferma salvo che l'agente abbia «Consenti tutto».",
+        )}
       </p>
 
-      {servers.length === 0 && !draft && <p className="dim">Nessun server MCP.</p>}
+      {servers.length === 0 && !draft && <p className="dim">{t("Nessun server MCP.")}</p>}
       {servers.map((s) => (
         <div key={s.id} className="folder">
           <span>
@@ -104,10 +108,10 @@ export function McpSection() {
           </span>
           <span className="row">
             <button className="btn-link" onClick={() => edit(s)}>
-              Modifica
+              {t("Modifica")}
             </button>
             <button className="btn-link" onClick={() => remove(s)}>
-              Elimina
+              {t("Elimina")}
             </button>
           </span>
         </div>
@@ -116,28 +120,28 @@ export function McpSection() {
       {draft && (
         <div className="card mcp-form">
           <div className="field">
-            <label htmlFor="mcp-name">Nome</label>
+            <label htmlFor="mcp-name">{t("Nome")}</label>
             <input
               id="mcp-name"
               type="text"
               value={draft.server.name}
-              placeholder="Per esempio: GitHub"
+              placeholder={t("Per esempio: GitHub")}
               onChange={(e) => setDraft({ ...draft, server: { ...draft.server, name: e.target.value } })}
             />
           </div>
           <div className="field">
-            <label htmlFor="mcp-command">Comando</label>
+            <label htmlFor="mcp-command">{t("Comando")}</label>
             <input
               id="mcp-command"
               type="text"
               className="mono"
               value={draft.server.command}
-              placeholder="npx, uvx, oppure il percorso di un programma"
+              placeholder={t("npx, uvx, oppure il percorso di un programma")}
               onChange={(e) => setDraft({ ...draft, server: { ...draft.server, command: e.target.value } })}
             />
           </div>
           <div className="field">
-            <label htmlFor="mcp-args">Argomenti, uno per riga</label>
+            <label htmlFor="mcp-args">{t("Argomenti, uno per riga")}</label>
             <textarea
               id="mcp-args"
               className="mono"
@@ -148,7 +152,7 @@ export function McpSection() {
             />
           </div>
           <div className="field">
-            <label htmlFor="mcp-env">Variabili d'ambiente, una per riga (NOME=valore)</label>
+            <label htmlFor="mcp-env">{t("Variabili d'ambiente, una per riga (NOME=valore)")}</label>
             <textarea
               id="mcp-env"
               className="mono"
@@ -157,33 +161,35 @@ export function McpSection() {
               onChange={(e) => setDraft({ ...draft, env: e.target.value })}
             />
             <p className="dim note">
-              I valori vengono salvati nel Gestore credenziali di Windows, come le chiavi API: nell'archivio dell'app
-              restano solo i nomi.
+              {t(
+                "I valori vengono salvati nel Gestore credenziali di Windows, come le chiavi API: nell'archivio dell'app restano solo i nomi.",
+              )}
             </p>
           </div>
           <div className="row">
             <button className="btn primary" onClick={save}>
-              Salva
+              {t("Salva")}
             </button>
             <button className="btn" disabled={probe.busy} onClick={test}>
-              {probe.busy ? "Avvio in corso…" : "Prova"}
+              {probe.busy ? t("Avvio in corso…") : t("Prova")}
             </button>
             <button className="btn" onClick={() => setDraft(null)}>
-              Annulla
+              {t("Annulla")}
             </button>
           </div>
-          {probe.error && <p className="error pre">{probe.error}</p>}
+          {probe.error && <p className="error pre">{tc(probe.error)}</p>}
           {probe.tools && (
             <div className="note">
               <p>
-                Il server risponde e offre {probe.tools.length}{" "}
-                {probe.tools.length === 1 ? "strumento" : "strumenti"}:
+                {probe.tools.length === 1
+                  ? t("Il server risponde e offre 1 strumento:")
+                  : t("Il server risponde e offre {n} strumenti:", { n: probe.tools.length })}
               </p>
               <ul className="mcp-tools">
-                {probe.tools.map((t) => (
-                  <li key={t.name}>
-                    <span className="mono">{t.name}</span>
-                    {t.description && <span className="dim"> — {t.description}</span>}
+                {probe.tools.map((tool) => (
+                  <li key={tool.name}>
+                    <span className="mono">{tool.name}</span>
+                    {tool.description && <span className="dim"> — {tool.description}</span>}
                   </li>
                 ))}
               </ul>
@@ -191,7 +197,8 @@ export function McpSection() {
           )}
         </div>
       )}
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </section>
+
   );
 }

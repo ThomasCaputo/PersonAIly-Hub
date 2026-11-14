@@ -36,7 +36,7 @@ pub struct Attachment {
 }
 
 /// Ciò che l'interfaccia mostra di un allegato: non il contenuto.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInfo {
     pub name: String,

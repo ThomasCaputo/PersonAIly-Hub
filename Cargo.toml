@@ -16,5 +16,7 @@ app-server = { path = "crates/server" }
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# "unwind" e non "abort": un panic in una libreria (per esempio la lettura
+# di un PDF rovinato) deve diventare un errore, non chiudere l'app.
+panic = "unwind"
 strip = true

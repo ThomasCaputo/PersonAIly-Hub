@@ -1,6 +1,7 @@
 // Tipi e chiamate verso il nucleo. I tipi rispecchiano quelli Rust di `app-core`.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { locale } from "./i18n";
 
 export type Placement = "vram" | "ram";
 
@@ -219,12 +220,22 @@ export type DownloadState = {
   totalBytes: number;
   phase: "downloading" | "done" | "failed" | "cancelled";
   error: string | null;
+  /** Hugging Face non ha pubblicato l'impronta: controllata solo la dimensione. */
+  unverified: boolean;
+};
+
+/** Protezioni accese di base, che l'utente può spegnere nelle Impostazioni. */
+export type SecuritySettings = {
+  /** Conferma prima che il modello apra un indirizzo inventato mentre vede i file. */
+  exfiltrationGuard: boolean;
+  /** Conferma prima di aprire nel browser un collegamento di una risposta. */
+  confirmLinks: boolean;
 };
 
 /** Importo in dollari: più decimali per le cifre piccole, tipiche di una singola risposta. */
 export function usd(amount: number): string {
   const digits = amount >= 1 ? 2 : amount >= 0.01 ? 3 : 4;
-  return `$${amount.toLocaleString("it-IT", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  return `$${amount.toLocaleString(locale(), { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
 export type GenerationStats = {
@@ -412,7 +423,16 @@ export const api = {
     invoke<ProviderInfo>("save_provider", { provider, apiKey: apiKey || null }),
   deleteProvider: (id: string) => invoke<void>("delete_provider", { id }),
   refreshProviderModels: (id: string) => invoke<ProviderInfo>("refresh_provider_models", { id }),
+
+  /** La lingua scelta dall'utente; `null` finché non ne sceglie una. */
+  language: () => invoke<string | null>("language"),
+  setLanguage: (language: string) => invoke<void>("set_language", { language }),
+  securitySettings: () => invoke<SecuritySettings>("security_settings"),
+  setSecuritySettings: (settings: SecuritySettings) => invoke<void>("set_security_settings", { settings }),
+  /** Apre un indirizzo web nel browser di sistema. */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
 };
+
 
 /** Dimensione leggibile: megabyte sotto il gigabyte, gigabyte sopra. */
 export function size(bytes: number): string {
@@ -421,9 +441,9 @@ export function size(bytes: number): string {
 
 const GIB = 1024 ** 3;
 
-/** Byte in gigabyte con una cifra decimale, alla maniera italiana. */
+/** Byte in gigabyte con una cifra decimale, nel formato della lingua scelta. */
 export function gb(bytes: number): string {
-  return (bytes / GIB).toLocaleString("it-IT", {
+  return (bytes / GIB).toLocaleString(locale(), {
     minimumFractionDigits: 1,
     maximumFractionDigits: 1,
   });

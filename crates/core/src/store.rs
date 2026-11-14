@@ -95,6 +95,26 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX actions_by_time ON actions (id DESC);
     ",
+    // 6 — indice di ricerca nel testo dei messaggi. Il tokenizzatore `trigram`
+    //     trova anche pezzi di parola, come faceva `LIKE '%…%'`, ma senza
+    //     rileggere tutti i messaggi a ogni ricerca. Lo tengono aggiornato i trigger.
+    "
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+        content, content = 'messages', content_rowid = 'id', tokenize = 'trigram'
+    );
+    INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');
+
+    CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+    END;
+    CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END;
+    CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+        INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+    END;
+    ",
 ];
 
 /// Caratteri del risultato conservati nel registro delle azioni.
@@ -141,6 +161,17 @@ pub struct NewAction<'a> {
 /// Colonne lette per ogni messaggio, nell'ordine atteso da `row_to_message`.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, model, created_at, \
      prompt_tokens, completion_tokens, cost_usd, tool_data, attachments";
+
+/// Come [`MESSAGE_COLUMNS`], ma degli allegati solo nome e tipo: un'immagine
+/// in base64 pesa megabyte, e l'interfaccia non la mostra.
+const MESSAGE_COLUMNS_LIGHT: &str = "id, conversation_id, role, content, model, created_at, \
+     prompt_tokens, completion_tokens, cost_usd, tool_data, \
+     (SELECT json_group_array(json_object('name', json_extract(value, '$.name'), \
+                                          'kind', json_extract(value, '$.kind'))) \
+      FROM json_each(attachments))";
+
+/// Sotto questa lunghezza l'indice a trigrammi non serve: si cerca con `LIKE`.
+const MIN_INDEXED_QUERY_CHARS: usize = 3;
 
 /// Ciò che un messaggio ha a che fare con gli strumenti, salvato in JSON.
 ///
@@ -215,6 +246,14 @@ impl Store {
 
     fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
+        // Scritture più rapide e letture che non aspettano le scritture.
+        // Un archivio in memoria non ha un registro su disco: lì non serve.
+        if conn.path().is_some_and(|p| !p.is_empty()) {
+            let _: String =
+                conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+        }
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
         let current: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
@@ -254,23 +293,31 @@ impl Store {
     /// che contengono il testo nel titolo o in un messaggio (senza distinguere
     /// maiuscole e minuscole).
     pub fn list_conversations(&self, query: &str) -> Result<Vec<Conversation>> {
+        let query = query.trim();
         // `%` e `_` sono caratteri jolly di LIKE: se l'utente li cerca vanno presi alla lettera.
         let escaped = query
-            .trim()
             .replace('\\', r"\\")
             .replace('%', r"\%")
             .replace('_', r"\_");
         let pattern = format!("%{escaped}%");
+        // Nel testo dei messaggi si cerca con l'indice: la frase tra virgolette
+        // trova il testo esatto ovunque compaia, anche a metà parola.
+        let in_messages = if query.chars().count() >= MIN_INDEXED_QUERY_CHARS {
+            r"EXISTS (SELECT 1 FROM messages_fts f JOIN messages m ON m.id = f.rowid
+                      WHERE messages_fts MATCH ?2 AND m.conversation_id = c.id)"
+        } else {
+            r"(?2 IS NOT NULL AND EXISTS (SELECT 1 FROM messages m
+                      WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\'))"
+        };
+        let phrase = format!("\"{}\"", query.replace('"', "\"\""));
         // Le conversazioni delle sessioni degli agenti si vedono nella pagina Agenti.
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             r"SELECT id, title, created_at, updated_at FROM conversations c
               WHERE NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.conversation_id = c.id)
-                AND (c.title LIKE ?1 ESCAPE '\'
-                     OR EXISTS (SELECT 1 FROM messages m
-                                WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\'))
-              ORDER BY updated_at DESC, id DESC",
-        )?;
-        let rows = stmt.query_map([pattern], row_to_conversation)?;
+                AND (?3 = '' OR c.title LIKE ?1 ESCAPE '\' OR {in_messages})
+              ORDER BY updated_at DESC, id DESC"
+        ))?;
+        let rows = stmt.query_map(params![pattern, phrase, query], row_to_conversation)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -312,12 +359,31 @@ impl Store {
 
     // ── Messaggi ────────────────────────────────────────────────────────
 
+    /// I messaggi con il contenuto degli allegati, per mandarli al modello.
     pub fn messages(&self, conversation_id: i64) -> Result<Vec<Message>> {
-        let mut stmt = self.conn.prepare(&format!(
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?1 ORDER BY id"
         ))?;
         let rows = stmt.query_map([conversation_id], row_to_message)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// I messaggi da mostrare: degli allegati solo nome e tipo.
+    pub fn messages_for_display(&self, conversation_id: i64) -> Result<Vec<Message>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS_LIGHT} FROM messages WHERE conversation_id = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([conversation_id], row_to_message_light)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// La conversazione non ha ancora messaggi.
+    pub fn has_no_messages(&self, conversation_id: i64) -> Result<bool> {
+        Ok(!self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE conversation_id = ?1)",
+            [conversation_id],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
 
     /// Aggiunge un messaggio e segna la conversazione come appena aggiornata.
@@ -678,12 +744,30 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSession> {
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
     // Un JSON illeggibile non deve rendere illeggibile la conversazione.
-    let tool: ToolData = row
-        .get::<_, Option<String>>(9)?
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
     let attachment_data: Vec<Attachment> = row
         .get::<_, Option<String>>(10)?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    let attachments = attachment_data.iter().map(Attachment::info).collect();
+    build_message(row, attachments, attachment_data)
+}
+
+/// Per le righe lette con [`MESSAGE_COLUMNS_LIGHT`].
+fn row_to_message_light(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+    let attachments: Vec<AttachmentInfo> = row
+        .get::<_, Option<String>>(10)?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    build_message(row, attachments, Vec::new())
+}
+
+fn build_message(
+    row: &rusqlite::Row<'_>,
+    attachments: Vec<AttachmentInfo>,
+    attachment_data: Vec<Attachment>,
+) -> rusqlite::Result<Message> {
+    let tool: ToolData = row
+        .get::<_, Option<String>>(9)?
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
     Ok(Message {
@@ -691,8 +775,9 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         tool_call_id: tool.call_id,
         tool_name: tool.name,
         is_error: tool.is_error,
-        attachments: attachment_data.iter().map(Attachment::info).collect(),
+        attachments,
         attachment_data,
+
         id: row.get(0)?,
         conversation_id: row.get(1)?,
         role: row.get(2)?,
@@ -825,6 +910,69 @@ mod tests {
         // Il segno % cercato da solo non deve valere "qualsiasi cosa".
         assert_eq!(titoli("%"), ["Aiuto con Python"]);
         assert!(titoli("inesistente").is_empty());
+        // L'indice trova anche pezzi di parola, senza badare alle maiuscole.
+        assert_eq!(titoli("RBONA"), ["Ricette di pasta"]);
+        assert_eq!(titoli("del 100"), ["Aiuto con Python"]);
+        // Le virgolette cercate non rompono la ricerca.
+        assert!(titoli("\"carbonara").is_empty());
+
+        // Un messaggio eliminato (anche con la sua conversazione) esce dall'indice.
+        store.delete_conversation(ricette.id).unwrap();
+        assert!(titoli("carbonara").is_empty());
+        let fts_rows: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH '\"carbonara\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_rows, 0);
+    }
+
+    #[test]
+    fn i_messaggi_da_mostrare_non_portano_il_contenuto_degli_allegati() {
+        use crate::attachments::AttachmentKind;
+        let store = Store::open_in_memory().unwrap();
+        let conv = store.create_conversation("allegati").unwrap();
+        assert!(store.has_no_messages(conv.id).unwrap());
+        let image = Attachment {
+            name: "foto.png".into(),
+            kind: AttachmentKind::Image,
+            data: "QUFB".repeat(1000),
+            media_type: Some("image/png".into()),
+        };
+        store
+            .add_message_with(conv.id, "user", "guarda", None, None, &[image])
+            .unwrap();
+        store
+            .add_message(conv.id, "assistant", "vista", None)
+            .unwrap();
+        assert!(!store.has_no_messages(conv.id).unwrap());
+
+        let shown = store.messages_for_display(conv.id).unwrap();
+        assert_eq!(shown[0].attachments[0].name, "foto.png");
+        assert_eq!(shown[0].attachments[0].kind, AttachmentKind::Image);
+        assert!(shown[0].attachment_data.is_empty());
+        assert!(shown[1].attachments.is_empty());
+        let full = store.messages(conv.id).unwrap();
+        assert_eq!(full[0].attachment_data[0].data.len(), 4000);
+    }
+
+    #[test]
+    fn un_archivio_su_disco_usa_il_registro_wal() {
+        let dir = std::env::temp_dir().join(format!("archivio-wal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            let mode: String = store
+                .conn
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode.to_lowercase(), "wal");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

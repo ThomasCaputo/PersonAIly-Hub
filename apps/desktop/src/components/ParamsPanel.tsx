@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { LoadedModel, Preset, SamplingParams } from "../api";
 import { NamedPresets } from "./NamedPresets";
+import { msg, t } from "../i18n";
 
 type Props = {
   preset: Preset;
@@ -22,11 +23,25 @@ type SliderDef = {
 };
 
 const SLIDERS: SliderDef[] = [
-  { key: "temperature", label: "Temperatura", hint: "Più alta = risposte più varie", min: 0, max: 2, step: 0.05 },
-  { key: "topP", label: "Top-p", hint: "Quota di probabilità considerata", min: 0, max: 1, step: 0.01 },
-  { key: "topK", label: "Top-k", hint: "Numero di parole candidate (0 = tutte)", min: 0, max: 200, step: 1 },
-  { key: "minP", label: "Min-p", hint: "Scarta le parole troppo improbabili", min: 0, max: 0.5, step: 0.01 },
-  { key: "repeatPenalty", label: "Penalità di ripetizione", hint: "1 = nessuna penalità", min: 1, max: 2, step: 0.01 },
+  {
+    key: "temperature",
+    label: msg("Temperatura"),
+    hint: msg("Più alta = risposte più varie"),
+    min: 0,
+    max: 2,
+    step: 0.05,
+  },
+  { key: "topP", label: "Top-p", hint: msg("Quota di probabilità considerata"), min: 0, max: 1, step: 0.01 },
+  { key: "topK", label: "Top-k", hint: msg("Numero di parole candidate (0 = tutte)"), min: 0, max: 200, step: 1 },
+  { key: "minP", label: "Min-p", hint: msg("Scarta le parole troppo improbabili"), min: 0, max: 0.5, step: 0.01 },
+  {
+    key: "repeatPenalty",
+    label: msg("Penalità di ripetizione"),
+    hint: msg("1 = nessuna penalità"),
+    min: 1,
+    max: 2,
+    step: 0.01,
+  },
 ];
 
 const KV_LABEL = { q8_0: "q8_0", f16: "f16", q4_0: "q4_0" } as const;
@@ -43,8 +58,8 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
 
   return (
     <div className="params-panel">
-      <h2>Parametri</h2>
-      <p className="dim note">Valgono dal prossimo messaggio.</p>
+      <h2>{t("Parametri")}</h2>
+      <p className="dim note">{t("Valgono dal prossimo messaggio.")}</p>
 
       <NamedPresets
         preset={preset}
@@ -55,24 +70,24 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
       />
 
       <div className="field">
-        <label htmlFor="system-prompt">Prompt di sistema</label>
+        <label htmlFor="system-prompt">{t("Prompt di sistema")}</label>
         <textarea
           id="system-prompt"
           rows={4}
           value={preset.systemPrompt}
-          placeholder="Istruzioni sempre valide per questo modello"
+          placeholder={t("Istruzioni sempre valide per questo modello")}
           onChange={(e) => onChange({ ...preset, systemPrompt: e.target.value })}
         />
       </div>
 
       {SLIDERS.filter((s) => shows(s.key)).map((s) => (
-        <div className="field" key={s.key} title={s.hint}>
+        <div className="field" key={s.key} title={t(s.hint)}>
           <div className="slider-head">
-            <label htmlFor={`param-${s.key}`}>{s.label}</label>
+            <label htmlFor={`param-${s.key}`}>{t(s.label)}</label>
             <input
               className="slider-value"
               type="number"
-              aria-label={s.label}
+              aria-label={t(s.label)}
               min={s.min}
               max={s.max}
               step={s.step}
@@ -94,12 +109,12 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
 
       {shows("maxTokens") && (
         <div className="field">
-          <label htmlFor="param-max-tokens">Token massimi per risposta</label>
+          <label htmlFor="param-max-tokens">{t("Token massimi per risposta")}</label>
           <input
             id="param-max-tokens"
             type="number"
             min={1}
-            placeholder={loaded ? "Nessun limite" : "Predefinito"}
+            placeholder={loaded ? t("Nessun limite") : t("Predefinito")}
             value={preset.sampling.maxTokens ?? ""}
             onChange={(e) => setSampling({ maxTokens: optionalInt(e.target.value, 1) })}
           />
@@ -108,11 +123,11 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
 
       {shows("seed") && (
         <div className="field">
-          <label htmlFor="param-seed">Seed</label>
+          <label htmlFor="param-seed">{t("Seed")}</label>
           <input
             id="param-seed"
             type="number"
-            placeholder="Casuale"
+            placeholder={t("Casuale")}
             value={preset.sampling.seed ?? ""}
             onChange={(e) => setSampling({ seed: optionalInt(e.target.value, 0) })}
           />
@@ -120,11 +135,11 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
       )}
 
       <div className="field">
-        <label htmlFor="param-stop">Sequenze di stop</label>
+        <label htmlFor="param-stop">{t("Sequenze di stop")}</label>
         <input
           id="param-stop"
           type="text"
-          placeholder="Separate da virgola"
+          placeholder={t("Separate da virgola")}
           value={stopText}
           onChange={(e) => {
             setStopText(e.target.value);
@@ -140,26 +155,27 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
 
       {supported !== null && (
         <p className="dim note">
-          Sono mostrati solo i parametri che questo servizio accetta: gli altri verrebbero rifiutati.
+          {t("Sono mostrati solo i parametri che questo servizio accetta: gli altri verrebbero rifiutati.")}
         </p>
       )}
 
       {loaded && (
         <>
-          <h2>Caricamento</h2>
+          <h2>{t("Caricamento")}</h2>
           <dl className="facts">
-            <dt>Collocazione</dt>
-            <dd>{loaded.params.placement === "vram" ? "Solo VRAM" : "Solo RAM"}</dd>
-            <dt>Contesto</dt>
-            <dd>{loaded.params.contextLength.toLocaleString("it-IT")} token</dd>
-            <dt>Cache KV</dt>
+            <dt>{t("Collocazione")}</dt>
+            <dd>{loaded.params.placement === "vram" ? t("Solo VRAM") : t("Solo RAM")}</dd>
+            <dt>{t("Contesto")}</dt>
+            <dd>{t("{n} token", { n: loaded.params.contextLength })}</dd>
+            <dt>{t("Cache KV")}</dt>
             <dd>{KV_LABEL[loaded.params.kvCacheType]}</dd>
           </dl>
           <p className="dim note">
-            Per cambiarli il modello va ricaricato.{" "}
+            {t("Per cambiarli il modello va ricaricato.")}{" "}
             <button className="btn-link" onClick={onOpenModels}>
-              Apri Modelli
+              {t("Apri Modelli")}
             </button>
+
           </p>
         </>
       )}

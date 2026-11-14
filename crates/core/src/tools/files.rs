@@ -128,7 +128,7 @@ pub fn read_text(file: &Path) -> Result<String> {
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
     if is_pdf {
-        return pdf_extract::extract_text_from_mem(&bytes).map_err(|e| {
+        return pdf_text(&bytes).map_err(|e| {
             Error::msg(format!(
                 "Non riesco a leggere il testo di {}: {e}",
                 display(file)
@@ -146,6 +146,17 @@ pub fn read_text(file: &Path) -> Result<String> {
             display(file)
         ))
     })
+}
+
+/// Il testo di un PDF. `pdf-extract` va in panic con molti PDF insoliti o
+/// rovinati: il panic si ferma qui e diventa un errore, invece di chiudere
+/// l'app (per questo il profilo di rilascio usa `panic = "unwind"`).
+fn pdf_text(bytes: &[u8]) -> std::result::Result<String, String> {
+    match std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes)) {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("il PDF ha una struttura che non so interpretare".into()),
+    }
 }
 
 /// Accorcia un testo troppo lungo, dicendolo chiaramente a chi lo legge.
@@ -170,13 +181,41 @@ pub fn write_file(path: &str, content: &str, folders: &[PathBuf]) -> Result<Stri
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&file, content)?;
+    write_atomic(&file, content.as_bytes())?;
     Ok(format!(
         "{} {} ({} caratteri).",
         if existed { "Sostituito" } else { "Creato" },
         display(&file),
         content.chars().count()
     ))
+}
+
+/// Scrive prima un file temporaneo accanto a quello vero, poi lo rinomina:
+/// se la scrittura si interrompe a metà, il file originale resta intatto.
+fn write_atomic(file: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let name = file
+        .file_name()
+        .ok_or_else(|| Error::msg("Percorso senza nome di file."))?;
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(name);
+    temp_name.push(format!(".{}.tmp", std::process::id()));
+    let temp = file.with_file_name(temp_name);
+    let written = std::fs::File::create(&temp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e.into());
+    }
+    if std::fs::rename(&temp, file).is_err() {
+        // Su Windows la rinomina fallisce se un altro programma tiene aperto
+        // il file senza permetterlo: si scrive allora direttamente.
+        let _ = std::fs::remove_file(&temp);
+        std::fs::write(file, bytes)?;
+    }
+    Ok(())
 }
 
 pub fn edit_file(
@@ -186,6 +225,12 @@ pub fn edit_file(
     folders: &[PathBuf],
 ) -> Result<String> {
     let file = resolve(path, folders)?;
+    if std::fs::metadata(&file)?.len() > MAX_READ_BYTES {
+        return Err(Error::msg(format!(
+            "{} è troppo grande per essere modificato.",
+            display(&file)
+        )));
+    }
     let text = String::from_utf8(std::fs::read(&file)?)
         .map_err(|_| Error::msg("Il file non è di testo: non si può modificare."))?;
     if old_text.is_empty() {
@@ -198,7 +243,7 @@ pub fn edit_file(
             "old_text non compare nel file: rileggilo e copia il testo esatto.",
         )),
         1 => {
-            std::fs::write(&file, text.replacen(old_text, new_text, 1))?;
+            write_atomic(&file, text.replacen(old_text, new_text, 1).as_bytes())?;
             Ok(format!("Modificato {}.", display(&file)))
         }
         n => Err(Error::msg(format!(
@@ -301,6 +346,15 @@ mod tests {
         let (base, _, folders) = sandbox("limiti");
         std::fs::write(folders[0].join("immagine.bin"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
         assert!(read_file("immagine.bin", &folders).is_err());
+
+        // Un PDF rovinato è un errore, non un crash.
+        std::fs::write(
+            folders[0].join("rotto.pdf"),
+            b"%PDF-1.7
+1 0 obj << /Type /Catalog",
+        )
+        .unwrap();
+        assert!(read_file("rotto.pdf", &folders).is_err());
 
         let long = truncate("à".repeat(50), 10);
         assert!(long.starts_with(&"à".repeat(10)));

@@ -137,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = chat::stream_chat(
         &http,
         &format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port),
-        None,
+        Some(&loaded.api_key),
         &chat::request_body(&messages, &[], &sampling, None, chat::Flavor::Llama),
         Arc::new(tokio::sync::Notify::new()),
         |_| {},

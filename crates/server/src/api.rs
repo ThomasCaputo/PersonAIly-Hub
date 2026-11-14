@@ -65,7 +65,7 @@ pub(crate) fn routes() -> Router<ApiState> {
 }
 
 /// Esegue fuori dal ciclo asincrono un'operazione che legge il disco o il portachiavi.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     core: &Arc<Core>,
     f: impl FnOnce(&Core) -> app_core::error::Result<T> + Send + 'static,
 ) -> ApiResult<T> {
@@ -172,7 +172,10 @@ async fn load_model(
             "Il modello non è nella libreria: aggiungi la sua cartella nella pagina Modelli dell'app.",
         ));
     }
-    let params = state.core.preset(&body.path)?.load;
+    let path = body.path.clone();
+    let params = blocking(&state.core, move |core| core.preset(&path))
+        .await?
+        .load;
     let loaded = state
         .core
         .load_model(&body.path, &params, body.force)
@@ -197,11 +200,16 @@ async fn list_conversations(
     State(state): State<ApiState>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<Conversation>>> {
-    Ok(Json(state.core.list_conversations(&q.query)?))
+    let query = q.query;
+    Ok(Json(
+        blocking(&state.core, move |core| core.list_conversations(&query)).await?,
+    ))
 }
 
 async fn create_conversation(State(state): State<ApiState>) -> ApiResult<Json<Conversation>> {
-    Ok(Json(state.core.create_conversation()?))
+    Ok(Json(
+        blocking(&state.core, |core| core.create_conversation()).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -214,7 +222,10 @@ async fn rename_conversation(
     Path(id): Path<i64>,
     Json(body): Json<RenameBody>,
 ) -> ApiResult<StatusCode> {
-    state.core.rename_conversation(id, &body.title)?;
+    blocking(&state.core, move |core| {
+        core.rename_conversation(id, &body.title)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -222,7 +233,7 @@ async fn delete_conversation(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    state.core.delete_conversation(id)?;
+    blocking(&state.core, move |core| core.delete_conversation(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -230,7 +241,9 @@ async fn messages(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Vec<Message>>> {
-    Ok(Json(state.core.messages(id)?))
+    Ok(Json(
+        blocking(&state.core, move |core| core.messages_for_display(id)).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -259,7 +272,9 @@ async fn send_message(
 > {
     // Controlla subito che il modello sia raggiungibile: l'errore arriva
     // come risposta HTTP e non a flusso già aperto.
-    let preset = state.core.preset_for(&body.model)?;
+    // Legge il preset e, per un modello cloud, la chiave dal portachiavi.
+    let model = body.model.clone();
+    let preset = blocking(&state.core, move |core| core.preset_for(&model)).await?;
     let sampling = body.sampling.unwrap_or(preset.sampling);
     let system_prompt = body.system_prompt.unwrap_or(preset.system_prompt);
 
@@ -323,7 +338,9 @@ async fn conversation_tools(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<ToolSettings>> {
-    Ok(Json(state.core.conversation_tools(id)?))
+    Ok(Json(
+        blocking(&state.core, move |core| core.conversation_tools(id)).await?,
+    ))
 }
 
 async fn set_conversation_tools(
@@ -331,7 +348,10 @@ async fn set_conversation_tools(
     Path(id): Path<i64>,
     Json(settings): Json<ToolSettings>,
 ) -> ApiResult<StatusCode> {
-    state.core.set_conversation_tools(id, &settings)?;
+    blocking(&state.core, move |core| {
+        core.set_conversation_tools(id, &settings)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -367,13 +387,15 @@ async fn actions(
     State(state): State<ApiState>,
     Query(q): Query<ActionsQuery>,
 ) -> ApiResult<Json<Vec<ActionRecord>>> {
-    Ok(Json(state.core.actions(q.limit, q.session_id)?))
+    Ok(Json(
+        blocking(&state.core, move |core| core.actions(q.limit, q.session_id)).await?,
+    ))
 }
 
 // ── Agenti ──────────────────────────────────────────────────────────────
 
 async fn agents(State(state): State<ApiState>) -> ApiResult<Json<Vec<Agent>>> {
-    Ok(Json(state.core.agents()?))
+    Ok(Json(blocking(&state.core, |core| core.agents()).await?))
 }
 
 fn spawn_session(core: &Arc<Core>, id: i64) {
@@ -394,20 +416,25 @@ async fn start_session(
     Path(agent_id): Path<i64>,
     Json(body): Json<TaskBody>,
 ) -> ApiResult<Json<AgentSession>> {
-    let session = state.core.create_session(agent_id, &body.task)?;
+    let session = blocking(&state.core, move |core| {
+        core.create_session(agent_id, &body.task)
+    })
+    .await?;
     spawn_session(&state.core, session.id);
     Ok(Json(session))
 }
 
 async fn sessions(State(state): State<ApiState>) -> ApiResult<Json<Vec<AgentSession>>> {
-    Ok(Json(state.core.sessions()?))
+    Ok(Json(blocking(&state.core, |core| core.sessions()).await?))
 }
 
 async fn session(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<AgentSession>> {
-    Ok(Json(state.core.session(id)?))
+    Ok(Json(
+        blocking(&state.core, move |core| core.session(id)).await?,
+    ))
 }
 
 async fn session_live(
@@ -421,7 +448,7 @@ async fn pause_session(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    state.core.pause_session(id)?;
+    blocking(&state.core, move |core| core.pause_session(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -429,7 +456,7 @@ async fn resume_session(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    state.core.resume_session(id)?;
+    blocking(&state.core, move |core| core.resume_session(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -448,7 +475,7 @@ async fn reply_session(
     Path(id): Path<i64>,
     Json(body): Json<ReplyBody>,
 ) -> ApiResult<Json<AgentSession>> {
-    let session = state.core.reply_session(id, &body.text)?;
+    let session = blocking(&state.core, move |core| core.reply_session(id, &body.text)).await?;
     spawn_session(&state.core, id);
     Ok(Json(session))
 }
@@ -457,6 +484,6 @@ async fn delete_session(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    state.core.delete_session(id)?;
+    blocking(&state.core, move |core| core.delete_session(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,6 +1,7 @@
 // Pannello chat nella barra laterale (VS-2): usa le conversazioni dell'app,
 // che restano visibili anche nella sua pagina Chat.
 
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { CoreClient, CoreError } from "./core";
 import { contextBlock, extractCode } from "./edits";
@@ -56,7 +57,8 @@ export class ChatView implements vscode.WebviewViewProvider {
     this.view = view;
     const media = vscode.Uri.joinPath(this.extensionUri, "media");
     view.webview.options = { enableScripts: true, localResourceRoots: [media] };
-    const nonce = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    // Imprevedibile: è ciò che impedisce a uno script estraneo di girare nel pannello.
+    const nonce = randomBytes(16).toString("hex");
     const script = view.webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.js"));
     const style = view.webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.css"));
     view.webview.html = `<!DOCTYPE html>

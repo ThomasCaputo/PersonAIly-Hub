@@ -18,11 +18,22 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ParamsPanel } from "../components/ParamsPanel";
 import { ToolRequestCard, ToolsBar } from "../components/ToolsBar";
+import { msg, num, t, tc } from "../i18n";
 
-const ATTACHMENT_FILTERS = [
-  { name: "Testo, PDF e immagini", extensions: ["txt", "md", "csv", "json", "pdf", "png", "jpg", "jpeg", "gif", "webp"] },
-  { name: "Tutti i file", extensions: ["*"] },
+const attachmentFilters = () => [
+  {
+    name: t("Testo, PDF e immagini"),
+    extensions: ["txt", "md", "csv", "json", "pdf", "png", "jpg", "jpeg", "gif", "webp"],
+  },
+  { name: t("Tutti i file"), extensions: ["*"] },
 ];
+
+/**
+ * Ogni quanto si mostra il testo in arrivo. Ridisegnare il Markdown (con
+ * formule e codice evidenziato) a ogni token rende l'interfaccia lenta con le
+ * risposte lunghe: il lavoro cresce con il quadrato della lunghezza.
+ */
+const STREAM_FLUSH_MS = 60;
 
 /** Nome del file da un percorso di Windows o di altri sistemi. */
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -68,6 +79,39 @@ export function ChatArea({
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState<{ id: number; title: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Testo e ragionamento arrivati ma non ancora mostrati (vedi STREAM_FLUSH_MS).
+  const streamBuffer = useRef({ text: "", reasoning: "", timer: null as number | null });
+
+  const flushStream = useCallback(() => {
+    const buffer = streamBuffer.current;
+    if (buffer.timer !== null) window.clearTimeout(buffer.timer);
+    buffer.timer = null;
+    const { text, reasoning: thought } = buffer;
+    buffer.text = "";
+    buffer.reasoning = "";
+    if (text) setStreaming((s) => (s ?? "") + text);
+    if (thought) setReasoning((r) => r + thought);
+  }, []);
+
+  /** Butta il testo in attesa: è già nell'archivio, o la risposta è finita. */
+  const discardStream = useCallback(() => {
+    const buffer = streamBuffer.current;
+    if (buffer.timer !== null) window.clearTimeout(buffer.timer);
+    buffer.timer = null;
+    buffer.text = "";
+    buffer.reasoning = "";
+  }, []);
+
+  const queueStream = useCallback(
+    (kind: "text" | "reasoning", piece: string) => {
+      const buffer = streamBuffer.current;
+      buffer[kind] += piece;
+      if (buffer.timer === null) buffer.timer = window.setTimeout(flushStream, STREAM_FLUSH_MS);
+    },
+    [flushStream],
+  );
+
+  useEffect(() => discardStream, [discardStream]);
 
   const generating = streaming !== null;
   const loaded = status?.loaded ?? null;
@@ -81,13 +125,13 @@ export function ChatArea({
   const contextTotal = isCloud ? (cloudModel?.contextLength ?? null) : (loaded?.params.contextLength ?? null);
   const blockedReason = isCloud
     ? !provider
-      ? "Il provider di questo modello non esiste più: scegline un altro."
+      ? t("Il provider di questo modello non esiste più: scegline un altro.")
       : !provider.hasKey
-        ? `Manca la chiave API di ${provider.name}.`
+        ? t("Manca la chiave API di {name}.", { name: provider.name })
         : null
     : loaded
       ? null
-      : "Nessun modello locale caricato.";
+      : t("Nessun modello locale caricato.");
 
   const refreshConversations = useCallback(async () => {
     const list = await api.listConversations(query);
@@ -140,7 +184,7 @@ export function ChatArea({
   };
 
   const pickAttachments = async () => {
-    const picked = await open({ multiple: true, title: "Allega file", filters: ATTACHMENT_FILTERS });
+    const picked = await open({ multiple: true, title: t("Allega file"), filters: attachmentFilters() });
     const paths = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
     setAttachments((current) => [...current, ...paths.filter((p) => !current.includes(p))]);
   };
@@ -196,10 +240,14 @@ export function ChatArea({
         preset.systemPrompt,
         activeModel,
         (event) => {
-          if (event.type === "text") setStreaming((s) => (s ?? "") + event.text);
-          else if (event.type === "reasoning") setReasoning((r) => r + event.text);
-          else if (event.type === "toolRequest") setToolRequest(event);
-          else {
+          if (event.type === "text") queueStream("text", event.text);
+          else if (event.type === "reasoning") queueStream("reasoning", event.text);
+          else if (event.type === "toolRequest") {
+            // Prima di chiedere conferma si mostra tutto ciò che il modello ha scritto.
+            flushStream();
+            setToolRequest(event);
+          } else {
+            discardStream();
             // Il nucleo ha salvato un pezzo di risposta o il risultato di uno
             // strumento: si rilegge l'archivio e si ricomincia a raccogliere il testo.
             api
@@ -229,6 +277,7 @@ export function ChatArea({
         await api.getMessages(conversationId).then(setMessages).catch(() => {});
       }
       setPendingUser(null);
+      discardStream();
       setStreaming(null);
       refreshConversations().catch(() => {});
     }
@@ -259,24 +308,24 @@ export function ChatArea({
     <div className="chat">
       <aside className="conversations">
         <button className="btn primary wide" onClick={newConversation}>
-          Nuova conversazione
+          {t("Nuova conversazione")}
         </button>
         <input
           type="search"
           className="conversation-search"
-          placeholder="Cerca nelle conversazioni"
-          aria-label="Cerca nelle conversazioni"
+          placeholder={t("Cerca nelle conversazioni")}
+          aria-label={t("Cerca nelle conversazioni")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="conversation-list">
-          {conversations.length === 0 && query && <p className="dim note">Nessun risultato.</p>}
+          {conversations.length === 0 && query && <p className="dim note">{t("Nessun risultato.")}</p>}
           {conversations.map((c) => (
             <div key={c.id} className={c.id === activeId ? "conversation active" : "conversation"}>
               {renaming?.id === c.id ? (
                 <input
                   className="conversation-rename"
-                  aria-label="Nuovo titolo"
+                  aria-label={t("Nuovo titolo")}
                   autoFocus
                   value={renaming.title}
                   onChange={(e) => setRenaming({ id: c.id, title: e.target.value })}
@@ -291,15 +340,15 @@ export function ChatArea({
                   className="conversation-title"
                   onClick={() => setActiveId(c.id)}
                   onDoubleClick={() => setRenaming({ id: c.id, title: c.title })}
-                  title={`${c.title} — doppio clic per rinominare`}
+                  title={t("{title} — doppio clic per rinominare", { title: tc(c.title) })}
                 >
-                  {c.title}
+                  {tc(c.title)}
                 </button>
               )}
               <button
                 className="conversation-delete"
-                title="Elimina conversazione"
-                aria-label={`Elimina la conversazione ${c.title}`}
+                title={t("Elimina conversazione")}
+                aria-label={t("Elimina la conversazione {title}", { title: tc(c.title) })}
                 onClick={() => removeConversation(c.id)}
               >
                 ×
@@ -331,12 +380,12 @@ export function ChatArea({
           {shown.length === 0 && (
             <div className="empty">
               {canSend ? (
-                <p className="dim">Scrivi un messaggio per iniziare.</p>
+                <p className="dim">{t("Scrivi un messaggio per iniziare.")}</p>
               ) : (
                 <>
                   <p className="dim">{blockedReason}</p>
                   <button className="btn" onClick={onOpenModels}>
-                    Vai ai modelli
+                    {t("Vai ai modelli")}
                   </button>
                 </>
               )}
@@ -347,7 +396,7 @@ export function ChatArea({
               <ToolResult key={m.key} message={m.saved!} />
             ) : (
               <div key={m.key} className={`message ${m.role}`}>
-                <div className="message-role">{m.role === "user" ? "Tu" : (m.model ?? "Modello")}</div>
+                <div className="message-role">{m.role === "user" ? t("Tu") : (m.model ?? t("Modello"))}</div>
                 {m.key === "streaming" && reasoning && !m.content && <div className="reasoning">{reasoning}</div>}
                 {m.saved && m.saved.attachments.length > 0 && (
                   <div className="attachment-list">
@@ -363,15 +412,15 @@ export function ChatArea({
                 ) : m.content ? (
                   <Markdown text={m.content} />
                 ) : m.saved && m.saved.toolCalls.length > 0 ? null : (
-                  !reasoning && !toolRequest && <div className="dim">Sto elaborando…</div>
+                  !reasoning && !toolRequest && <div className="dim">{t("Sto elaborando…")}</div>
                 )}
               </div>
             ),
           )}
           {toolRequest && <ToolRequestCard request={toolRequest} onAnswer={answer} />}
           {stats && !generating && <StatsLine stats={stats} cost={lastCost} />}
-          {notice && !generating && <p className="notice">{notice}</p>}
-          {error && <p className="error pre">{error}</p>}
+          {notice && !generating && <p className="notice">{tc(notice)}</p>}
+          {error && <p className="error pre">{tc(error)}</p>}
           <div ref={bottomRef} />
         </div>
 
@@ -387,7 +436,7 @@ export function ChatArea({
                 {baseName(path)}
                 <button
                   className="conversation-delete"
-                  aria-label={`Togli ${baseName(path)}`}
+                  aria-label={t("Togli {name}", { name: baseName(path) })}
                   onClick={() => setAttachments(attachments.filter((p) => p !== path))}
                 >
                   ×
@@ -399,8 +448,8 @@ export function ChatArea({
         <div className="composer">
           <button
             className="btn"
-            title="Allega file di testo, PDF o immagini"
-            aria-label="Allega file"
+            title={t("Allega file di testo, PDF o immagini")}
+            aria-label={t("Allega file")}
             disabled={!canSend || generating}
             onClick={pickAttachments}
           >
@@ -408,8 +457,8 @@ export function ChatArea({
           </button>
           <textarea
             value={draft}
-            placeholder={canSend ? "Scrivi un messaggio…" : (blockedReason ?? "")}
-            title="Invio per inviare, Maiusc+Invio per andare a capo"
+            placeholder={canSend ? t("Scrivi un messaggio…") : (blockedReason ?? "")}
+            title={t("Invio per inviare, Maiusc+Invio per andare a capo")}
             disabled={!canSend}
             rows={3}
             onChange={(e) => setDraft(e.target.value)}
@@ -422,11 +471,11 @@ export function ChatArea({
           />
           {generating ? (
             <button className="btn" onClick={() => api.stopGeneration(activeId)}>
-              Interrompi
+              {t("Interrompi")}
             </button>
           ) : (
             <button className="btn primary" disabled={!canSend || !preset || !draft.trim()} onClick={send}>
-              Invia
+              {t("Invia")}
             </button>
           )}
         </div>
@@ -444,7 +493,7 @@ export function ChatArea({
             onOpenModels={onOpenModels}
           />
         ) : (
-          <p className="dim">I parametri compaiono quando c'è un modello pronto a rispondere.</p>
+          <p className="dim">{t("I parametri compaiono quando c'è un modello pronto a rispondere.")}</p>
         )}
       </aside>
     </div>
@@ -474,15 +523,15 @@ export function ModelPicker({ providers, loadedName, value, disabled, onChange }
 
   return (
     <div className="model-picker">
-      <label htmlFor="model-picker">Modello</label>
+      <label htmlFor="model-picker">{t("Modello")}</label>
       <select id="model-picker" value={current} disabled={disabled} onChange={(e) => onChange(decode(e.target.value))}>
-        <optgroup label="Su questo computer">
-          <option value={encode({ kind: "local" })}>{loadedName ?? "Nessun modello locale caricato"}</option>
+        <optgroup label={t("Su questo computer")}>
+          <option value={encode({ kind: "local" })}>{loadedName ?? t("Nessun modello locale caricato")}</option>
         </optgroup>
         {providers
           .filter((p) => p.models.length > 0)
           .map((p) => (
-            <optgroup key={p.id} label={p.hasKey ? p.name : `${p.name} (chiave mancante)`}>
+            <optgroup key={p.id} label={p.hasKey ? p.name : t("{name} (chiave mancante)", { name: p.name })}>
               {p.models.map((m) => (
                 <option key={m.id} value={encode({ kind: "cloud", providerId: p.id, model: m.id })}>
                   {m.name}
@@ -490,30 +539,32 @@ export function ModelPicker({ providers, loadedName, value, disabled, onChange }
               ))}
             </optgroup>
           ))}
-        {!known && value.kind === "cloud" && <option value={current}>{value.model} (non disponibile)</option>}
+        {!known && value.kind === "cloud" && (
+          <option value={current}>{t("{model} (non disponibile)", { model: value.model })}</option>
+        )}
       </select>
     </div>
   );
 }
 
 export const TOOL_LABELS: Record<string, string> = {
-  list_folder: "Elenco della cartella",
-  read_file: "Lettura del file",
-  write_file: "Scrittura del file",
-  edit_file: "Modifica del file",
-  web_search: "Ricerca web",
-  read_web_page: "Lettura della pagina",
-  run_command: "Comando nel terminale",
+  list_folder: msg("Elenco della cartella"),
+  read_file: msg("Lettura del file"),
+  write_file: msg("Scrittura del file"),
+  edit_file: msg("Modifica del file"),
+  web_search: msg("Ricerca web"),
+  read_web_page: msg("Lettura della pagina"),
+  run_command: msg("Comando nel terminale"),
 };
 
 /** Nome leggibile di uno strumento dell'app o di un server MCP. */
 export function toolLabel(name: string): string {
-  return TOOL_LABELS[name] ?? mcpToolLabel(name) ?? name;
+  return (TOOL_LABELS[name] && t(TOOL_LABELS[name])) ?? mcpToolLabel(name) ?? name;
 }
 
 /** Il risultato di uno strumento: una riga, con il contenuto da aprire a richiesta. */
 export function ToolResult({ message }: { message: Message }) {
-  const label = message.toolName ? toolLabel(message.toolName) : "Strumento";
+  const label = message.toolName ? toolLabel(message.toolName) : t("Strumento");
   const firstLine = message.content.split("\n")[0];
   return (
     <details className={message.isError ? "tool-result failed" : "tool-result"}>
@@ -521,13 +572,15 @@ export function ToolResult({ message }: { message: Message }) {
         <span className="tool-result-label">
           {message.isError
             ? message.toolName?.startsWith("mcp__")
-              ? `${label} · errore`
-              : `${label} non ${message.toolName === "run_command" ? "riuscito" : "riuscita"}`
+              ? t("{label} · errore", { label })
+              : message.toolName === "run_command"
+                ? t("{label} non riuscito", { label })
+                : t("{label} non riuscita", { label })
             : label}
         </span>
-        <span className="dim"> · {firstLine.length > 90 ? `${firstLine.slice(0, 90)}…` : firstLine}</span>
+        <span className="dim"> · {firstLine.length > 90 ? `${tc(firstLine).slice(0, 90)}…` : tc(firstLine)}</span>
       </summary>
-      <pre className="tool-preview">{message.content}</pre>
+      <pre className="tool-preview">{message.isError ? tc(message.content) : message.content}</pre>
     </details>
   );
 }
@@ -546,9 +599,9 @@ function UsageBar({ contextUsed, contextTotal, cost }: UsageProps) {
         <>
           <span
             className="dim"
-            title="Quando il contesto si riempie il modello non può più leggere tutta la conversazione"
+            title={t("Quando il contesto si riempie il modello non può più leggere tutta la conversazione")}
           >
-            Contesto occupato: {contextUsed.toLocaleString("it-IT")} / {contextTotal.toLocaleString("it-IT")} token
+            {t("Contesto occupato: {used} / {total} token", { used: contextUsed, total: contextTotal })}
           </span>
           <div className="meter-track">
             <div className={percent > 85 ? "meter-fill high" : "meter-fill"} style={{ width: `${percent}%` }} />
@@ -558,9 +611,9 @@ function UsageBar({ contextUsed, contextTotal, cost }: UsageProps) {
       {cost > 0 && (
         <span
           className="dim"
-          title="Stima dai prezzi di listino: la cifra addebitata dal servizio può essere diversa"
+          title={t("Stima dai prezzi di listino: la cifra addebitata dal servizio può essere diversa")}
         >
-          Costo stimato della conversazione: {usd(cost)}
+          {t("Costo stimato della conversazione: {cost}", { cost: usd(cost) })}
         </span>
       )}
     </div>
@@ -569,11 +622,11 @@ function UsageBar({ contextUsed, contextTotal, cost }: UsageProps) {
 
 function StatsLine({ stats, cost }: { stats: GenerationStats; cost: number | null }) {
   const parts = [
-    stats.tokensPerSecond != null &&
-      `${stats.tokensPerSecond.toLocaleString("it-IT", { maximumFractionDigits: 1 })} token/s`,
-    stats.completionTokens != null && `${stats.completionTokens.toLocaleString("it-IT")} token generati`,
-    stats.promptTokens != null && `${stats.promptTokens.toLocaleString("it-IT")} token letti`,
-    cost != null && cost > 0 && `circa ${usd(cost)}`,
+    stats.tokensPerSecond != null && `${num(stats.tokensPerSecond, { maximumFractionDigits: 1 })} token/s`,
+    stats.completionTokens != null && t("{n} token generati", { n: stats.completionTokens }),
+    stats.promptTokens != null && t("{n} token letti", { n: stats.promptTokens }),
+    cost != null && cost > 0 && t("circa {cost}", { cost: usd(cost) }),
+
   ].filter(Boolean);
   return parts.length > 0 ? <div className="stats dim">{parts.join(" · ")}</div> : null;
 }

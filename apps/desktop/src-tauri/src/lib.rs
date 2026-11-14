@@ -18,7 +18,8 @@ use app_core::providers::Provider;
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
-    Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome,
+    Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus,
+    SecuritySettings, SendOutcome,
 };
 use app_server::ApiHandle;
 use serde::Serialize;
@@ -60,7 +61,7 @@ struct CoreInfo {
     schema_version: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn core_info(core: CoreState<'_>) -> CmdResult<CoreInfo> {
     Ok(CoreInfo {
         version: app_core::version(),
@@ -97,12 +98,12 @@ async fn install_engine(
 
 // ── Modelli ─────────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_folders(core: CoreState<'_>) -> CmdResult<Vec<String>> {
     core.model_folders().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_model_folders(core: CoreState<'_>, folders: Vec<String>) -> CmdResult<()> {
     core.set_model_folders(&folders).map_err(text)
 }
@@ -112,12 +113,12 @@ async fn list_models(core: CoreState<'_>) -> CmdResult<Vec<ModelInfo>> {
     blocking(&core, |core| core.list_models()).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_preset(core: CoreState<'_>, model_path: String) -> CmdResult<Preset> {
     core.preset(&model_path).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_preset(core: CoreState<'_>, model_path: String, preset: Preset) -> CmdResult<()> {
     core.save_preset(&model_path, &preset).map_err(text)
 }
@@ -156,29 +157,29 @@ async fn runtime_status(core: CoreState<'_>) -> CmdResult<RuntimeStatus> {
 
 // ── Conversazioni ───────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_conversations(core: CoreState<'_>, query: String) -> CmdResult<Vec<Conversation>> {
     core.list_conversations(&query).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_conversation(core: CoreState<'_>) -> CmdResult<Conversation> {
     core.create_conversation().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_conversation(core: CoreState<'_>, id: i64, title: String) -> CmdResult<()> {
     core.rename_conversation(id, &title).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_conversation(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.delete_conversation(id).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_messages(core: CoreState<'_>, conversation_id: i64) -> CmdResult<Vec<Message>> {
-    core.messages(conversation_id).map_err(text)
+    core.messages_for_display(conversation_id).map_err(text)
 }
 
 /// Pezzi di risposta inviati all'interfaccia mentre il modello genera.
@@ -250,33 +251,33 @@ async fn send_message(
 
 // ── Strumenti e permessi ────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn granted_folders(core: CoreState<'_>) -> CmdResult<Vec<String>> {
     core.granted_folders().map_err(text)
 }
 
 /// Le cartelle arrivano dalla finestra `"Scegli cartella`" del sistema.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_granted_folders(core: CoreState<'_>, folders: Vec<String>) -> CmdResult<()> {
     core.set_granted_folders(&folders).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tool_defaults(core: CoreState<'_>) -> CmdResult<ToolSettings> {
     core.tool_defaults().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_tool_defaults(core: CoreState<'_>, settings: ToolSettings) -> CmdResult<()> {
     core.set_tool_defaults(&settings).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn conversation_tools(core: CoreState<'_>, conversation_id: i64) -> CmdResult<ToolSettings> {
     core.conversation_tools(conversation_id).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_conversation_tools(
     core: CoreState<'_>,
     conversation_id: i64,
@@ -293,7 +294,7 @@ fn answer_tool_request(core: CoreState<'_>, id: String, approval: Approval) {
     core.answer_tool_request(&id, approval);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_actions(
     core: CoreState<'_>,
     limit: u32,
@@ -302,35 +303,35 @@ fn list_actions(
     core.actions(limit, session_id).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn action_log_days(core: CoreState<'_>) -> CmdResult<u32> {
     core.action_log_days().map_err(text)
 }
 
 /// Restituisce quante voci sono state eliminate perché troppo vecchie.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_action_log_days(core: CoreState<'_>, days: u32) -> CmdResult<usize> {
     core.set_action_log_days(days).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_actions(core: CoreState<'_>) -> CmdResult<usize> {
     core.clear_actions().map_err(text)
 }
 
 // ── Server MCP ──────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_mcp_servers(core: CoreState<'_>) -> CmdResult<Vec<McpServerConfig>> {
     core.mcp_servers().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_mcp_server(core: CoreState<'_>, server: McpServerConfig) -> CmdResult<McpServerConfig> {
     core.save_mcp_server(server).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_mcp_server(core: CoreState<'_>, id: String) -> CmdResult<()> {
     core.delete_mcp_server(&id).map_err(text)
 }
@@ -346,22 +347,22 @@ async fn probe_mcp_server(
 
 // ── Agenti ──────────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_agents(core: CoreState<'_>) -> CmdResult<Vec<Agent>> {
     core.agents().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_agent(core: CoreState<'_>, agent: Agent) -> CmdResult<Agent> {
     core.save_agent(agent).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn duplicate_agent(core: CoreState<'_>, id: i64) -> CmdResult<Agent> {
     core.duplicate_agent(id).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_agent(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.delete_agent(id).map_err(text)
 }
@@ -375,7 +376,7 @@ fn spawn_session(core: &Arc<Core>, id: i64) {
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_agent_session(
     core: CoreState<'_>,
     agent_id: i64,
@@ -386,19 +387,19 @@ fn start_agent_session(
     Ok(session)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reply_agent_session(core: CoreState<'_>, id: i64, text: String) -> CmdResult<AgentSession> {
     let session = core.reply_session(id, &text).map_err(self::text)?;
     spawn_session(core.inner(), id);
     Ok(session)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_agent_sessions(core: CoreState<'_>) -> CmdResult<Vec<AgentSession>> {
     core.sessions().map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<AgentSession> {
     core.session(id).map_err(text)
 }
@@ -408,12 +409,12 @@ fn agent_session_live(core: CoreState<'_>, id: i64) -> Option<LiveState> {
     core.session_live(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pause_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.pause_session(id).map_err(text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn resume_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.resume_session(id).map_err(text)
 }
@@ -423,7 +424,7 @@ fn stop_agent_session(core: CoreState<'_>, id: i64) {
     core.stop_session(id);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.delete_session(id).map_err(text)
 }
@@ -574,6 +575,56 @@ fn start_model_download(core: CoreState<'_>, repo: String, file: HubFile, folder
     });
 }
 
+#[tauri::command(async)]
+fn security_settings(core: CoreState<'_>) -> SecuritySettings {
+    core.security_settings()
+}
+
+#[tauri::command(async)]
+fn set_security_settings(core: CoreState<'_>, settings: SecuritySettings) -> CmdResult<()> {
+    core.set_security_settings(&settings).map_err(text)
+}
+
+#[tauri::command(async)]
+fn language(core: CoreState<'_>) -> CmdResult<Option<String>> {
+    core.language().map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_language(core: CoreState<'_>, language: String) -> CmdResult<()> {
+    core.set_language(&language).map_err(text)
+}
+
+/// Apre un collegamento nel browser di sistema. Solo indirizzi web e di
+/// posta: mai file o programmi, anche se il collegamento viene dal testo di
+/// un modello.
+#[tauri::command]
+fn open_external(app: tauri::AppHandle, url: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let parsed = tauri::Url::parse(url.trim()).map_err(|_| "Indirizzo non valido.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") {
+        return Err(format!(
+            "Si aprono solo indirizzi web: {} non è ammesso.",
+            parsed.scheme()
+        ));
+    }
+    app.opener()
+        .open_url(parsed.as_str(), None::<&str>)
+        .map_err(text)
+}
+
+/// La finestra mostra solo l'interfaccia dell'app: un collegamento che porta
+/// altrove (per esempio dentro una risposta) non deve sostituirla con un sito
+/// esterno. I collegamenti si aprono nel browser con [`open_external`].
+fn is_app_page(url: &tauri::Url) -> bool {
+    match (url.scheme(), url.host_str()) {
+        ("tauri", _) | ("http" | "https", Some("tauri.localhost")) => true,
+        // Il server di sviluppo di Vite.
+        ("http", Some("localhost")) => cfg!(debug_assertions),
+        _ => false,
+    }
+}
+
 #[tauri::command]
 fn download_status(core: CoreState<'_>) -> Option<DownloadState> {
     core.download_status()
@@ -588,6 +639,12 @@ fn cancel_download(core: CoreState<'_>) {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
+                .on_navigation(|_, url| is_app_page(url))
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let core = Arc::new(Core::new(&data_dir)?);
@@ -661,6 +718,11 @@ pub fn run() {
             start_model_download,
             download_status,
             cancel_download,
+            security_settings,
+            set_security_settings,
+            language,
+            set_language,
+            open_external,
         ])
         .build(tauri::generate_context!())
         .expect("errore durante l'avvio dell'app");

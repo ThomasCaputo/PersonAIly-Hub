@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, gb, size, type DownloadState, type HubFile, type HubRepo, type RuntimeStatus } from "../api";
+import { t, tc } from "../i18n";
 
 type Props = {
   folders: string[];
@@ -89,12 +90,12 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
 
   return (
     <section className="section">
-      <h2>Scarica un modello</h2>
+      <h2>{t("Scarica un modello")}</h2>
 
       {download && <DownloadBar download={download} />}
 
       {folders.length === 0 ? (
-        <p className="dim">Aggiungi prima una cartella qui sopra: è lì che verranno salvati i modelli.</p>
+        <p className="dim">{t("Aggiungi prima una cartella qui sopra: è lì che verranno salvati i modelli.")}</p>
       ) : (
         <>
           <form
@@ -106,19 +107,19 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
           >
             <input
               type="search"
-              aria-label="Cerca modelli su Hugging Face"
-              placeholder="Cerca su Hugging Face, per esempio: qwen 7b instruct"
+              aria-label={t("Cerca modelli su Hugging Face")}
+              placeholder={t("Cerca su Hugging Face, per esempio: qwen 7b instruct")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
             <button className="btn" type="submit" disabled={searching || !query.trim()}>
-              {searching ? "Ricerca…" : "Cerca"}
+              {searching ? t("Ricerca…") : t("Cerca")}
             </button>
           </form>
 
           {folders.length > 1 && (
             <div className="field">
-              <label htmlFor="hub-folder">Salva in</label>
+              <label htmlFor="hub-folder">{t("Salva in")}</label>
               <select id="hub-folder" value={destination} onChange={(e) => setFolder(e.target.value)}>
                 {folders.map((f) => (
                   <option key={f} value={f}>
@@ -129,23 +130,24 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
             </div>
           )}
 
-          {repos?.length === 0 && <p className="dim">Nessun modello GGUF trovato.</p>}
+          {repos?.length === 0 && <p className="dim">{t("Nessun modello GGUF trovato.")}</p>}
           {repos?.map((repo) => (
             <div key={repo.id} className="card">
               <button className="card-head" onClick={() => toggleRepo(repo.id)}>
                 <div>
                   <div className="card-title">{repo.id}</div>
-                  <div className="dim">{repo.downloads.toLocaleString("it-IT")} download</div>
+                  <div className="dim">{t("{n} download", { n: repo.downloads })}</div>
                 </div>
                 <span className="dim">{openRepo === repo.id ? "▾" : "▸"}</span>
               </button>
               {openRepo === repo.id && (
                 <div className="card-body">
-                  {files === null && <p className="dim note">Lettura dei file…</p>}
+                  {files === null && <p className="dim note">{t("Lettura dei file…")}</p>}
                   {files?.length === 0 && (
                     <p className="dim note">
-                      Nessun modello scaricabile: questo repository contiene solo modelli divisi in più file, non
-                      ancora supportati.
+                      {t(
+                        "Nessun modello scaricabile: questo repository contiene solo modelli divisi in più file, non ancora supportati.",
+                      )}
                     </p>
                   )}
                   {files?.map((file) => (
@@ -158,7 +160,7 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
                         </div>
                       </div>
                       <button className="btn" disabled={active} onClick={() => start(repo.id, file)}>
-                        Scarica
+                        {t("Scarica")}
                       </button>
                     </div>
                   ))}
@@ -169,18 +171,32 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
         </>
       )}
 
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </section>
   );
 }
 
 function DownloadBar({ download }: { download: DownloadState }) {
   const percent = download.totalBytes > 0 ? Math.round((download.doneBytes / download.totalBytes) * 100) : 0;
+  const file = download.file;
   const label = {
-    downloading: `Download di ${download.file}: ${percent}% (${size(download.doneBytes)} di ${size(download.totalBytes)})`,
-    done: `${download.file} scaricato e verificato.`,
-    cancelled: `Download di ${download.file} interrotto al ${percent}%. Premi di nuovo "Scarica" per riprenderlo.`,
-    failed: `Download di ${download.file} non riuscito.`,
+    downloading: t("Download di {file}: {percent}% ({done} di {total})", {
+      file,
+      percent,
+      done: size(download.doneBytes),
+      total: size(download.totalBytes),
+    }),
+    done: download.unverified
+      ? t(
+          "{file} scaricato. Hugging Face non ne pubblica l'impronta: è stata controllata solo la dimensione, quindi scaricalo solo da autori di cui ti fidi.",
+          { file },
+        )
+      : t("{file} scaricato e verificato.", { file }),
+    cancelled: t('Download di {file} interrotto al {percent}%. Premi di nuovo "Scarica" per riprenderlo.', {
+      file,
+      percent,
+    }),
+    failed: t("Download di {file} non riuscito.", { file }),
   }[download.phase];
 
   return (
@@ -189,11 +205,11 @@ function DownloadBar({ download }: { download: DownloadState }) {
         <span>{label}</span>
         {download.phase === "downloading" && (
           <button className="btn" onClick={() => api.cancelDownload()}>
-            Interrompi
+            {t("Interrompi")}
           </button>
         )}
       </div>
-      {download.error && <div className="pre">{download.error}</div>}
+      {download.error && <div className="pre">{tc(download.error)}</div>}
       {download.phase !== "done" && download.phase !== "failed" && (
         <div className="meter-track engine-progress">
           <div className="meter-fill" style={{ width: `${percent}%` }} />
@@ -206,6 +222,7 @@ function DownloadBar({ download }: { download: DownloadState }) {
 /** Indicazione di massima: il file più circa il 15 % per cache e buffer. */
 function fitHint(fileBytes: number, vramTotal: number): string {
   return fileBytes * 1.15 <= vramTotal
-    ? `entra nei ${gb(vramTotal)} GB di VRAM`
-    : `troppo grande per i ${gb(vramTotal)} GB di VRAM`;
+    ? t("entra nei {gb} GB di VRAM", { gb: gb(vramTotal) })
+    : t("troppo grande per i {gb} GB di VRAM", { gb: gb(vramTotal) });
+
 }

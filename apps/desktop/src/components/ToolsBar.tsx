@@ -1,16 +1,17 @@
 import type { Approval, PermissionLevel, ToolRequest, ToolSettings } from "../api";
+import { msg, t, tc } from "../i18n";
 
 const LEVELS: { value: PermissionLevel; label: string; hint: string }[] = [
-  { value: "ask", label: "Chiedi sempre", hint: "Ogni modifica ai file chiede la tua conferma" },
+  { value: "ask", label: msg("Chiedi sempre"), hint: msg("Ogni modifica ai file chiede la tua conferma") },
   {
     value: "edits",
-    label: "Consenti modifiche ai file",
-    hint: "Il modello crea e modifica file nelle cartelle concesse senza chiedere",
+    label: msg("Consenti modifiche ai file"),
+    hint: msg("Il modello crea e modifica file nelle cartelle concesse senza chiedere"),
   },
   {
     value: "all",
-    label: "Consenti tutto nelle cartelle",
-    hint: "Nessuna conferma, sempre e solo dentro le cartelle concesse",
+    label: msg("Consenti tutto nelle cartelle"),
+    hint: msg("Nessuna conferma, sempre e solo dentro le cartelle concesse"),
   },
 ];
 
@@ -25,41 +26,42 @@ type BarProps = {
 
 /** Strumenti e permessi della conversazione aperta. */
 export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSettings }: BarProps) {
+  const hint = LEVELS.find((l) => l.value === settings.permission)?.hint;
   return (
     <div className="tools-bar">
-      <label title={folderCount === 0 ? "Concedi prima una cartella nelle Impostazioni" : undefined}>
+      <label title={folderCount === 0 ? t("Concedi prima una cartella nelle Impostazioni") : undefined}>
         <input
           type="checkbox"
           checked={settings.files}
           disabled={disabled}
           onChange={(e) => onChange({ ...settings, files: e.target.checked })}
         />
-        File
+        {t("File")}
       </label>
       {settings.files && folderCount === 0 && (
         <button className="btn-link" onClick={onOpenSettings}>
-          Concedi una cartella
+          {t("Concedi una cartella")}
         </button>
       )}
-      <label title="Le parole cercate vengono inviate a DuckDuckGo">
+      <label title={t("Le parole cercate vengono inviate a DuckDuckGo")}>
         <input
           type="checkbox"
           checked={settings.web}
           disabled={disabled}
           onChange={(e) => onChange({ ...settings, web: e.target.checked })}
         />
-        Ricerca web
+        {t("Ricerca web")}
       </label>
       <select
-        aria-label="Permessi"
+        aria-label={t("Permessi")}
         value={settings.permission}
         disabled={disabled}
-        title={LEVELS.find((l) => l.value === settings.permission)?.hint}
+        title={hint && t(hint)}
         onChange={(e) => onChange({ ...settings, permission: e.target.value as PermissionLevel })}
       >
         {LEVELS.map((l) => (
-          <option key={l.value} value={l.value} title={l.hint}>
-            {l.label}
+          <option key={l.value} value={l.value} title={t(l.hint)}>
+            {t(l.label)}
           </option>
         ))}
       </select>
@@ -70,13 +72,12 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
 type RequestProps = {
   request: ToolRequest;
   onAnswer: (approval: Approval) => void;
-  /** Chi chiede e dove vale "sempre": la conversazione o la sessione dell'agente. */
-  who?: string;
-  scope?: string;
+  /** Chi chiede: il modello in chat o l'agente in una sessione. */
+  kind?: "chat" | "agent";
 };
 
 /** Il modello chiede di fare qualcosa che richiede la conferma dell'utente. */
-export function ToolRequestCard({ request, onAnswer, who = "Il modello", scope = "in questa conversazione" }: RequestProps) {
+export function ToolRequestCard({ request, onAnswer, kind = "chat" }: RequestProps) {
   const args = request.arguments as Record<string, unknown>;
   // Per gli strumenti MCP si mostrano i parametri: è l'unico modo di sapere che cosa faranno.
   const preview = request.name.startsWith("mcp__")
@@ -84,23 +85,25 @@ export function ToolRequestCard({ request, onAnswer, who = "Il modello", scope =
     : typeof args.content === "string"
       ? args.content
       : typeof args.new_text === "string"
-        ? `Sostituisce:\n${String(args.old_text ?? "")}\n\nCon:\n${args.new_text}`
+        ? t("Sostituisce:\n{old}\n\nCon:\n{new}", { old: String(args.old_text ?? ""), new: args.new_text })
         : null;
 
   return (
-    <div className="tool-request" role="alertdialog" aria-label="Richiesta di permesso">
-      <div className="tool-request-title">{who} chiede il permesso di:</div>
-      <div className="mono">{request.summary}</div>
+    <div className="tool-request" role="alertdialog" aria-label={t("Richiesta di permesso")}>
+      <div className="tool-request-title">
+        {kind === "agent" ? t("L'agente chiede il permesso di:") : t("Il modello chiede il permesso di:")}
+      </div>
+      <div className="mono">{tc(request.summary)}</div>
       {preview !== null && <pre className="tool-preview">{preview}</pre>}
       <div className="row">
         <button className="btn primary" onClick={() => onAnswer("once")}>
-          Consenti
+          {t("Consenti")}
         </button>
         <button className="btn" onClick={() => onAnswer("always")}>
-          Consenti sempre {scope}
+          {kind === "agent" ? t("Consenti sempre in questa sessione") : t("Consenti sempre in questa conversazione")}
         </button>
         <button className="btn" onClick={() => onAnswer("deny")}>
-          Nega
+          {t("Nega")}
         </button>
       </div>
     </div>

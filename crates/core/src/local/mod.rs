@@ -167,6 +167,8 @@ pub fn build_args(model_path: &str, params: &LoadParams, port: u16) -> Vec<Strin
         "--load-mode",
         params.effective_load_mode(),
         "--no-webui",
+        // L'elenco degli slot mostra lo stato delle richieste: non serve all'app.
+        "--no-slots",
     ]
     .iter()
     .map(|s| s.to_string())

@@ -30,6 +30,37 @@ pub struct LoadedModel {
     pub params: LoadParams,
     pub port: u16,
     pub pid: u32,
+    /// Chiave casuale scelta a ogni avvio: senza, qualunque programma (o
+    /// pagina web) sul computer potrebbe usare `llama-server` saltando le
+    /// protezioni dell'API locale. Non esce mai dal nucleo.
+    #[serde(skip)]
+    pub api_key: String,
+}
+
+/// Cartella in cui l'app tiene le versioni scaricate di llama.cpp.
+pub fn bin_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("bin").join("llama.cpp")
+}
+
+/// Cerca `llama-server` tra le versioni installate; se ce n'è più d'una
+/// prende l'ultima in ordine alfabetico (cioè la build più recente). Non
+/// serve il motore: si può chiedere anche mentre un modello si carica.
+pub fn find_server(data_dir: &Path) -> Result<PathBuf> {
+    let dir = bin_dir(data_dir);
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join(SERVER_EXE))
+        .filter(|exe| exe.is_file())
+        .collect();
+    found.sort();
+    found.pop().ok_or_else(|| {
+        Error::msg(format!(
+            "llama.cpp non è installato: manca {SERVER_EXE} in {}",
+            dir.display()
+        ))
+    })
 }
 
 /// Gestisce il processo `llama-server`. Un solo modello alla volta.
@@ -54,7 +85,7 @@ impl LocalRuntime {
 
     /// Cartella in cui l'app tiene le versioni scaricate di llama.cpp.
     pub fn bin_dir(&self) -> PathBuf {
-        self.data_dir.join("bin").join("llama.cpp")
+        bin_dir(&self.data_dir)
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -64,20 +95,7 @@ impl LocalRuntime {
     /// Cerca `llama-server` tra le versioni installate; se ce n'è più d'una
     /// prende l'ultima in ordine alfabetico (cioè la build più recente).
     pub fn find_server(&self) -> Result<PathBuf> {
-        let mut found: Vec<PathBuf> = std::fs::read_dir(self.bin_dir())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path().join(SERVER_EXE))
-            .filter(|exe| exe.is_file())
-            .collect();
-        found.sort();
-        found.pop().ok_or_else(|| {
-            Error::msg(format!(
-                "llama.cpp non è installato: manca {SERVER_EXE} in {}",
-                self.bin_dir().display()
-            ))
-        })
+        find_server(&self.data_dir)
     }
 
     /// Il modello caricato, se il suo processo è ancora vivo.
@@ -102,6 +120,7 @@ impl LocalRuntime {
 
         let exe = self.find_server()?;
         let port = free_port()?;
+        let api_key = crate::instance::new_token()?;
         let log_path = self.log_path();
         if let Some(dir) = log_path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -110,6 +129,9 @@ impl LocalRuntime {
 
         let mut cmd = Command::new(&exe);
         cmd.args(build_args(model_path, params, port))
+            // Nell'ambiente e non tra gli argomenti: la riga di comando di un
+            // processo si legge facilmente (Gestione attività, `wmic`).
+            .env("LLAMA_API_KEY", &api_key)
             .current_dir(exe.parent().unwrap_or(Path::new(".")))
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
@@ -133,6 +155,7 @@ impl LocalRuntime {
             params: params.clone(),
             port,
             pid,
+            api_key,
         };
         self.current = Some((model.clone(), child));
         Ok(model)

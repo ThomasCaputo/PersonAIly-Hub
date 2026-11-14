@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type ApiInfo } from "../api";
+import { t, tc, tn } from "../i18n";
 
 /** Indirizzo e token dell'API locale, per VS Code e per i programmi compatibili con OpenAI. */
 export function ApiSection() {
@@ -34,7 +35,7 @@ export function ApiSection() {
   };
 
   const regenerate = async () => {
-    if (!confirm("Creare un token nuovo? I programmi configurati con quello attuale smetteranno di funzionare.")) return;
+    if (!confirm(t("Creare un token nuovo? I programmi configurati con quello attuale smetteranno di funzionare."))) return;
     try {
       const token = await api.regenerateApiToken();
       setInfo((current) => (current ? { ...current, token } : current));
@@ -48,40 +49,48 @@ export function ApiSection() {
 
   return (
     <section className="section">
-      <h2>API locale</h2>
+      <h2>{t("API locale")}</h2>
       <p className="dim note">
-        L'estensione per VS Code e i programmi compatibili con OpenAI usano i modelli dell'app tramite questo
-        indirizzo, raggiungibile solo da questo computer. Come chiave API si usa il token. Nome del modello:{" "}
-        <span className="mono">local</span> per quello locale caricato, <span className="mono">provider/modello</span>{" "}
-        per quelli cloud.
+        {tn(
+          "L'estensione per VS Code e i programmi compatibili con OpenAI usano i modelli dell'app tramite questo indirizzo, raggiungibile solo da questo computer. Come chiave API si usa il token. Nome del modello: {local} per quello locale caricato, {cloud} per quelli cloud.",
+          {
+            local: <span className="mono">local</span>,
+            cloud: <span className="mono">{t("provider/modello")}</span>,
+          },
+        )}
       </p>
-      {!info && <p className="dim">Avvio in corso…</p>}
-      {info?.error && <p className="error pre">L'API locale non è attiva: {info.error}</p>}
-      {info && !info.running && !info.error && <p className="dim">Avvio in corso…</p>}
+      <p className="dim note">
+        {t(
+          "Chi conosce il token può usare tutto ciò che l'app sa fare, agenti e terminale compresi: non condividerlo. Il token è salvato anche nel file core.lock della cartella dati, leggibile solo dal tuo utente di Windows.",
+        )}
+      </p>
+      {!info && <p className="dim">{t("Avvio in corso…")}</p>}
+      {info?.error && <p className="error pre">{t("L'API locale non è attiva: {error}", { error: tc(info.error) })}</p>}
+      {info && !info.running && !info.error && <p className="dim">{t("Avvio in corso…")}</p>}
       {address && info?.token && (
         <div className="api-grid">
-          <span className="dim">Indirizzo</span>
+          <span className="dim">{t("Indirizzo")}</span>
           <span className="mono">{address}</span>
           <button className="btn-link" onClick={() => copy("address", address)}>
-            {copied === "address" ? "Copiato" : "Copia"}
+            {copied === "address" ? t("Copiato") : t("Copia")}
           </button>
 
-          <span className="dim">Token</span>
+          <span className="dim">{t("Token")}</span>
           <span className="mono api-token">{showToken ? info.token : "•".repeat(24)}</span>
           <span className="api-actions">
             <button className="btn-link" onClick={() => setShowToken((v) => !v)}>
-              {showToken ? "Nascondi" : "Mostra"}
+              {showToken ? t("Nascondi") : t("Mostra")}
             </button>
             <button className="btn-link" onClick={() => copy("token", info.token!)}>
-              {copied === "token" ? "Copiato" : "Copia"}
+              {copied === "token" ? t("Copiato") : t("Copia")}
             </button>
             <button className="btn-link" onClick={regenerate}>
-              Rigenera
+              {t("Rigenera")}
             </button>
           </span>
         </div>
       )}
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
     </section>
   );
 }

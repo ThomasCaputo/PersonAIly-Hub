@@ -10,6 +10,8 @@ import {
   type RuntimeStatus,
 } from "./api";
 import { ChatArea } from "./areas/ChatArea";
+import { msg, t } from "./i18n";
+import { useLanguage } from "./LanguageProvider";
 import { preloadMarkdown } from "./components/Markdown";
 import { SpillWarning } from "./components/SpillWarning";
 import "./App.css";
@@ -20,10 +22,10 @@ const ModelsArea = lazy(() => import("./areas/ModelsArea").then((m) => ({ defaul
 const SettingsArea = lazy(() => import("./areas/SettingsArea").then((m) => ({ default: m.SettingsArea })));
 
 const AREAS = [
-  { id: "chat", label: "Chat" },
-  { id: "agents", label: "Agenti" },
-  { id: "models", label: "Modelli" },
-  { id: "settings", label: "Impostazioni" },
+  { id: "chat", label: msg("Chat") },
+  { id: "agents", label: msg("Agenti") },
+  { id: "models", label: msg("Modelli") },
+  { id: "settings", label: msg("Impostazioni") },
 ] as const;
 
 type AreaId = (typeof AREAS)[number]["id"];
@@ -44,6 +46,8 @@ function readStoredModel(): ModelRef {
 }
 
 export default function App() {
+  // Cambiando lingua l'interfaccia intera si ridisegna da qui.
+  useLanguage();
   const [areaId, setAreaId] = useState<AreaId>("chat");
   const [core, setCore] = useState<CoreInfo | null>(null);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
@@ -133,7 +137,7 @@ export default function App() {
             className={a.id === areaId ? "nav-item active" : "nav-item"}
             onClick={() => setAreaId(a.id)}
           >
-            {a.label}
+            {t(a.label)}
           </button>
         ))}
         <StatusPanel status={status} core={core} />
@@ -142,7 +146,7 @@ export default function App() {
       <main className="content">
         <SpillWarning status={status} />
         <div className="area">
-          <Suspense fallback={<p className="dim page">Caricamento…</p>}>
+          <Suspense fallback={<p className="dim page">{t("Caricamento…")}</p>}>
             {areaId === "chat" && (
               <ChatArea
                 status={status}
@@ -182,18 +186,18 @@ function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: Cor
     <div className="status">
       <div className="status-model">
         {status?.loading
-          ? "Caricamento del modello…"
-          : (status?.loaded?.modelName ?? "Nessun modello locale caricato")}
+          ? t("Caricamento del modello…")
+          : (status?.loaded?.modelName ?? t("Nessun modello locale caricato"))}
       </div>
       {status?.loaded && (
         <div className="dim">
-          {status.loaded.params.placement === "vram" ? "Solo VRAM" : "Solo RAM"}
-          {status.processRamBytes != null && ` · processo ${gb(status.processRamBytes)} GB di RAM`}
+          {status.loaded.params.placement === "vram" ? t("Solo VRAM") : t("Solo RAM")}
+          {status.processRamBytes != null && ` · ${t("processo {gb} GB di RAM", { gb: gb(status.processRamBytes) })}`}
         </div>
       )}
       {gpu && <Meter label="VRAM" used={gpu.usedBytes} total={gpu.totalBytes} />}
       {status && <Meter label="RAM" used={ramUsed} total={status.memory.ramTotalBytes} />}
-      {core && <div className="dim status-version">Nucleo {core.version}</div>}
+      {core && <div className="dim status-version">{t("Nucleo {version}", { version: core.version })}</div>}
     </div>
   );
 }

@@ -83,6 +83,9 @@ cartella di lavoro.
 | SI-4 | L'API locale ascolta solo su `127.0.0.1` ed è protetta da un token | M |
 | SI-5 | Il contenuto di pagine web e file è trattato come dato, non come istruzione: non può concedersi permessi da solo | M |
 | SI-6 | Registro consultabile delle azioni compiute dagli strumenti | S |
+| SI-7 | Un testo letto (file, pagina) non può far uscire i dati dei file concessi verso un sito scelto dal modello senza una conferma; protezione accesa di base, disattivabile | S |
+| SI-8 | I collegamenti nelle risposte si aprono nel browser di sistema, mai nella finestra dell'app, mostrando prima l'indirizzo vero (conferma disattivabile) | S |
+| SI-9 | Le protezioni che chiedono conferme in più sono accese di base e l'utente può spegnerle nelle Impostazioni | S |
 
 ## 7. Integrazione con VS Code
 

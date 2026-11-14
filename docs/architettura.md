@@ -45,7 +45,7 @@ Libreria Rust senza interfaccia grafica. Moduli:
 | `permissions` | Decide se una chiamata a uno strumento è consentita, negata o va chiesta all'utente |
 | `chat` | Ciclo di una conversazione: messaggio → modello → eventuali strumenti → risposta |
 | `agents` | Definizioni degli agenti e loro sessioni; riusa il ciclo di `chat` senza attendere l'utente a ogni passo |
-| `store` | Archivio SQLite: conversazioni, messaggi, agenti, sessioni, impostazioni |
+| `store` | Archivio SQLite (modalità WAL): conversazioni, messaggi con indice di ricerca a trigrammi, agenti, sessioni, impostazioni |
 | `secrets` | Chiavi API nel Gestore credenziali di Windows (portachiavi di sistema sulle altre piattaforme) |
 
 ### Server — `crates/server`
@@ -72,7 +72,14 @@ Il lato web (React + TypeScript) ha quattro aree:
 - **Chat** — conversazioni, allegati, selettore del modello, pannello parametri laterale;
 - **Agenti** — elenco agenti, sessioni in corso, vista dettagliata dell'attività;
 - **Modelli** — libreria locale, download, provider cloud e chiavi, stato della memoria;
-- **Impostazioni** — cartelle, permessi predefiniti, variante di llama.cpp, lingua, tema.
+- **Impostazioni** — lingua, cartelle, permessi predefiniti, protezioni di sicurezza, server
+  MCP, API locale (in futuro: variante di llama.cpp, tema).
+
+I testi dell'interfaccia sono in italiano nel codice e passano da `t()`; la traduzione
+inglese sta in `src/locales/` ([ADR 0012](adr/0012-lingue-interfaccia.md)). I comandi
+Tauri che toccano archivio o disco girano fuori dal thread dell'interfaccia. La finestra
+mostra solo l'app: i collegamenti esterni si aprono nel browser di sistema con il comando
+`open_external` ([ADR 0011](adr/0011-revisione-sicurezza-e-prestazioni.md)).
 
 ### Estensione VS Code — `extensions/vscode`
 
@@ -139,6 +146,13 @@ della conversazione o dell'agente → se serve, l'interfaccia mostra la richiest
 Il risultato di uno strumento (una pagina web, il contenuto di un file) è sempre **dato**:
 non può modificare i permessi né essere trattato come un ordine dell'utente.
 
+Né può far uscire i dati dei file: con la **protezione dalla fuga di dati** (accesa di
+base, si spegne in Impostazioni → Sicurezza) un modello che vede i file chiede conferma
+prima di aprire una pagina il cui indirizzo non viene dall'utente né da una ricerca
+([ADR 0011](adr/0011-revisione-sicurezza-e-prestazioni.md)). Regola generale: le
+protezioni che costano conferme in più sono accese di base e l'utente può spegnerle;
+quelle che non costano nulla sono sempre attive.
+
 Gli strumenti esterni si aggiungono tramite **MCP**, senza modificare il nucleo.
 
 Non tutti i modelli locali sanno usare bene gli strumenti: `providers` espone questa
@@ -150,11 +164,12 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 
 | Cosa | Dove |
 |---|---|
-| Conversazioni, agenti, sessioni, impostazioni | `data.sqlite` |
+| Conversazioni, agenti, sessioni, impostazioni (lingua e protezioni comprese) | `data.sqlite`, con `data.sqlite-wal` e `data.sqlite-shm` (modalità WAL) |
 | Preset dei modelli | `presets\*.json` (leggibili e condivisibili) |
 | Preset con nome | `presets\named\*.json` (parametri di generazione e prompt di sistema, applicabili a qualsiasi modello) |
 | Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` |
-| File di blocco del nucleo | `core.lock` (porta, token, pid; esiste solo mentre il nucleo è attivo) |
+| File di blocco del nucleo | `core.lock` (porta, token in chiaro, pid; esiste solo mentre il nucleo è attivo; protetto dai permessi della cartella utente) |
+
 | Chiavi API, token dell'API locale, variabili d'ambiente dei server MCP | Gestore credenziali di Windows — **non** su disco |
 | Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati |
 

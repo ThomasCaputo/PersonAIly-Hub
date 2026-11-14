@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, type Provider, type ProviderInfo, type ProviderKind } from "../api";
+import { msg, t, tc } from "../i18n";
 
 type Props = { providers: ProviderInfo[]; onChange: () => void };
 
@@ -8,15 +9,15 @@ const TEMPLATES: { label: string; name: string; kind: ProviderKind; baseUrl: str
   { label: "Anthropic (Claude)", name: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com" },
   { label: "OpenAI", name: "OpenAI", kind: "openai_compatible", baseUrl: "https://api.openai.com/v1" },
   { label: "OpenRouter", name: "OpenRouter", kind: "openai_compatible", baseUrl: "https://openrouter.ai/api/v1" },
-  { label: "Altro servizio compatibile con OpenAI", name: "", kind: "openai_compatible", baseUrl: "https://" },
+  { label: msg("Altro servizio compatibile con OpenAI"), name: "", kind: "openai_compatible", baseUrl: "https://" },
 ];
 
 type Draft = { provider: Provider; apiKey: string; hasKey: boolean };
 
 const emptyDraft = (templateIndex: number): Draft => {
-  const t = TEMPLATES[templateIndex];
+  const template = TEMPLATES[templateIndex];
   return {
-    provider: { id: "", name: t.name, kind: t.kind, baseUrl: t.baseUrl, models: [] },
+    provider: { id: "", name: template.name, kind: template.kind, baseUrl: template.baseUrl, models: [] },
     apiKey: "",
     hasKey: false,
   };
@@ -52,24 +53,24 @@ export function ProvidersSection({ providers, onChange }: Props) {
     });
 
   const remove = (provider: ProviderInfo) => {
-    if (!window.confirm(`Eliminare ${provider.name} e la sua chiave API?`)) return;
+    if (!window.confirm(t("Eliminare {name} e la sua chiave API?", { name: provider.name }))) return;
     run(provider.id, () => api.deleteProvider(provider.id));
   };
 
   return (
     <section className="section">
       <div className="section-head">
-        <h2>Provider cloud</h2>
+        <h2>{t("Provider cloud")}</h2>
         {!draft && (
           <button className="btn" onClick={() => setDraft(emptyDraft(templateIndex))}>
-            Aggiungi provider
+            {t("Aggiungi provider")}
           </button>
         )}
       </div>
 
       {providers.length === 0 && !draft && (
         <p className="dim">
-          Collega un servizio come Anthropic o OpenAI con la tua chiave API per usarne i modelli in chat.
+          {t("Collega un servizio come Anthropic o OpenAI con la tua chiave API per usarne i modelli in chat.")}
         </p>
       )}
 
@@ -78,7 +79,8 @@ export function ProvidersSection({ providers, onChange }: Props) {
           <div>
             <div className="card-title">{p.name}</div>
             <div className="dim">
-              {p.hasKey ? `${p.models.length} modelli` : "Chiave API mancante"} · <span className="mono">{p.baseUrl}</span>
+              {p.hasKey ? t("{n} modelli", { n: p.models.length }) : t("Chiave API mancante")} ·{" "}
+              <span className="mono">{p.baseUrl}</span>
             </div>
           </div>
           <div className="row">
@@ -91,17 +93,17 @@ export function ProvidersSection({ providers, onChange }: Props) {
                 })
               }
             >
-              {busy === p.id ? "Aggiornamento…" : "Aggiorna modelli"}
+              {busy === p.id ? t("Aggiornamento…") : t("Aggiorna modelli")}
             </button>
             <button
               className="btn"
               disabled={busy !== null}
               onClick={() => setDraft({ provider: { ...p }, apiKey: "", hasKey: p.hasKey })}
             >
-              Modifica
+              {t("Modifica")}
             </button>
             <button className="btn-link" disabled={busy !== null} onClick={() => remove(p)}>
-              Elimina
+              {t("Elimina")}
             </button>
           </div>
         </div>
@@ -111,7 +113,7 @@ export function ProvidersSection({ providers, onChange }: Props) {
         <div className="card card-body provider-form">
           {draft.provider.id === "" && (
             <div className="field">
-              <label htmlFor="provider-template">Servizio</label>
+              <label htmlFor="provider-template">{t("Servizio")}</label>
               <select
                 id="provider-template"
                 value={templateIndex}
@@ -121,16 +123,16 @@ export function ProvidersSection({ providers, onChange }: Props) {
                   setDraft({ ...emptyDraft(index), apiKey: draft.apiKey });
                 }}
               >
-                {TEMPLATES.map((t, i) => (
-                  <option key={t.label} value={i}>
-                    {t.label}
+                {TEMPLATES.map((template, i) => (
+                  <option key={template.label} value={i}>
+                    {t(template.label)}
                   </option>
                 ))}
               </select>
             </div>
           )}
           <div className="field">
-            <label htmlFor="provider-name">Nome</label>
+            <label htmlFor="provider-name">{t("Nome")}</label>
             <input
               id="provider-name"
               type="text"
@@ -139,7 +141,7 @@ export function ProvidersSection({ providers, onChange }: Props) {
             />
           </div>
           <div className="field">
-            <label htmlFor="provider-url">Indirizzo dell'API</label>
+            <label htmlFor="provider-url">{t("Indirizzo dell'API")}</label>
             <input
               id="provider-url"
               type="text"
@@ -149,32 +151,36 @@ export function ProvidersSection({ providers, onChange }: Props) {
             />
           </div>
           <div className="field">
-            <label htmlFor="provider-key">Chiave API</label>
+            <label htmlFor="provider-key">{t("Chiave API")}</label>
             <input
               id="provider-key"
               type="password"
               autoComplete="off"
-              placeholder={draft.hasKey ? "Già salvata — lascia vuoto per non cambiarla" : "Incolla qui la chiave"}
+              placeholder={
+                draft.hasKey ? t("Già salvata — lascia vuoto per non cambiarla") : t("Incolla qui la chiave")
+              }
               value={draft.apiKey}
               onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
             />
             <span className="dim note">
-              Viene salvata nel Gestore credenziali di Windows, non nei file dell'app, e inviata solo all'indirizzo qui
-              sopra.
+              {t(
+                "Viene salvata nel Gestore credenziali di Windows, non nei file dell'app, e inviata solo all'indirizzo qui sopra.",
+              )}
             </span>
           </div>
           <div className="row">
             <button className="btn primary" disabled={busy !== null} onClick={save}>
-              {busy === "save" ? "Salvataggio…" : "Salva"}
+              {busy === "save" ? t("Salvataggio…") : t("Salva")}
             </button>
             <button className="btn" disabled={busy !== null} onClick={() => setDraft(null)}>
-              Annulla
+              {t("Annulla")}
             </button>
           </div>
         </div>
       )}
 
-      {error && <p className="error pre">{error}</p>}
+      {error && <p className="error pre">{tc(error)}</p>}
+
     </section>
   );
 }
