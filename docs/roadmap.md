@@ -143,7 +143,11 @@ Rimandato (non blocca la Tappa 6):
 
 ## Tappa 6 — Rifinitura e pubblicazione
 
-- Installer, aggiornamento automatico (GE-7), temi (GE-6).
+- [x] Installer `setup.exe` (NSIS, senza permessi di amministratore) ed exe portatile:
+      `scripts/release.ps1` toglie i percorsi locali dagli eseguibili e controlla che non
+      restino dati della macchina; `.github/workflows/release.yml` li costruisce su GitHub
+      a ogni tag `v*` e li allega a una release in bozza.
+- Aggiornamento automatico (GE-7), temi (GE-6), firma degli eseguibili.
 - [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
       ([ADR 0012](adr/0012-lingue-interfaccia.md)). Manca l'estensione VS Code.
 - Guida per l'utente.

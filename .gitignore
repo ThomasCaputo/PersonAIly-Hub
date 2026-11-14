@@ -6,6 +6,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Release (scripts/release.ps1)
+release/
+
 # Tauri
 apps/desktop/src-tauri/gen/
 

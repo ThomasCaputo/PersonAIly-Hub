@@ -6,6 +6,14 @@
   "publisher": "personaily",
   "private": true,
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ThomasCaputo/personaily-hub"
+  },
+  "homepage": "https://github.com/ThomasCaputo/personaily-hub",
+  "bugs": {
+    "url": "https://github.com/ThomasCaputo/personaily-hub/issues"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },
