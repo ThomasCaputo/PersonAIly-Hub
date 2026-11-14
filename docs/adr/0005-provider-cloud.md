@@ -1,8 +1,16 @@
 # 0005 — Provider cloud: due famiglie di API, chiavi nel portachiavi di sistema
 
-**Stato:** accettata — l'API compatibile OpenAI è provata contro un server reale
-(`llama-server`); quella di Anthropic solo contro un server finto, non ancora con una
-chiave vera
+**Stato:** accettata — l'API compatibile OpenAI è provata contro `llama-server` e, il
+13-11-2026, contro un servizio esterno vero con una chiave vera (Google AI Studio,
+indirizzo `https://generativelanguage.googleapis.com/v1beta/openai/`); quella di
+Anthropic solo contro un server finto, non ancora con una chiave vera
+
+Note dalla prova con Google AI Studio:
+
+- alcuni modelli Gemma su quel servizio rispondono a volte `500 Internal error`: è un
+  errore del servizio, non della richiesta;
+- con temperatura 0 la stessa domanda può dare risposte diverse: i servizi cloud non
+  garantiscono risposte ripetibili, nemmeno con il `seed`.
 
 ## Contesto
 

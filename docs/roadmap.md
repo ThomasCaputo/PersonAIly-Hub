@@ -55,8 +55,10 @@ Fatto:
 
 Rimandato (non blocca la Tappa 3):
 
-- [ ] **Prova con chiavi vere**: i provider cloud sono stati provati solo contro servizi
-      finti su questo computer. Si aspetta la prima segnalazione di chi usa una chiave.
+- [x] **Prova con chiave vera, compatibile OpenAI**: funziona con Google AI Studio
+      (13-11-2026).
+- [ ] **Prova con chiave vera, Anthropic**: provato solo contro un servizio finto su
+      questo computer.
 - [ ] Modelli GGUF divisi in più file (`-00001-of-00003`): non vengono proposti per il download.
 - [ ] Un solo download per volta.
 
