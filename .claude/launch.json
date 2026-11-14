@@ -9,6 +9,12 @@
         "dev"
       ],
       "port": 3000
+    },
+    {
+      "name": "ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "desktop"],
+      "port": 1420
     }
   ]
 }
