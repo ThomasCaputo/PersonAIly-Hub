@@ -12,7 +12,7 @@ use app_core::Core;
 use app_core::instance::{self, InstanceKind};
 
 const HELP: &str = "\
-Nucleo di Progetto AI senza interfaccia: espone l'API locale su 127.0.0.1.
+Nucleo di PersonAIly Hub senza interfaccia: espone l'API locale su 127.0.0.1.
 
 Uso: app-server [opzioni]
 

@@ -4,6 +4,7 @@ description = "Nucleo dell'app: provider, modelli locali, strumenti, agenti, arc
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 base64 = "0.23.1"

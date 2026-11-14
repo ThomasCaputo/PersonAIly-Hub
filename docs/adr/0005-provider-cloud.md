@@ -31,7 +31,7 @@ Un **provider** è una voce configurata dall'utente: nome, famiglia, indirizzo, 
 modelli scaricato dal servizio. I provider stanno nell'archivio dell'app.
 
 **Le chiavi API** stanno nel portachiavi del sistema operativo (su Windows il Gestore
-credenziali, servizio `progetto-ai`). Non vengono scritte in file dell'app e non tornano
+credenziali, servizio `personaily-hub`). Non vengono scritte in file dell'app e non tornano
 mai all'interfaccia: questa sa solo se una chiave esiste.
 
 **Niente chiavi in chiaro sulla rete:** l'indirizzo di un provider deve essere `https://`;

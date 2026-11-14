@@ -5,7 +5,7 @@ use keyring::Entry;
 
 use crate::error::{Error, Result};
 
-const SERVICE: &str = "progetto-ai";
+const SERVICE: &str = "personaily-hub";
 
 fn entry(provider_id: &str) -> Result<Entry> {
     Entry::new(SERVICE, &format!("provider:{provider_id}")).map_err(to_error)

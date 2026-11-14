@@ -4,6 +4,7 @@ description = "App desktop: finestra Tauri che usa il nucleo"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 # Il suffisso `_lib` evita su Windows il conflitto di nome con l'eseguibile

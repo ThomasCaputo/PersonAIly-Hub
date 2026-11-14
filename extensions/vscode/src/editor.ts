@@ -13,7 +13,7 @@ export interface EditorContext {
 /** L'editor di testo su cui lavorare, anche se il focus è nel pannello della chat. */
 export function currentEditor(): vscode.TextEditor | undefined {
   const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
-  return editor?.document.uri.scheme === "progetto-ai-proposta" ? undefined : editor;
+  return editor?.document.uri.scheme === "personaily-proposta" ? undefined : editor;
 }
 
 /**

@@ -220,7 +220,7 @@ impl McpClient {
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": { "name": "progetto-ai", "version": crate::version() }
+                    "clientInfo": { "name": "personaily-hub", "version": crate::version() }
                 }),
                 START_TIMEOUT,
             )

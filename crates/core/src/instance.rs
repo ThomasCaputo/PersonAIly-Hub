@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 
 /// Identificatore dell'app: dà il nome alla cartella dati. Deve restare uguale
 /// a `identifier` in `apps/desktop/src-tauri/tauri.conf.json`.
-pub const APP_IDENTIFIER: &str = "dev.progettoai.desktop";
+pub const APP_IDENTIFIER: &str = "dev.personaily.hub";
 pub const LOCK_FILE: &str = "core.lock";
 
 /// Chi ha avviato il nucleo in esecuzione.
@@ -38,7 +38,7 @@ pub struct LockInfo {
 }
 
 /// La cartella dati predefinita, la stessa che usa l'app desktop:
-/// `%APPDATA%\dev.progettoai.desktop` su Windows.
+/// `%APPDATA%\dev.personaily.hub` su Windows.
 pub fn default_data_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)

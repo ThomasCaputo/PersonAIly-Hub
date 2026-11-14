@@ -146,7 +146,8 @@ Rimandato (non blocca la Tappa 6):
 - Installer, aggiornamento automatico (GE-7), temi (GE-6).
 - [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
       ([ADR 0012](adr/0012-lingue-interfaccia.md)). Manca l'estensione VS Code.
-- Guida per l'utente; nome definitivo e licenza.
+- Guida per l'utente.
+- [x] Nome definitivo (**PersonAIly Hub**) e licenza (**Apache-2.0**).
 - Prima versione pubblica per Windows.
 
 Piccole cose da aggiungere (fatte):

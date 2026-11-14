@@ -3,7 +3,7 @@
 import * as vscode from "vscode";
 import { fitReplacement, replaceRange } from "./edits";
 
-export const PROPOSAL_SCHEME = "progetto-ai-proposta";
+export const PROPOSAL_SCHEME = "personaily-proposta";
 
 interface Proposal {
   id: string;
@@ -30,10 +30,10 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
 
   constructor() {
     this.acceptItem.text = "$(check) Accetta la modifica";
-    this.acceptItem.command = "progettoAi.acceptProposal";
+    this.acceptItem.command = "personailyHub.acceptProposal";
     this.acceptItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
     this.rejectItem.text = "$(close) Rifiuta";
-    this.rejectItem.command = "progettoAi.rejectProposal";
+    this.rejectItem.command = "personailyHub.rejectProposal";
     this.listeners = [
       vscode.window.onDidChangeActiveTextEditor(() => this.updateButtons()),
       vscode.window.tabGroups.onDidChangeTabs(() => this.updateButtons()),
@@ -78,7 +78,7 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
     this.previews.set(preview.toString(), replaceRange(full, start, end, newText));
     this.proposals.set(id, { id, target: document.uri, range, originalText, newText, preview });
 
-    await vscode.commands.executeCommand("vscode.diff", document.uri, preview, `${name} ↔ proposta di Progetto AI`, {
+    await vscode.commands.executeCommand("vscode.diff", document.uri, preview, `${name} ↔ proposta di PersonAIly Hub`, {
       preview: false,
     });
     this.updateButtons();

@@ -4,6 +4,7 @@ description = "Nucleo avviabile senza interfaccia: espone l'API locale"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "app_server"

@@ -1,6 +1,6 @@
-# Progetto AI
+# PersonAIly Hub
 
-> Nome provvisorio. Stato: **Tappa 5 completata** — si chatta con modelli locali `.gguf`
+> Stato: **Tappa 5 completata** — si chatta con modelli locali `.gguf`
 > (scaricabili da Hugging Face) e con modelli cloud (Anthropic, servizi compatibili con
 > OpenAI), con file, ricerca web e allegati. Gli agenti lavorano da soli su una cartella,
 > con comandi nel terminale e strumenti esterni MCP. Un'API locale compatibile con OpenAI
@@ -62,11 +62,11 @@ npm run check    # formattazione, lint e test del codice Rust, più il controllo
 npm run check:i18n -w desktop             # solo le traduzioni: elenca i testi senza inglese
 npm run build    # crea l'installer
 cargo build -p app-server                 # nucleo senza interfaccia (target/debug/app-server.exe)
-npm run package -w progetto-ai-vscode     # estensione VS Code (extensions/vscode/progetto-ai.vsix)
+npm run package -w personaily-hub-vscode     # estensione VS Code (extensions/vscode/personaily-hub.vsix)
 ```
 
 L'estensione VS Code è descritta in [extensions/vscode/README.md](extensions/vscode/README.md).
-Ad app chiusa le serve il percorso di `app-server.exe` (impostazione `progettoAi.serverPath`).
+Ad app chiusa le serve il percorso di `app-server.exe` (impostazione `personailyHub.serverPath`).
 
 Per usare i modelli locali serve llama.cpp: l'app lo scarica da sé dalla pagina
 **Modelli → Motore** (dettagli nell'[ADR 0002](docs/adr/0002-motore-locale-llama-server.md#versione-in-uso)).
@@ -108,5 +108,6 @@ dai tipi Rust).
 
 ## Licenza
 
-Non ancora scelta. Va decisa **prima** di rendere pubblico il repository: senza licenza,
-nessuno ha il diritto di usare o modificare il codice.
+Distribuito con licenza [Apache 2.0](LICENSE): si può usare, modificare e ridistribuire
+liberamente, anche per scopi commerciali, mantenendo l'avviso di copyright e il file
+[NOTICE](NOTICE).

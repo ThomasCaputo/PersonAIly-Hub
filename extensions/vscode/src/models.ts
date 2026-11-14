@@ -72,7 +72,7 @@ export async function pickModel(client: CoreClient): Promise<ModelChoice | undef
   }
 
   const picked = await vscode.window.showQuickPick(items, {
-    title: "Progetto AI: scegli il modello",
+    title: "PersonAIly Hub: scegli il modello",
     matchOnDescription: true,
   });
   if (!picked?.choice) return undefined;

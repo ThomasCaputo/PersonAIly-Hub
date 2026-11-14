@@ -1,4 +1,4 @@
-// Estensione VS Code di Progetto AI (Tappa 5): pannello chat, contesto
+// Estensione VS Code di PersonAIly Hub (Tappa 5): pannello chat, contesto
 // dell'editor e modifiche proposte come diff. Tutta la logica sui modelli sta
 // nel nucleo dell'app, raggiunto tramite l'API locale (ADR 0004 e 0010).
 
@@ -10,13 +10,13 @@ import { currentEditor, editorContext } from "./editor";
 import { type ModelChoice, pickModel } from "./models";
 import { PROPOSAL_SCHEME, Proposals } from "./proposals";
 
-const MODEL_KEY = "progettoAi.model";
+const MODEL_KEY = "personailyHub.model";
 
 let client: CoreClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel("Progetto AI");
-  const config = () => vscode.workspace.getConfiguration("progettoAi");
+  const output = vscode.window.createOutputChannel("PersonAIly Hub");
+  const config = () => vscode.workspace.getConfiguration("personailyHub");
   const core = new CoreClient({
     dataDir: () => config().get<string>("dataDir")?.trim() || defaultDataDir(),
     serverPath: () => config().get<string>("serverPath") ?? "",
@@ -26,8 +26,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const proposals = new Proposals();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.command = "progettoAi.chooseModel";
-  status.tooltip = "Progetto AI: scegli il modello";
+  status.command = "personailyHub.chooseModel";
+  status.tooltip = "PersonAIly Hub: scegli il modello";
 
   const model = () => context.globalState.get<ModelChoice>(MODEL_KEY);
   const showModel = () => {
@@ -61,7 +61,7 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         await f();
       } catch (e) {
-        vscode.window.showErrorMessage(`Progetto AI: ${(e as Error).message}`);
+        vscode.window.showErrorMessage(`PersonAIly Hub: ${(e as Error).message}`);
       }
     };
 
@@ -70,16 +70,16 @@ export function activate(context: vscode.ExtensionContext): void {
     status,
     proposals,
     vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposals),
-    vscode.window.registerWebviewViewProvider("progettoAi.chat", chat, {
+    vscode.window.registerWebviewViewProvider("personailyHub.chat", chat, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand("progettoAi.chooseModel", guarded(chooseModel)),
+    vscode.commands.registerCommand("personailyHub.chooseModel", guarded(chooseModel)),
     vscode.commands.registerCommand(
-      "progettoAi.newChat",
+      "personailyHub.newChat",
       guarded(() => chat.newConversation()),
     ),
     vscode.commands.registerCommand(
-      "progettoAi.history",
+      "personailyHub.history",
       guarded(async () => {
         const list = await core.request<{ id: number; title: string; updatedAt: string }[]>(
           "GET",
@@ -87,24 +87,24 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         const picked = await vscode.window.showQuickPick(
           list.map((c) => ({ label: c.title, description: c.updatedAt.replace("T", " ").slice(0, 16), id: c.id })),
-          { title: "Progetto AI: apri una conversazione", matchOnDescription: true },
+          { title: "PersonAIly Hub: apri una conversazione", matchOnDescription: true },
         );
         if (picked) await chat.openConversation(picked.id);
       }),
     ),
     vscode.commands.registerCommand(
-      "progettoAi.edit",
+      "personailyHub.edit",
       guarded(async () => requestEdit(core, proposals, model() ?? (await chooseModel()), config)),
     ),
     vscode.commands.registerCommand(
-      "progettoAi.acceptProposal",
+      "personailyHub.acceptProposal",
       guarded(() => proposals.accept()),
     ),
     vscode.commands.registerCommand(
-      "progettoAi.rejectProposal",
+      "personailyHub.rejectProposal",
       guarded(() => proposals.reject()),
     ),
-    vscode.commands.registerCommand("progettoAi.startAgent", guarded(() => startAgent(core))),
+    vscode.commands.registerCommand("personailyHub.startAgent", guarded(() => startAgent(core))),
   );
 }
 
@@ -137,7 +137,7 @@ async function requestEdit(
       ? `righe ${context.target.startLine}-${context.target.endLine}`
       : "tutto il file";
   const instruction = await vscode.window.showInputBox({
-    title: `Progetto AI · ${model.label}`,
+    title: `PersonAIly Hub · ${model.label}`,
     prompt: `Che modifica vuoi su ${where}?`,
     placeHolder: "Per esempio: aggiungi la gestione degli errori",
     ignoreFocusOut: true,
@@ -203,11 +203,11 @@ async function startAgent(core: CoreClient): Promise<void> {
   }
   const agent = await vscode.window.showQuickPick(
     agents.map((a) => ({ label: a.name, description: a.description, id: a.id })),
-    { title: "Progetto AI: scegli l'agente" },
+    { title: "PersonAIly Hub: scegli l'agente" },
   );
   if (!agent) return;
   const task = await vscode.window.showInputBox({
-    title: `Progetto AI · ${agent.label}`,
+    title: `PersonAIly Hub · ${agent.label}`,
     prompt: "Che cosa deve fare?",
     ignoreFocusOut: true,
   });

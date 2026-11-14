@@ -197,4 +197,4 @@ quelle con `Host` diverso da `127.0.0.1`/`localhost` (vedi [ADR 0010](adr/0010-a
 | 2 | ~~Isolamento dei comandi eseguiti dagli agenti~~ — **deciso:** bastano i permessi, niente sandbox ([ADR 0008](adr/0008-agenti-e-terminale.md)) | Tappa 4 |
 | 3 | Più modelli locali caricati insieme: consentirlo, e con quali limiti? Per ora uno solo: le sessioni locali in parallelo fanno la coda | Tappa 4 |
 | 4 | ~~Estrazione del testo dai PDF~~ — **deciso:** crate `pdf-extract` | Tappa 3 |
-| 5 | Nome definitivo e licenza | Prima della pubblicazione |
+| 5 | ~~Nome definitivo e licenza~~ — **deciso:** PersonAIly Hub, Apache-2.0 | Tappa 6 |

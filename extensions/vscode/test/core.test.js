@@ -52,7 +52,7 @@ test("nomi dei modelli per l'endpoint OpenAI", () => {
 test("cartella dati come quella dell'app", () => {
   assert.equal(
     defaultDataDir({ APPDATA: "C:\\Utente\\AppData\\Roaming" }, "win32"),
-    path.join("C:\\Utente\\AppData\\Roaming", "dev.progettoai.desktop"),
+    path.join("C:\\Utente\\AppData\\Roaming", "dev.personaily.hub"),
   );
 });
 
@@ -76,7 +76,7 @@ test("legge eventi SSE spezzati a metà, commenti compresi", async () => {
 });
 
 test("client: token, nuovo token dopo 401, errori leggibili", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "progetto-ai-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "personaily-hub-"));
   let token = "primo";
   const server = http.createServer((req, res) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
@@ -116,7 +116,7 @@ test("client: token, nuovo token dopo 401, errori leggibili", async () => {
 });
 
 test("client: senza nucleo né app-server spiega cosa fare", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "progetto-ai-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "personaily-hub-"));
   try {
     const client = new CoreClient({ dataDir: () => dir, serverPath: () => "", log: () => {} });
     await assert.rejects(client.request("GET", "/api/info"), (e) => e.status === 0 && /serverPath/.test(e.message));

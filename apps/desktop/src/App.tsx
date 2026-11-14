@@ -153,7 +153,7 @@ export default function App() {
           <span className="brand-mark">
             <Icon path="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z" size={18} />
           </span>
-          Progetto AI
+          PersonAIly Hub
         </div>
         {AREAS.map((a) => (
           <button

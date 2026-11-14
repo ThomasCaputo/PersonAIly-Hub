@@ -1,11 +1,11 @@
 {
-  "name": "progetto-ai-vscode",
-  "displayName": "Progetto AI",
-  "description": "Chat e modifiche al codice con i modelli locali e cloud di Progetto AI.",
+  "name": "personaily-hub-vscode",
+  "displayName": "PersonAIly Hub",
+  "description": "Chat e modifiche al codice con i modelli locali e cloud di PersonAIly Hub.",
   "version": "0.1.0",
-  "publisher": "progettoai",
+  "publisher": "personaily",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -19,133 +19,133 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "progettoAi",
-          "title": "Progetto AI",
+          "id": "personailyHub",
+          "title": "PersonAIly Hub",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "progettoAi": [
+      "personailyHub": [
         {
           "type": "webview",
-          "id": "progettoAi.chat",
+          "id": "personailyHub.chat",
           "name": "Chat"
         }
       ]
     },
     "commands": [
       {
-        "command": "progettoAi.edit",
+        "command": "personailyHub.edit",
         "title": "Chiedi una modifica…",
-        "category": "Progetto AI"
+        "category": "PersonAIly Hub"
       },
       {
-        "command": "progettoAi.chooseModel",
+        "command": "personailyHub.chooseModel",
         "title": "Scegli il modello",
-        "category": "Progetto AI",
+        "category": "PersonAIly Hub",
         "icon": "$(chip)"
       },
       {
-        "command": "progettoAi.newChat",
+        "command": "personailyHub.newChat",
         "title": "Nuova conversazione",
-        "category": "Progetto AI",
+        "category": "PersonAIly Hub",
         "icon": "$(add)"
       },
       {
-        "command": "progettoAi.history",
+        "command": "personailyHub.history",
         "title": "Apri una conversazione",
-        "category": "Progetto AI",
+        "category": "PersonAIly Hub",
         "icon": "$(history)"
       },
       {
-        "command": "progettoAi.startAgent",
+        "command": "personailyHub.startAgent",
         "title": "Avvia un agente",
-        "category": "Progetto AI"
+        "category": "PersonAIly Hub"
       },
       {
-        "command": "progettoAi.acceptProposal",
+        "command": "personailyHub.acceptProposal",
         "title": "Accetta la modifica",
-        "category": "Progetto AI",
+        "category": "PersonAIly Hub",
         "icon": "$(check)"
       },
       {
-        "command": "progettoAi.rejectProposal",
+        "command": "personailyHub.rejectProposal",
         "title": "Rifiuta la modifica",
-        "category": "Progetto AI",
+        "category": "PersonAIly Hub",
         "icon": "$(close)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "progettoAi.newChat",
-          "when": "view == progettoAi.chat",
+          "command": "personailyHub.newChat",
+          "when": "view == personailyHub.chat",
           "group": "navigation@1"
         },
         {
-          "command": "progettoAi.history",
-          "when": "view == progettoAi.chat",
+          "command": "personailyHub.history",
+          "when": "view == personailyHub.chat",
           "group": "navigation@2"
         },
         {
-          "command": "progettoAi.chooseModel",
-          "when": "view == progettoAi.chat",
+          "command": "personailyHub.chooseModel",
+          "when": "view == personailyHub.chat",
           "group": "navigation@3"
         }
       ],
       "editor/title": [
         {
-          "command": "progettoAi.acceptProposal",
-          "when": "resourceScheme == progetto-ai-proposta",
+          "command": "personailyHub.acceptProposal",
+          "when": "resourceScheme == personaily-proposta",
           "group": "navigation@1"
         },
         {
-          "command": "progettoAi.rejectProposal",
-          "when": "resourceScheme == progetto-ai-proposta",
+          "command": "personailyHub.rejectProposal",
+          "when": "resourceScheme == personaily-proposta",
           "group": "navigation@2"
         }
       ],
       "editor/context": [
         {
-          "command": "progettoAi.edit",
+          "command": "personailyHub.edit",
           "when": "editorTextFocus",
           "group": "1_modification@9"
         }
       ],
       "commandPalette": [
         {
-          "command": "progettoAi.acceptProposal",
-          "when": "resourceScheme == progetto-ai-proposta"
+          "command": "personailyHub.acceptProposal",
+          "when": "resourceScheme == personaily-proposta"
         },
         {
-          "command": "progettoAi.rejectProposal",
-          "when": "resourceScheme == progetto-ai-proposta"
+          "command": "personailyHub.rejectProposal",
+          "when": "resourceScheme == personaily-proposta"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "progettoAi.edit",
+        "command": "personailyHub.edit",
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i",
         "when": "editorTextFocus"
       }
     ],
     "configuration": {
-      "title": "Progetto AI",
+      "title": "PersonAIly Hub",
       "properties": {
-        "progettoAi.serverPath": {
+        "personailyHub.serverPath": {
           "type": "string",
           "default": "",
           "markdownDescription": "Percorso di `app-server.exe`, il nucleo senza interfaccia. Serve solo quando l'app desktop è chiusa: l'estensione lo avvia da sé."
         },
-        "progettoAi.dataDir": {
+        "personailyHub.dataDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.progettoai.desktop`)."
+          "markdownDescription": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.personaily.hub`)."
         },
-        "progettoAi.maxContextChars": {
+        "personailyHub.maxContextChars": {
           "type": "number",
           "default": 60000,
           "minimum": 1000,
@@ -158,7 +158,7 @@
     "build": "tsc -p .",
     "watch": "tsc -p . --watch",
     "test": "tsc -p . && node --test test/",
-    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license -o progetto-ai.vsix"
+    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license -o personaily-hub.vsix"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

@@ -32,7 +32,7 @@ jobs:
         run: npm run build:ui
 
       - name: Estensione VS Code (TypeScript + prove)
-        run: npm test -w progetto-ai-vscode
+        run: npm test -w personaily-hub-vscode
 
       - name: Formattazione
         run: cargo fmt --all --check

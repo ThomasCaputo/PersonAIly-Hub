@@ -1,6 +1,6 @@
-# Progetto AI per VS Code
+# PersonAIly Hub per VS Code
 
-Usa da VS Code i modelli di Progetto AI, locali (`.gguf`) e cloud.
+Usa da VS Code i modelli di PersonAIly Hub, locali (`.gguf`) e cloud.
 
 - **Pannello chat** nella barra laterale (icona a fumetto). Le conversazioni sono quelle
   dell'app: le ritrovi anche nella sua pagina Chat.
@@ -13,18 +13,18 @@ Usa da VS Code i modelli di Progetto AI, locali (`.gguf`) e cloud.
   alto nel diff. Nulla cambia nel file finché non accetti.
 - **Modello**: si sceglie dalla barra di stato in basso a destra. Un modello locale non
   ancora caricato viene caricato con i parametri salvati nell'app.
-- **Agenti**: *Progetto AI: Avvia un agente* fa partire un agente dell'app su un compito;
+- **Agenti**: *PersonAIly Hub: Avvia un agente* fa partire un agente dell'app su un compito;
   lo si segue (e si confermano le sue azioni) nella pagina Agenti dell'app.
 
 ## Come si collega
 
 L'estensione non contiene modelli né logica propria: parla con il nucleo dell'app tramite
 l'API locale su `127.0.0.1`, protetta da un token. Porta e token sono nel file `core.lock`
-della cartella dati dell'app (`%APPDATA%\dev.progettoai.desktop`).
+della cartella dati dell'app (`%APPDATA%\dev.personaily.hub`).
 
 - **App aperta**: l'estensione usa il nucleo dell'app.
 - **App chiusa**: l'estensione avvia `app-server.exe`, il nucleo senza interfaccia. Va
-  indicato il suo percorso nell'impostazione `progettoAi.serverPath`. Si chiude da solo
+  indicato il suo percorso nell'impostazione `personailyHub.serverPath`. Si chiude da solo
   dopo 30 minuti senza richieste, o quando si chiude la finestra di VS Code che l'ha avviato.
   Se nel frattempo apri l'app, prende lei il suo posto e l'estensione si ricollega da sola.
 
@@ -32,17 +32,17 @@ della cartella dati dell'app (`%APPDATA%\dev.progettoai.desktop`).
 
 | Impostazione | Significato |
 |---|---|
-| `progettoAi.serverPath` | Percorso di `app-server.exe` (serve solo ad app chiusa) |
-| `progettoAi.dataDir` | Cartella dati dell'app, se non è quella predefinita |
-| `progettoAi.maxContextChars` | Caratteri massimi del file inviati come contesto (60 000) |
+| `personailyHub.serverPath` | Percorso di `app-server.exe` (serve solo ad app chiusa) |
+| `personailyHub.dataDir` | Cartella dati dell'app, se non è quella predefinita |
+| `personailyHub.maxContextChars` | Caratteri massimi del file inviati come contesto (60 000) |
 
 ## Sviluppo
 
 ```
-npm run build -w progetto-ai-vscode     # compila in out/
-npm test -w progetto-ai-vscode          # prove senza VS Code
-npm run package -w progetto-ai-vscode   # crea progetto-ai.vsix
+npm run build -w personaily-hub-vscode     # compila in out/
+npm test -w personaily-hub-vscode          # prove senza VS Code
+npm run package -w personaily-hub-vscode   # crea personaily-hub.vsix
 ```
 
 Per provarla senza installarla: apri la cartella `extensions/vscode` in VS Code e premi F5.
-Per installarla: `code --install-extension progetto-ai.vsix`.
+Per installarla: `code --install-extension personaily-hub.vsix`.

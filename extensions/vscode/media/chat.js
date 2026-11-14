@@ -1,4 +1,4 @@
-// Pannello chat di Progetto AI. Parla con l'estensione tramite postMessage.
+// Pannello chat di PersonAIly Hub. Parla con l'estensione tramite postMessage.
 // @ts-check
 (function () {
   // @ts-ignore: fornita da VS Code ai pannelli web

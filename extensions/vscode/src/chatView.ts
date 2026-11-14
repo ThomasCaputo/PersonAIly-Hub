@@ -9,7 +9,7 @@ import { currentEditor, editorContext, type EditorContext } from "./editor";
 import type { ModelChoice } from "./models";
 import type { Proposals } from "./proposals";
 
-const CONVERSATION_KEY = "progettoAi.conversationId";
+const CONVERSATION_KEY = "personailyHub.conversationId";
 
 /** Un messaggio dell'archivio, come lo restituisce l'API. */
 interface ApiMessage {

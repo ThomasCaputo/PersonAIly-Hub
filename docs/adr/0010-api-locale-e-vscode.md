@@ -92,7 +92,7 @@ chiudere da programma, e restava a chiedere una decisione già presa.
 - Qualsiasi programma compatibile con OpenAI può usare i modelli dell'app (indirizzo e
   token in Impostazioni → API locale).
 - Ad app chiusa l'estensione ha bisogno del percorso di `app-server.exe`
-  (`progettoAi.serverPath`): l'installer della Tappa 6 dovrà installarlo e l'estensione
+  (`personailyHub.serverPath`): l'installer della Tappa 6 dovrà installarlo e l'estensione
   trovarlo da sola.
 - Le conferme degli agenti avviati da VS Code si danno nella pagina Agenti dell'app: con
   l'app chiusa un agente che chiede conferma resta in attesa. Aprire l'app chiude

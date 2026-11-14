@@ -1,4 +1,4 @@
-// Collegamento al nucleo di Progetto AI tramite l'API locale.
+// Collegamento al nucleo di PersonAIly Hub tramite l'API locale.
 // Non usa `vscode`: si può provare con Node da solo (vedi test/).
 
 import { spawn } from "node:child_process";
@@ -25,7 +25,7 @@ export class CoreError extends Error {
 }
 
 /** Deve restare uguale a `APP_IDENTIFIER` in `crates/core/src/instance.rs`. */
-export const APP_IDENTIFIER = "dev.progettoai.desktop";
+export const APP_IDENTIFIER = "dev.personaily.hub";
 
 /** La cartella dati dell'app, la stessa usata dal nucleo. */
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env, platform = process.platform): string {
@@ -121,8 +121,8 @@ export class CoreClient {
     const serverPath = this.options.serverPath().trim();
     if (!serverPath) {
       throw new CoreError(
-        "Il nucleo di Progetto AI non è attivo. Apri l'app desktop, oppure indica nell'impostazione " +
-          "“progettoAi.serverPath” il percorso di app-server.exe per avviarlo senza app.",
+        "Il nucleo di PersonAIly Hub non è attivo. Apri l'app desktop, oppure indica nell'impostazione " +
+          "“personailyHub.serverPath” il percorso di app-server.exe per avviarlo senza app.",
         0,
       );
     }
