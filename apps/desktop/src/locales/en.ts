@@ -228,8 +228,6 @@ export const EN: Record<string, string> = {
   "Scegli una cartella da concedere ai modelli": "Choose a folder to grant to the models",
   "Lingua": "Language",
   "Lingua dell'interfaccia": "Interface language",
-  "I modelli rispondono nella lingua in cui scrivi. Alcuni messaggi di errore meno comuni restano in italiano.":
-    "Models reply in the language you write in. Some less common error messages stay in Italian.",
   "Cartelle concesse ai modelli": "Folders granted to models",
   "I modelli possono leggere, creare e modificare file solo qui dentro, sottocartelle comprese. Ogni modifica chiede la tua conferma, salvo che tu scelga altrimenti.":
     "Models can read, create and edit files only in here, subfolders included. Every change asks for your approval unless you choose otherwise.",
@@ -269,7 +267,6 @@ export const EN: Record<string, string> = {
   "per GPU AMD e Intel (Vulkan)": "for AMD and Intel GPUs (Vulkan)",
   "solo processore": "CPU only",
   "Motore": "Engine",
-  "llama.cpp installato: {version}": "llama.cpp installed: {version}",
   "Per eseguire i modelli locali serve {engine}, che non è ancora installato.":
     "Running local models requires {engine}, which is not installed yet.",
   "Versione {build} {variant} — download di {size} da github.com/ggml-org/llama.cpp":
@@ -288,8 +285,6 @@ export const EN: Record<string, string> = {
   "Nessun modello GGUF trovato.": "No GGUF models found.",
   "{n} download": "{n} downloads",
   "Lettura dei file…": "Reading files…",
-  "Nessun modello scaricabile: questo repository contiene solo modelli divisi in più file, non ancora supportati.":
-    "No downloadable models: this repository only contains models split into several files, not supported yet.",
   "Scarica": "Download",
   "Download di {file}: {percent}% ({done} di {total})": "Downloading {file}: {percent}% ({done} of {total})",
   "{file} scaricato. Hugging Face non ne pubblica l'impronta: è stata controllata solo la dimensione, quindi scaricalo solo da autori di cui ti fidi.":
@@ -412,4 +407,53 @@ export const EN: Record<string, string> = {
   "Consenti sempre in questa sessione": "Always allow in this session",
   "Consenti sempre in questa conversazione": "Always allow in this conversation",
   "Nega": "Deny",
+
+  // ── Aspetto e chiusura della finestra ──
+  "Come il sistema": "Same as system",
+  "Chiaro": "Light",
+  "Scuro": "Dark",
+  "Aspetto": "Appearance",
+  "Tema": "Theme",
+  "I modelli rispondono nella lingua in cui scrivi; quando non si capisce (per esempio un messaggio fatto solo di codice), in quella scelta qui.":
+    "Models reply in the language you write in; when that is unclear (for example a message made only of code), in the one chosen here.",
+  "Chiusura della finestra": "Closing the window",
+  "Resta attiva nell'area di notifica": "Keep running in the notification area",
+  "Chiudendo la finestra l'interfaccia si chiude e libera la sua memoria, ma il modello caricato, gli agenti al lavoro e l'estensione VS Code continuano. Riapri l'app con un clic sull'icona vicino all'orologio; per chiudere tutto scegli Esci dal suo menu.":
+    "Closing the window closes the interface and frees its memory, but the loaded model, working agents and the VS Code extension keep going. Reopen the app by clicking the icon near the clock; to close everything choose Quit from its menu.",
+
+  // ── Motore e memoria ──
+  "In uso": "In use",
+  "Usa questa": "Use this one",
+  "La variante scelta vale dal prossimo caricamento di un modello.": "The chosen variant applies from the next model load.",
+  "Variante da installare": "Variant to install",
+  "Installa un'altra variante": "Install another variant",
+  "consigliata per questo PC": "recommended for this PC",
+  "installata": "installed",
+  "Reinstalla": "Reinstall",
+  "Scarica il modello dalla memoria": "Unload the model from memory",
+  "Mai da solo": "Never automatically",
+  "Dopo {n} minuti senza richieste": "After {n} minutes without requests",
+  "Libera VRAM e RAM quando il modello non serve, anche con la finestra chiusa. Lo ricarichi dalla scheda del modello.":
+    "Frees VRAM and RAM when the model is not needed, even with the window closed. Reload it from the model's card.",
+  "diviso in {n} file": "split into {n} files",
+  "legge le immagini": "reads images",
+  "Lettura delle immagini": "Image input",
+  "Carica anche il componente visivo {file} ({size} GB in più).":
+    "Also loads the vision component {file} ({size} GB more).",
+
+  // ── Download ──
+  "Ogni repository si salva in una sua sottocartella (autore/nome), così i componenti visivi restano accanto al loro modello.":
+    "Each repository is saved in its own subfolder (author/name), so vision components stay next to their model.",
+  "Nessun file GGUF completo in questo repository.": "No complete GGUF file in this repository.",
+  "I componenti visivi (mmproj) fanno leggere le immagini ai modelli dello stesso repository: scaricane uno insieme al modello.":
+    "Vision components (mmproj) let the models of the same repository read images: download one along with the model.",
+  "Componente visivo": "Vision component",
+  "Togli dall'elenco": "Remove from the list",
+
+  // ── Modifica ed esportazione delle conversazioni ──
+  "Esporta la conversazione": "Export the conversation",
+  "Salva la conversazione come file Markdown": "Save the conversation as a Markdown file",
+  "Modifica il messaggio": "Edit the message",
+  "La risposta e i messaggi che seguono verranno sostituiti.": "The reply and the messages after it will be replaced.",
+  "Conversazione salvata in {path}": "Conversation saved to {path}",
 };

@@ -58,6 +58,57 @@ export const CORE_EN: Record<string, string> = {
   "Un'installazione è già in corso.": "An installation is already in progress.",
   "Si possono leggere solo pagine http:// o https://.": "Only http:// or https:// pages can be read.",
   "Indirizzo non valido.": "Invalid address.",
+
+  // Errori meno frequenti
+  "L'API locale non è attiva.": "The local API is not running.",
+  "non è un file GGUF": "not a GGUF file",
+  "Il file di blocco del nucleo non si riesce a creare.": "The core lock file cannot be created.",
+  "Questa versione di llama.cpp non è installata.": "This version of llama.cpp is not installed.",
+  "Questa versione di llama.cpp è in uso: scarica prima il modello.":
+    "This version of llama.cpp is in use: unload the model first.",
+  "Un'installazione è in corso: riprova quando finisce.": "An installation is in progress: try again when it finishes.",
+  "La cartella di destinazione non è tra quelle della libreria.":
+    "The destination folder is not one of the library folders.",
+  "Questo file si sta già scaricando.": "This file is already downloading.",
+  "Si può modificare solo un tuo messaggio.": "Only your own messages can be edited.",
+  "Il messaggio è vuoto.": "The message is empty.",
+  "Questa conversazione sta già rispondendo: aspetta o interrompi la risposta.":
+    "This conversation is already replying: wait or stop the reply.",
+  "Il modello locale caricato non legge le immagini: caricalo con il suo componente visivo (mmproj), scegli un modello cloud che le supporti, oppure togli l'immagine.":
+    "The loaded local model cannot read images: load it with its vision component (mmproj), choose a cloud model that supports them, or remove the image.",
+  "Un server MCP di questo agente è stato eliminato: togli il segno dall'agente o configura di nuovo il server nelle Impostazioni.":
+    "An MCP server of this agent was deleted: untick it in the agent or set the server up again in Settings.",
+  "Interrotto prima del risultato.": "Interrupted before the result.",
+  "il caricamento del modello ha superato il tempo massimo": "loading the model took longer than the time limit",
+  "Ogni variabile d'ambiente ha bisogno di un nome valido.": "Every environment variable needs a valid name.",
+  "Metodo non supportato": "Method not supported",
+  "[Immagine restituita dal server: non mostrata al modello]": "[Image returned by the server: not shown to the model]",
+  "[Audio restituito dal server: non mostrato al modello]": "[Audio returned by the server: not shown to the model]",
+  "L'indirizzo deve iniziare con https:// (http:// è ammesso solo per questo computer): altrimenti la chiave API viaggerebbe in chiaro.":
+    "The address must start with https:// (http:// is allowed only for this computer): otherwise the API key would travel unencrypted.",
+  "Messaggio non trovato: forse è stato eliminato.": "Message not found: it may have been deleted.",
+  "il PDF ha una struttura che non so interpretare": "the PDF has a structure that cannot be read",
+  "Percorso senza nome di file.": "Path without a file name.",
+  "old_text è vuoto: indica il testo da sostituire.": "old_text is empty: give the text to replace.",
+  "old_text non compare nel file: rileggilo e copia il testo esatto.":
+    "old_text does not appear in the file: read it again and copy the exact text.",
+  "Il comando è stato terminato.": "The command was terminated.",
+  "Il nucleo è quello dell'app desktop: si chiude chiudendo l'app.":
+    "The core belongs to the desktop app: it closes when the app is closed.",
+  "Il modello non è nella libreria: aggiungi la sua cartella nella pagina Modelli dell'app.":
+    "The model is not in the library: add its folder on the app's Models page.",
+  "Le pagine web non possono usare l'API locale.": "Web pages cannot use the local API.",
+  "Indirizzo non ammesso.": "Address not allowed.",
+  "Un'altra copia dell'app è già aperta: l'API locale è la sua.":
+    "Another copy of the app is already open: the local API is its own.",
+  "Le immagini vanno inviate come data URL in base64, non come indirizzo web.":
+    "Images must be sent as base64 data URLs, not as web addresses.",
+  "Immagine non valida: serve un data URL in base64.": "Invalid image: a base64 data URL is needed.",
+  "Token mancante o sbagliato: lo trovi nell'app, in Impostazioni → API locale.":
+    "Missing or wrong token: you find it in the app, under Settings → Local API.",
+  "Indirizzo sconosciuto.": "Unknown address.",
+  "non riceve più messaggi.": "no longer receives messages.",
+  "ha chiuso il collegamento.": "closed the connection.",
 };
 
 /** Testi con parti variabili: espressione → sostituzione, provate in ordine. */
@@ -97,4 +148,93 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Il sito ha risposto con un errore \((.*)\)\.$/s, "The site replied with an error ($1)."],
   [/^Lingua non disponibile: (.*)$/s, "Language not available: $1"],
   [/^Si aprono solo indirizzi web: (.*) non è ammesso\.$/s, "Only web addresses can be opened: $1 is not allowed."],
+
+  // Errori meno frequenti
+  [/^Manca la chiave API di (.*): inseriscila nella pagina Modelli\.$/s, "The API key for $1 is missing: enter it on the Models page."],
+  [/^(.*) è un'immagine troppo grande \(massimo 5 MB\)\.$/s, "$1 is an image that is too large (5 MB at most)."],
+  [
+    /^(.*) non contiene testo leggibile \(un PDF fatto di sole immagini\?\)\.$/s,
+    "$1 contains no readable text (a PDF made only of images?).",
+  ],
+  [
+    /^Il servizio ha risposto con un errore \((.*?)\): (.*)\. Controlla la chiave API\.$/s,
+    "The service replied with an error ($1): $2. Check the API key.",
+  ],
+  [
+    /^Il servizio ha risposto con un errore \((.*?)\): (.*)\. Troppe richieste o credito esaurito: riprova più tardi\.$/s,
+    "The service replied with an error ($1): $2. Too many requests or credit used up: try again later.",
+  ],
+  [/^Il servizio ha risposto con un errore \((.*?)\): (.*)\.$/s, "The service replied with an error ($1): $2."],
+  [/^Il servizio ha interrotto la risposta: (.*)$/s, "The service interrupted the reply: $1"],
+  [/^nessuna risposta a «(.*?)» entro (\d+) secondi\.$/s, "no reply to “$1” within $2 seconds."],
+  [/^dati non validi: (.*)$/s, "invalid data: $1"],
+  [/^versione GGUF (.*) non supportata$/s, "GGUF version $1 not supported"],
+  [/^(.*) è già presente nella cartella dei modelli\.$/s, "$1 is already in the models folder."],
+  [
+    /^(.*): il file scaricato non corrisponde a quello pubblicato \(download rovinato\)\. È stato eliminato: riprova\.$/s,
+    "$1: the downloaded file does not match the published one (damaged download). It was deleted: try again.",
+  ],
+  [/^generatore casuale di sistema: (.*)$/s, "system random generator: $1"],
+  [/^portachiavi di sistema: (.*)$/s, "system keyring: $1"],
+  [/^file del modello non leggibile: (.*)$/s, "model file not readable: $T1"],
+  [/^il modello è diviso in (\d+) file e ne mancano (\d+)$/s, "the model is split into $1 files and $2 are missing"],
+  [
+    /^Il modello non entra nella (VRAM|RAM): servono circa (.*) GB, liberi (.*) GB\.$/s,
+    "The model does not fit in $1: it needs about $2 GB, $3 GB free.",
+  ],
+  [/^(.*) — indirizzo scritto dal modello, non da te né da una ricerca: controlla che non contenga dati dei tuoi file\.$/s,
+    "$T1 — an address written by the model, not by you or a search: check that it contains none of your files' data."],
+  [/^\n?\[Immagine allegata che questo modello non può vedere: (.*)\]$/s, "[Attached image this model cannot see: $1]"],
+  [/^archivio non valido: (.*)$/s, "invalid archive: $1"],
+  [/^estrazione non riuscita: (.*)$/s, "extraction failed: $1"],
+  [/^(.*): il file scaricato è più grande del previsto$/s, "$1: the downloaded file is larger than expected"],
+  [
+    /^(.*): il file scaricato non corrisponde a quello atteso \(download incompleto o alterato\)$/s,
+    "$1: the downloaded file does not match the expected one (incomplete or altered download)",
+  ],
+  [/^llama\.cpp non è installato: manca (.*) in (.*)$/s, "llama.cpp is not installed: $1 is missing in $2"],
+  [/^llama-server si è chiuso durante il caricamento \((.*?)\)\.(.*)$/s, "llama-server closed while loading ($1).$2"],
+  [/^Impossibile avviare il server MCP «(.*?)» \((.*?)\): (.*)$/s, "Cannot start the MCP server “$1” ($2): $3"],
+  // Server MCP «nome»: motivo[ Il server si è chiuso.][a capo, ultime righe di errore del server]
+  [/^Server MCP «(.*?)»: (.*?) Il server si è chiuso\.(\n.*)?$/s, "MCP server “$1”: $T2 The server has closed.$3"],
+  [/^Server MCP «(.*?)»: (.*?)(\n.*)?$/s, "MCP server “$1”: $T2$3"],
+  [/^Strumento del server MCP «(.*)»\.$/s, "Tool of the MCP server “$1”."],
+  [/^Lo strumento "(.*)" non è disponibile\.$/s, 'The tool "$1" is not available.'],
+  [
+    /^Il nome del preset è troppo lungo \(massimo (\d+) caratteri\)\.$/s,
+    "The preset name is too long ($1 characters at most).",
+  ],
+  [/^Contenuto di (.*):$/s, "Contents of $1:"],
+  [/^… e altri (\d+) elementi non mostrati\.$/s, "… and $1 more items not shown."],
+  [/^(.*) è troppo grande per essere letto \((.*) MB\)\.$/s, "$1 is too large to read ($2 MB)."],
+  [/^Non riesco a leggere il testo di (.*?): (.*)$/s, "Cannot read the text of $1: $T2"],
+  [/^(.*) non è un file di testo \(o non è in UTF-8\)\.$/s, "$1 is not a text file (or is not UTF-8)."],
+  [/^(.*) è una cartella, non un file\.$/s, "$1 is a folder, not a file."],
+  [/^(.*) è troppo grande per essere modificato\.$/s, "$1 is too large to edit."],
+  [
+    /^old_text compare (\d+) volte nel file: aggiungi righe vicine per renderlo unico\.$/s,
+    "old_text appears $1 times in the file: add nearby lines to make it unique.",
+  ],
+  [/^(.*) non è una cartella esistente\.$/s, "$1 is not an existing folder."],
+  [
+    /^Il comando ha superato il tempo massimo di (\d+) secondi ed è stato terminato\.$/s,
+    "The command exceeded the time limit of $1 seconds and was terminated.",
+  ],
+  [/^Codice di uscita: (.*)$/s, "Exit code: $1"],
+  [/^La cartella (.*) non esiste\.$/s, "The folder $1 does not exist."],
+  [/^Impossibile avviare il comando: (.*)$/s, "Cannot start the command: $1"],
+  [/^Il motore di ricerca ha risposto con un errore \((.*)\)\.$/s, "The search engine replied with an error ($1)."],
+  [/^Nessun risultato per "(.*)"\.$/s, 'No results for "$1".'],
+  [/^Risultati per "(.*)":$/s, 'Results for "$1":'],
+  [/^La pagina non è testo \((.*)\): non posso leggerla\.$/s, "The page is not text ($1): it cannot be read."],
+  [
+    /^La pagina (.*) non contiene testo leggibile \(forse è costruita con JavaScript\)\.$/s,
+    "The page $1 contains no readable text (perhaps it is built with JavaScript).",
+  ],
+  [/^Testo di (.*):$/s, "Text of $1:"],
+  [/^impossibile aprire una porta per l'API locale: (.*)$/s, "cannot open a port for the local API: $1"],
+  [/^Un altro nucleo è già attivo \(processo (\d+), porta (\d+)\)\.$/s, "Another core is already running (process $1, port $2)."],
+  [/^Il nucleo senza interfaccia \(processo (\d+)\) non si è chiuso\.$/s, "The headless core (process $1) did not close."],
+  [/^Ruolo del messaggio sconosciuto: "(.*)"\.$/s, 'Unknown message role: "$1".'],
+  [/^Parte del messaggio non gestita: "(.*)"\.$/s, 'Unsupported message part: "$1".'],
 ];

@@ -1,5 +1,5 @@
-# Builds the Windows release: the setup.exe installer and a portable .exe,
-# collected in `release/` together with their SHA-256 checksums.
+# Builds the Windows release: the setup.exe installer, a portable .exe and the
+# VS Code extension (.vsix), collected in `release/` with their SHA-256 checksums.
 #
 # The binaries must not contain anything about the machine that built them.
 # Rust embeds source paths (used in panic messages), so every local prefix
@@ -32,8 +32,21 @@ Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
 npm run build
 if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
 
+npm run package -w personaily-hub-vscode
+if ($LASTEXITCODE -ne 0) { throw "VS Code extension packaging failed" }
+$vsix = Join-Path $root 'extensions/vscode/personaily-hub.vsix'
+$vsixVersion = (Get-Content extensions/vscode/package.json -Raw | ConvertFrom-Json).version
+# The .vsix is a zip: scan what is inside, not the compressed bytes.
+$vsixDir = Join-Path ([IO.Path]::GetTempPath()) "personaily-vsix-$PID"
+if (Test-Path $vsixDir) { Remove-Item -Recurse -Force $vsixDir }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($vsix, $vsixDir)
+
 $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
 $exe = Join-Path $root 'target/release/PersonAIly Hub.exe'
+# The headless core, installed next to the app for the VS Code extension.
+$server = Join-Path $root 'target/release/app-server.exe'
+if (-not (Test-Path $server)) { throw "app-server.exe not found in target/release" }
 $setup = Get-ChildItem (Join-Path $root 'target/release/bundle/nsis') -Filter "*_${version}_x64-setup.exe" | Select-Object -First 1
 if (-not $setup) { throw "setup.exe not found in target/release/bundle/nsis" }
 
@@ -48,8 +61,11 @@ function Find-Leaks([string]$path) {
             $utf16.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $n }
     }
 }
-$scanned = @($exe) + (Get-ChildItem apps/desktop/dist -Recurse -File | ForEach-Object FullName)
+$scanned = @($exe, $server) +
+    (Get-ChildItem apps/desktop/dist -Recurse -File | ForEach-Object FullName) +
+    (Get-ChildItem $vsixDir -Recurse -File | ForEach-Object FullName)
 $leaks = foreach ($f in $scanned) { foreach ($n in Find-Leaks $f) { "$f contains '$n'" } }
+Remove-Item -Recurse -Force $vsixDir
 if ($leaks) { $leaks; throw "machine-specific data found in the build" }
 Write-Host "Scan: no user name, profile path or computer name in $($scanned.Count) files."
 
@@ -58,7 +74,8 @@ if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory $out | Out-Null
 Copy-Item $setup.FullName (Join-Path $out "PersonAIly-Hub_${version}_x64-setup.exe")
 Copy-Item $exe (Join-Path $out "PersonAIly-Hub_${version}_x64-portable.exe")
-Get-ChildItem $out -Filter *.exe | ForEach-Object {
+Copy-Item $vsix (Join-Path $out "personaily-hub-vscode_${vsixVersion}.vsix")
+Get-ChildItem $out -Include *.exe, *.vsix -Recurse | ForEach-Object {
     "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 } | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
 

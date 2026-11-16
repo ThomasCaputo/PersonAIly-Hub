@@ -11,10 +11,14 @@ release/
 
 # Tauri
 apps/desktop/src-tauri/gen/
+# app-server copiato per l'installer (scripts/build-server.mjs)
+apps/desktop/src-tauri/binaries/
 
 # Estensione VS Code
 *.vsix
 extensions/vscode/out/
+extensions/vscode/LICENSE
+extensions/vscode/src/generated/
 .vscode-test/
 
 # Modelli e binari scaricati: mai nel repository

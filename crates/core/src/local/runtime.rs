@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tokio::process::{Child, Command};
 
+use super::install::Variant;
 use super::{LoadParams, build_args};
 use crate::error::{Error, Result};
 
@@ -22,7 +23,7 @@ const SERVER_EXE: &str = "llama-server.exe";
 const SERVER_EXE: &str = "llama-server";
 
 /// Il modello attualmente caricato.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadedModel {
     pub model_path: String,
@@ -30,6 +31,10 @@ pub struct LoadedModel {
     pub params: LoadParams,
     pub port: u16,
     pub pid: u32,
+    /// Cartella della versione di llama.cpp che lo esegue (`b12110-cuda`).
+    pub engine: String,
+    /// Caricato con il suo componente visivo (`mmproj`): legge le immagini.
+    pub vision: bool,
     /// Chiave casuale scelta a ogni avvio: senza, qualunque programma (o
     /// pagina web) sul computer potrebbe usare `llama-server` saltando le
     /// protezioni dell'API locale. Non esce mai dal nucleo.
@@ -42,25 +47,57 @@ pub fn bin_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("llama.cpp")
 }
 
-/// Cerca `llama-server` tra le versioni installate; se ce n'è più d'una
-/// prende l'ultima in ordine alfabetico (cioè la build più recente). Non
-/// serve il motore: si può chiedere anche mentre un modello si carica.
-pub fn find_server(data_dir: &Path) -> Result<PathBuf> {
-    let dir = bin_dir(data_dir);
-    let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
+/// Una versione di llama.cpp installata.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledEngine {
+    /// Nome della cartella, per esempio `b12110-cuda`.
+    pub dir_name: String,
+    /// `None` per una cartella dal nome inatteso (copiata a mano).
+    pub variant: Option<Variant>,
+    #[serde(skip)]
+    pub exe: PathBuf,
+}
+
+/// Le versioni installate, in ordine alfabetico (quindi per build).
+pub fn installed_engines(data_dir: &Path) -> Vec<InstalledEngine> {
+    let mut found: Vec<InstalledEngine> = std::fs::read_dir(bin_dir(data_dir))
         .into_iter()
         .flatten()
         .flatten()
-        .map(|entry| entry.path().join(SERVER_EXE))
-        .filter(|exe| exe.is_file())
+        .filter_map(|entry| {
+            let exe = entry.path().join(SERVER_EXE);
+            let dir_name = entry.file_name().to_string_lossy().into_owned();
+            // Le cartelle di lavoro dell'installazione (`.tmp`, `_download`) non contano.
+            (exe.is_file() && !dir_name.ends_with(".tmp")).then(|| InstalledEngine {
+                variant: Variant::from_dir_name(&dir_name),
+                dir_name,
+                exe,
+            })
+        })
         .collect();
-    found.sort();
-    found.pop().ok_or_else(|| {
-        Error::msg(format!(
-            "llama.cpp non è installato: manca {SERVER_EXE} in {}",
-            dir.display()
-        ))
-    })
+    found.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+    found
+}
+
+/// Sceglie `llama-server` tra le versioni installate: la build più recente
+/// della variante preferita; se quella non c'è, la più recente delle altre
+/// (CUDA, poi Vulkan, poi solo processore). Non serve il motore: si può
+/// chiedere anche mentre un modello si carica.
+pub fn find_server(data_dir: &Path, preferred: Option<Variant>) -> Result<InstalledEngine> {
+    let engines = installed_engines(data_dir);
+    let newest = |variant: Option<Variant>| engines.iter().rev().find(|e| e.variant == variant);
+    preferred
+        .and_then(|v| newest(Some(v)))
+        .or_else(|| Variant::ALL.into_iter().find_map(|v| newest(Some(v))))
+        .or_else(|| engines.last())
+        .cloned()
+        .ok_or_else(|| {
+            Error::msg(format!(
+                "llama.cpp non è installato: manca {SERVER_EXE} in {}",
+                bin_dir(data_dir).display()
+            ))
+        })
 }
 
 /// Gestisce il processo `llama-server`. Un solo modello alla volta.
@@ -92,12 +129,6 @@ impl LocalRuntime {
         self.data_dir.join("logs").join("llama-server.log")
     }
 
-    /// Cerca `llama-server` tra le versioni installate; se ce n'è più d'una
-    /// prende l'ultima in ordine alfabetico (cioè la build più recente).
-    pub fn find_server(&self) -> Result<PathBuf> {
-        find_server(&self.data_dir)
-    }
-
     /// Il modello caricato, se il suo processo è ancora vivo.
     pub fn loaded(&mut self) -> Option<LoadedModel> {
         if let Some((_, child)) = &mut self.current
@@ -109,16 +140,20 @@ impl LocalRuntime {
         self.current.as_ref().map(|(model, _)| model.clone())
     }
 
-    /// Carica un modello, scaricando prima quello eventualmente presente.
+    /// Carica un modello con la versione di llama.cpp indicata, scaricando
+    /// prima quello eventualmente presente. Con `mmproj` il modello legge
+    /// anche le immagini.
     pub async fn load(
         &mut self,
+        engine: &InstalledEngine,
         model_path: &str,
         model_name: &str,
         params: &LoadParams,
+        mmproj: Option<&str>,
     ) -> Result<LoadedModel> {
         self.unload().await;
 
-        let exe = self.find_server()?;
+        let exe = &engine.exe;
         let port = free_port()?;
         let api_key = crate::instance::new_token()?;
         let log_path = self.log_path();
@@ -127,8 +162,8 @@ impl LocalRuntime {
         }
         let log = File::create(&log_path)?;
 
-        let mut cmd = Command::new(&exe);
-        cmd.args(build_args(model_path, params, port))
+        let mut cmd = Command::new(exe);
+        cmd.args(build_args(model_path, params, port, mmproj))
             // Nell'ambiente e non tra gli argomenti: la riga di comando di un
             // processo si legge facilmente (Gestione attività, `wmic`).
             .env("LLAMA_API_KEY", &api_key)
@@ -155,6 +190,8 @@ impl LocalRuntime {
             params: params.clone(),
             port,
             pid,
+            engine: engine.dir_name.clone(),
+            vision: mmproj.is_some(),
             api_key,
         };
         self.current = Some((model.clone(), child));

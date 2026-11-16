@@ -34,7 +34,7 @@ pub enum Risk {
 }
 
 /// Livello di permesso di una conversazione.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionLevel {
     /// Chiede conferma per ogni modifica.
@@ -133,7 +133,7 @@ pub fn urls_in(text: &str) -> impl Iterator<Item = String> + '_ {
 pub const SEARCH_TOOL: &str = WEB_SEARCH;
 
 /// Strumenti e permessi di una conversazione.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ToolSettings {
     /// Accesso ai file delle cartelle concesse.
@@ -172,7 +172,7 @@ pub struct ToolDef {
 }
 
 /// Una richiesta del modello di usare uno strumento.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {
     pub id: String,

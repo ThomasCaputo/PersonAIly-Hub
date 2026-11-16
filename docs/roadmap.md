@@ -33,7 +33,8 @@ Rimandato (non blocca la Tappa 2):
       (fatto nella Tappa 2). Resta noto solo dopo la prima risposta.
 - [x] I file `.gguf` scaricati a metà comparivano in libreria come modelli normali: i
       download dell'app usano un file `.part` (fatto nella Tappa 2).
-- [ ] Scelta manuale della variante di llama.cpp (oggi: CUDA con GPU NVIDIA, altrimenti Vulkan).
+- [x] Scelta manuale della variante di llama.cpp (LO-9): fatto nella Tappa 6
+      ([ADR 0014](adr/0014-modelli-locali-varianti-visione-download.md)).
 
 **Fatto quando:** si chatta con un modello locale, cambiandone i parametri, e a modello
 caricato in VRAM la RAM usata resta entro la soglia fissata dalle misure.
@@ -59,8 +60,8 @@ Rimandato (non blocca la Tappa 3):
       (13-11-2026).
 - [ ] **Prova con chiave vera, Anthropic**: provato solo contro un servizio finto su
       questo computer.
-- [ ] Modelli GGUF divisi in più file (`-00001-of-00003`): non vengono proposti per il download.
-- [ ] Un solo download per volta.
+- [x] Modelli GGUF divisi in più file (`-00001-of-00003`) e più download insieme: fatto
+      nella Tappa 6 ([ADR 0014](adr/0014-modelli-locali-varianti-visione-download.md)).
 
 **Fatto quando:** nella stessa conversazione si passa da un modello locale a uno cloud.
 
@@ -79,7 +80,9 @@ Fatto ([ADR 0007](adr/0007-strumenti-e-permessi.md)):
 Rimandato:
 
 - [ ] Strumenti con Anthropic provati solo dai test automatici (manca la chiave vera, come in Tappa 2).
-- [ ] Immagini con i modelli locali (richiede i file `mmproj` di llama.cpp).
+- [x] Immagini con i modelli locali tramite i file `mmproj`: fatto nella Tappa 6
+      ([ADR 0014](adr/0014-modelli-locali-varianti-visione-download.md)). Provato solo
+      dai test automatici: manca una prova con un modello visivo vero.
 - [x] Registro delle azioni consultabile a parte (SI-6): fatto nella Tappa 4.
 
 **Fatto quando:** il modello cerca sul web, legge un file concesso e ne crea uno nuovo
@@ -132,11 +135,13 @@ Fatto ([ADR 0010](adr/0010-api-locale-e-vscode.md)):
 
 Rimandato (non blocca la Tappa 6):
 
-- [ ] Percorso di `app-server.exe` da indicare a mano nell'estensione (ad app chiusa):
-      l'installer dovrà fornirlo.
-- [ ] Client TypeScript generato dai tipi Rust (`packages/api-client`): oggi i tipi usati
-      dall'estensione sono scritti a mano.
-- [ ] Le conferme degli agenti avviati da VS Code si danno solo nell'app.
+- [x] Percorso di `app-server.exe`: l'installer lo mette accanto all'app, l'app annota
+      dove si trova (`install.json`) e l'estensione lo trova da sola (Tappa 6). L'exe
+      portatile non lo contiene.
+- [x] Tipi TypeScript dell'API generati dai tipi Rust con ts-rs (`packages/api-client`),
+      usati dall'estensione; `cargo test` controlla che siano aggiornati (Tappa 6).
+- [x] Le conferme degli agenti avviati da VS Code arrivano come notifiche in VS Code;
+      comando "Segui gli agenti al lavoro" (Tappa 6).
 - [ ] API ed estensione con modelli cloud provate solo dai test automatici (manca la chiave vera).
 
 **Fatto quando:** da VS Code si chiede una modifica al file aperto e la si accetta come diff.
@@ -147,9 +152,11 @@ Rimandato (non blocca la Tappa 6):
       `scripts/release.ps1` toglie i percorsi locali dagli eseguibili e controlla che non
       restino dati della macchina; `.github/workflows/release.yml` li costruisce su GitHub
       a ogni tag `v*` e li allega a una release in bozza.
-- Aggiornamento automatico (GE-7), temi (GE-6), firma degli eseguibili.
+- [x] Tema chiaro e scuro (GE-6): Impostazioni → Aspetto, di base come il sistema.
+- Aggiornamento automatico (GE-7), firma degli eseguibili.
 - [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
-      ([ADR 0012](adr/0012-lingue-interfaccia.md)). Manca l'estensione VS Code.
+      ([ADR 0012](adr/0012-lingue-interfaccia.md)). L'estensione VS Code segue la lingua di
+      VS Code; i modelli rispondono nella lingua dell'utente (o in quella scelta/di sistema).
 - Guida per l'utente.
 - [x] Nome definitivo (**PersonAIly Hub**) e licenza (**Apache-2.0**).
 - Prima versione pubblica per Windows.
@@ -179,11 +186,23 @@ Revisione di sicurezza e prestazioni (14-11-2026, [ADR 0011](adr/0011-revisione-
 
 Rimandato:
 
-- [ ] Estensione VS Code in inglese.
-- [ ] Messaggi d'errore rari del nucleo in inglese (oggi tradotti solo quelli frequenti,
-      in `apps/desktop/src/locales/core-en.ts`).
+- [x] Estensione VS Code in inglese (testi, comandi e impostazioni).
+- [x] Messaggi d'errore rari del nucleo in inglese, nell'app e nell'estensione (stesso
+      dizionario `core-en.ts`). Restano in italiano i testi letti solo dai modelli.
 - [ ] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
 - [ ] Prova completa del clic su un collegamento dentro la risposta di un modello.
+
+Richieste del 16-11-2026:
+
+- [x] Nucleo staccato dall'interfaccia: chiudendo la finestra l'app resta nell'area di
+      notifica con modello, agenti e API locale; la finestra si ricrea con un clic
+      sull'icona o riaprendo l'app ([ADR 0013](adr/0013-nucleo-in-area-di-notifica.md)).
+- [x] Scaricamento del modello dopo un periodo di inattività (LO-8), anche ad app chiusa
+      nell'area di notifica e in `app-server`.
+- [x] Modificare un proprio messaggio e rigenerare la risposta (CH-8); esportare la
+      conversazione in Markdown (CH-9).
+- [x] Risposte dei modelli nella lingua dell'utente; se non si capisce, in quella scelta
+      per l'interfaccia o del sistema.
 
 ## Dopo
 
@@ -192,12 +211,10 @@ codice in linea (VS-6), agenti che delegano ad altri agenti (AG-8).
 
 Idee emerse dalla revisione del 14-11-2026, da valutare:
 
-- **Immagini con i modelli locali** tramite i file `mmproj` di llama.cpp (già rimandato in Tappa 3).
-- **Più download insieme** e **GGUF divisi in più file** (già rimandati in Tappa 2).
 - **Documenti personali consultabili (RAG locale):** indicizzare una cartella concessa con
   un modello di embedding GGUF e cercare nei propri documenti.
-- **Rigenerare una risposta e modificare un messaggio**, con rami della conversazione;
-  esportazione delle chat in Markdown o JSON.
+- **Rami della conversazione** (oggi modificare un messaggio sostituisce ciò che segue);
+  esportazione delle chat anche in JSON.
 - **Confronto tra modelli:** lo stesso messaggio a due modelli affiancati (locale e cloud).
 - **MCP via HTTP/SSE** e risorse MCP (già rimandati in Tappa 4), più un piccolo catalogo
   di server noti.

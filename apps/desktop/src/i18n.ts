@@ -77,10 +77,25 @@ export const msg = (text: string) => text;
  */
 export function tc(text: string): string {
   if (current !== "en") return text;
+  return translateCore(text, 0);
+}
+
+/**
+ * Nelle sostituzioni `$1` è la parte variabile così com'è, `$T1` la stessa
+ * parte tradotta a sua volta: serve agli errori che ne avvolgono un altro
+ * ("file del modello non leggibile: <motivo>").
+ */
+function translateCore(text: string, depth: number): string {
   const exact = CORE_EN[text.trim()];
   if (exact) return exact;
   for (const [pattern, replacement] of CORE_PATTERNS_EN) {
-    if (pattern.test(text)) return text.replace(pattern, replacement);
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const filled = replacement.replace(/\$(T?)(\d)/g, (_, translated: string, n: string) => {
+      const part = match[Number(n)] ?? "";
+      return translated && depth < 3 ? translateCore(part, depth + 1) : part;
+    });
+    return text.slice(0, match.index) + filled + text.slice(match.index + match[0].length);
   }
   return text;
 }

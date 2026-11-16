@@ -1,25 +1,44 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type SecuritySettings, type ToolSettings } from "../api";
+import { api, type Preferences, type SecuritySettings, type Theme, type ToolSettings } from "../api";
 import { ApiSection } from "../components/ApiSection";
 import { McpSection } from "../components/McpSection";
 import { ToolsBar } from "../components/ToolsBar";
-import { LANGUAGES, t, tc, type Lang } from "../i18n";
+import { LANGUAGES, msg, t, tc, type Lang } from "../i18n";
 import { useLanguage } from "../LanguageProvider";
+import { applyTheme } from "../theme";
 
-/** Lingua, cartelle concesse, strumenti predefiniti, protezioni, MCP e API locale. */
+const THEMES: { id: Theme; label: string }[] = [
+  { id: "system", label: msg("Come il sistema") },
+  { id: "light", label: msg("Chiaro") },
+  { id: "dark", label: msg("Scuro") },
+];
+
+/** Lingua, aspetto, cartelle concesse, strumenti predefiniti, protezioni, MCP e API locale. */
 export function SettingsArea() {
   const { language, chooseLanguage } = useLanguage();
   const [folders, setFolders] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<ToolSettings | null>(null);
   const [security, setSecurity] = useState<SecuritySettings | null>(null);
+  const [preferences, setPreferences] = useState<Preferences | null>(null);
+  const [tray, setTray] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.grantedFolders().then(setFolders).catch((e) => setError(String(e)));
     api.toolDefaults().then(setDefaults).catch((e) => setError(String(e)));
     api.securitySettings().then(setSecurity).catch((e) => setError(String(e)));
+    api.preferences().then(setPreferences).catch((e) => setError(String(e)));
+    api.runsInTray().then(setTray).catch(() => {});
   }, []);
+
+  const savePreferences = async (change: Partial<Preferences>) => {
+    if (!preferences) return;
+    const next = { ...preferences, ...change };
+    setPreferences(next);
+    if (change.theme) applyTheme(change.theme);
+    await api.setPreferences(next).catch((e) => setError(String(e)));
+  };
 
   const saveFolders = async (next: string[]) => {
     setFolders(next);
@@ -60,11 +79,53 @@ export function SettingsArea() {
           </select>
           <p className="dim note">
             {t(
-              "I modelli rispondono nella lingua in cui scrivi. Alcuni messaggi di errore meno comuni restano in italiano.",
+              "I modelli rispondono nella lingua in cui scrivi; quando non si capisce (per esempio un messaggio fatto solo di codice), in quella scelta qui.",
             )}
           </p>
         </div>
       </section>
+
+      {preferences && (
+        <section className="section">
+          <h2>{t("Aspetto")}</h2>
+          <div className="field">
+            <label>{t("Tema")}</label>
+            <div className="segmented">
+              {THEMES.map((theme) => (
+                <button
+                  key={theme.id}
+                  className={preferences.theme === theme.id ? "active" : ""}
+                  aria-pressed={preferences.theme === theme.id}
+                  onClick={() => savePreferences({ theme: theme.id })}
+                >
+                  {t(theme.label)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {preferences && tray && (
+        <section className="section">
+          <h2>{t("Chiusura della finestra")}</h2>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={preferences.keepRunning}
+              onChange={(e) => savePreferences({ keepRunning: e.target.checked })}
+            />
+            <span>
+              <strong>{t("Resta attiva nell'area di notifica")}</strong>
+              <span className="dim note block">
+                {t(
+                  "Chiudendo la finestra l'interfaccia si chiude e libera la sua memoria, ma il modello caricato, gli agenti al lavoro e l'estensione VS Code continuano. Riapri l'app con un clic sull'icona vicino all'orologio; per chiudere tutto scegli Esci dal suo menu.",
+                )}
+              </span>
+            </span>
+          </label>
+        </section>
+      )}
 
       <section className="section">
         <div className="section-head">

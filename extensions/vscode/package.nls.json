@@ -1,0 +1,14 @@
+{
+  "description": "Chat and code edits with PersonAIly Hub's local and cloud models.",
+  "command.edit": "Ask for a change…",
+  "command.chooseModel": "Choose the model",
+  "command.newChat": "New conversation",
+  "command.history": "Open a conversation",
+  "command.startAgent": "Start an agent",
+  "command.sessions": "Follow working agents",
+  "command.acceptProposal": "Accept the change",
+  "command.rejectProposal": "Reject the change",
+  "config.serverPath": "Path of `app-server.exe`, the headless core the extension starts when the desktop app is closed. Empty: the one installed with the app, which the extension finds by itself.",
+  "config.dataDir": "The app's data folder. Empty: the default one (`%APPDATA%\\dev.personaily.hub`).",
+  "config.maxContextChars": "Maximum characters of the open file sent as context. For longer files only the selection is sent."
+}

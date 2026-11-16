@@ -21,6 +21,8 @@ export type LoadParams = {
   threads: number | null;
   batchSize: number | null;
   loadMode: string | null;
+  /** Carica anche il componente visivo (mmproj), se accanto al modello ce n'è uno. */
+  vision: boolean;
 };
 
 export type SamplingParams = {
@@ -49,6 +51,11 @@ export type ModelInfo = {
   sizeLabel: string | null;
   quantization: string | null;
   contextLength: number | null;
+  /** Componente visivo nella stessa cartella: il modello può leggere le immagini. */
+  mmproj: string | null;
+  mmprojBytes: number | null;
+  /** In quanti file è diviso il modello (1 = un file solo). */
+  parts: number;
   error: string | null;
 };
 
@@ -70,6 +77,10 @@ export type LoadedModel = {
   params: LoadParams;
   port: number;
   pid: number;
+  /** Versione di llama.cpp che lo esegue (`b12110-cuda`). */
+  engine: string;
+  /** Caricato con il componente visivo: legge le immagini. */
+  vision: boolean;
 };
 
 export type RuntimeStatus = {
@@ -211,9 +222,17 @@ export type ToolRequest = { id: string; name: string; summary: string; arguments
 export type NamedPreset = { name: string; sampling: SamplingParams; systemPrompt: string };
 
 export type HubRepo = { id: string; downloads: number; likes: number };
-export type HubFile = { path: string; sizeBytes: number; sha256: string | null };
+export type HubPart = { path: string; sizeBytes: number; sha256: string | null };
+export type HubFile = HubPart & {
+  /** Le parti di un modello diviso (vuoto per un file solo). */
+  parts: HubPart[];
+  /** `vision`: componente visivo (mmproj) che fa leggere le immagini al modello. */
+  kind: "model" | "vision";
+};
 
 export type DownloadState = {
+  /** `<repo>/<file>`: più download possono procedere insieme. */
+  id: string;
   repo: string;
   file: string;
   doneBytes: number;
@@ -222,6 +241,17 @@ export type DownloadState = {
   error: string | null;
   /** Hugging Face non ha pubblicato l'impronta: controllata solo la dimensione. */
   unverified: boolean;
+};
+
+export type Theme = "system" | "light" | "dark";
+
+/** Preferenze generali dell'app. */
+export type Preferences = {
+  theme: Theme;
+  /** Chiudendo la finestra il nucleo resta attivo nell'area di notifica. */
+  keepRunning: boolean;
+  /** Minuti senza richieste dopo cui il modello locale si scarica; 0 = mai. */
+  idleUnloadMinutes: number;
 };
 
 /** Protezioni accese di base, che l'utente può spegnere nelle Impostazioni. */
@@ -299,11 +329,18 @@ export type CoreInfo = { version: string; schemaVersion: number };
 
 export type EngineVariant = "cuda" | "vulkan" | "cpu";
 
+export type InstalledEngine = { dirName: string; variant: EngineVariant | null };
+
 export type EngineStatus = {
+  /** Versione che userà il prossimo caricamento. */
   installed: string | null;
+  engines: InstalledEngine[];
+  /** Variante scelta; null finché non se ne installa una. */
+  selected: EngineVariant | null;
   build: string;
   recommended: EngineVariant;
   downloadBytes: number;
+  variants: { variant: EngineVariant; downloadBytes: number }[];
 };
 
 export type InstallProgress = {
@@ -316,6 +353,8 @@ export const api = {
   coreInfo: () => invoke<CoreInfo>("core_info"),
 
   engineStatus: () => invoke<EngineStatus>("engine_status"),
+  setEngineVariant: (variant: EngineVariant) => invoke<void>("set_engine_variant", { variant }),
+  removeEngine: (dirName: string) => invoke<InstalledEngine[]>("remove_engine", { dirName }),
   installEngine: (variant: EngineVariant, onProgress: (progress: InstallProgress) => void) => {
     const channel = new Channel<InstallProgress>();
     channel.onmessage = onProgress;
@@ -363,6 +402,30 @@ export const api = {
       onEvent: channel,
     });
   },
+  /** Modifica (con `text`) o ripete un tuo messaggio e rigenera la risposta; i messaggi successivi si cancellano. */
+  resendMessage: (
+    conversationId: number,
+    messageId: number,
+    text: string | null,
+    sampling: SamplingParams,
+    systemPrompt: string,
+    model: ModelRef,
+    onEvent: (event: StreamEvent) => void,
+  ) => {
+    const channel = new Channel<StreamEvent>();
+    channel.onmessage = onEvent;
+    return invoke<SendOutcome>("resend_message", {
+      conversationId,
+      messageId,
+      text,
+      sampling,
+      systemPrompt,
+      model,
+      onEvent: channel,
+    });
+  },
+  exportConversation: (conversationId: number, path: string, lang: string) =>
+    invoke<void>("export_conversation", { conversationId, path, lang }),
   stopGeneration: (conversationId: number | null = null) => invoke<void>("stop_generation", { conversationId }),
   apiInfo: () => invoke<ApiInfo>("api_info"),
   regenerateApiToken: () => invoke<string>("regenerate_api_token"),
@@ -414,8 +477,9 @@ export const api = {
   hubFiles: (repo: string) => invoke<HubFile[]>("hub_files", { repo }),
   startModelDownload: (repo: string, file: HubFile, folder: string) =>
     invoke<void>("start_model_download", { repo, file, folder }),
-  downloadStatus: () => invoke<DownloadState | null>("download_status"),
-  cancelDownload: () => invoke<void>("cancel_download"),
+  listDownloads: () => invoke<DownloadState[]>("list_downloads"),
+  cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
+  dismissDownload: (id: string) => invoke<void>("dismiss_download", { id }),
 
   listProviders: () => invoke<ProviderInfo[]>("list_providers"),
   /** `apiKey` vuota lascia invariata la chiave già salvata. */
@@ -427,6 +491,10 @@ export const api = {
   /** La lingua scelta dall'utente; `null` finché non ne sceglie una. */
   language: () => invoke<string | null>("language"),
   setLanguage: (language: string) => invoke<void>("set_language", { language }),
+  preferences: () => invoke<Preferences>("preferences"),
+  setPreferences: (preferences: Preferences) => invoke<void>("set_preferences", { preferences }),
+  /** `true` se chiudendo la finestra il nucleo resta nell'area di notifica. */
+  runsInTray: () => invoke<boolean>("runs_in_tray"),
   securitySettings: () => invoke<SecuritySettings>("security_settings"),
   setSecuritySettings: (settings: SecuritySettings) => invoke<void>("set_security_settings", { settings }),
   /** Apre un indirizzo web nel browser di sistema. */

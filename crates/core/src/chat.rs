@@ -54,7 +54,7 @@ impl ChatMessage {
 }
 
 /// Misure di una risposta appena generata.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationStats {
     pub prompt_tokens: Option<u64>,

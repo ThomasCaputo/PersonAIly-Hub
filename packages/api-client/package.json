@@ -1,0 +1,8 @@
+{
+  "name": "@personaily/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Tipi TypeScript dell'API locale di PersonAIly Hub, generati dai tipi Rust del nucleo.",
+  "types": "index.d.ts"
+}

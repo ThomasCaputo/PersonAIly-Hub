@@ -2,6 +2,7 @@
 
 import * as vscode from "vscode";
 import type { EditTarget } from "./edits";
+import { t } from "./i18n";
 
 export interface EditorContext {
   uri: vscode.Uri;
@@ -34,7 +35,7 @@ export function editorContext(editor: vscode.TextEditor, maxChars: number): Edit
     const range = new vscode.Range(selection.start.line, 0, lastLine, document.lineAt(lastLine).text.length);
     const code = document.getText(range);
     if (code.length > maxChars) {
-      return `La selezione è troppo lunga (${code.length} caratteri, massimo ${maxChars}).`;
+      return t("La selezione è troppo lunga ({n} caratteri, massimo {max}).", { n: code.length, max: maxChars });
     }
     return {
       uri: document.uri,
@@ -53,7 +54,10 @@ export function editorContext(editor: vscode.TextEditor, maxChars: number): Edit
   const range = new vscode.Range(0, 0, end.line, end.character);
   const code = document.getText();
   if (code.length > maxChars) {
-    return `Il file è troppo lungo (${code.length} caratteri, massimo ${maxChars}): seleziona la parte che ti interessa.`;
+    return t("Il file è troppo lungo ({n} caratteri, massimo {max}): seleziona la parte che ti interessa.", {
+      n: code.length,
+      max: maxChars,
+    });
   }
   return { uri: document.uri, range, target: { fileName, languageId: document.languageId, code } };
 }

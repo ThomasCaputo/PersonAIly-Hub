@@ -7,7 +7,7 @@
 //! Stampa RAM e VRAM prima del caricamento, dopo il caricamento, dopo una
 //! risposta e dopo lo scaricamento.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -119,7 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     print("prima", &base, &base);
 
     let start = Instant::now();
-    let loaded = runtime.load(&args[1], &model.name, &params).await?;
+    let engine = app_core::local::runtime::find_server(Path::new(&args[0]), None)?;
+    let loaded = runtime
+        .load(&engine, &args[1], &model.name, &params, None)
+        .await?;
     println!("caricato in {:.1} s", start.elapsed().as_secs_f64());
     print("appena caricato", &read(Some(loaded.pid)), &base);
 

@@ -2,17 +2,13 @@
 // Non usa `vscode`: si può provare con Node da solo (vedi test/).
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { InstallInfo, LockInfo } from "../../../packages/api-client";
+import { t, tc } from "./i18n";
 
 /** Contenuto di `core.lock`, scritto da chi ha avviato il nucleo. */
-export interface LockInfo {
-  port: number;
-  token: string;
-  pid: number;
-  kind: "app" | "server";
-  version: string;
-}
+export type { LockInfo };
 
 /** Errore restituito dall'API, con il suo codice HTTP (0 = nucleo irraggiungibile). */
 export class CoreError extends Error {
@@ -32,6 +28,33 @@ export function defaultDataDir(env: NodeJS.ProcessEnv = process.env, platform = 
   if (platform === "win32") return join(env.APPDATA ?? "", APP_IDENTIFIER);
   if (platform === "darwin") return join(env.HOME ?? "", "Library", "Application Support", APP_IDENTIFIER);
   return join(env.XDG_DATA_HOME ?? join(env.HOME ?? "", ".local", "share"), APP_IDENTIFIER);
+}
+
+/**
+ * Dove trovare `app-server`, nell'ordine: il percorso indicato nelle
+ * impostazioni; quello annotato dall'app desktop a ogni avvio (`install.json`
+ * nella cartella dati); la cartella in cui l'installer mette l'app.
+ * Vuoto se non si trova.
+ */
+export function findServer(
+  configured: string,
+  dataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  if (configured.trim()) return configured.trim();
+  try {
+    const info = JSON.parse(readFileSync(join(dataDir, "install.json"), "utf8")) as Partial<InstallInfo>;
+    if (typeof info.serverPath === "string" && exists(info.serverPath)) return info.serverPath;
+  } catch {
+    // L'app non è mai stata aperta, o è una versione senza app-server.
+  }
+  if (platform === "win32" && env.LOCALAPPDATA) {
+    const installed = join(env.LOCALAPPDATA, "PersonAIly Hub", "app-server.exe");
+    if (exists(installed)) return installed;
+  }
+  return "";
 }
 
 export function readLock(dataDir: string): LockInfo | null {
@@ -118,25 +141,26 @@ export class CoreClient {
       this.lock = existing;
       return existing;
     }
-    const serverPath = this.options.serverPath().trim();
+    const serverPath = findServer(this.options.serverPath(), dataDir);
     if (!serverPath) {
       throw new CoreError(
-        "Il nucleo di PersonAIly Hub non è attivo. Apri l'app desktop, oppure indica nell'impostazione " +
-          "“personailyHub.serverPath” il percorso di app-server.exe per avviarlo senza app.",
+        t(
+          "Il nucleo di PersonAIly Hub non è attivo e app-server.exe non si trova. Apri l'app desktop, oppure indica nell'impostazione “personailyHub.serverPath” il percorso di app-server.exe per avviarlo senza app.",
+        ),
         0,
       );
     }
-    this.options.log(`Avvio del nucleo senza interfaccia: ${serverPath}`);
+    this.options.log(t("Avvio del nucleo senza interfaccia: {path}", { path: serverPath }));
     try {
       const child = spawn(serverPath, ["--data-dir", dataDir], {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
       });
-      child.on("error", (e) => this.options.log(`Avvio non riuscito: ${e.message}`));
+      child.on("error", (e) => this.options.log(t("Avvio non riuscito: {error}", { error: e.message })));
       child.unref();
     } catch (e) {
-      throw new CoreError(`Impossibile avviare ${serverPath}: ${(e as Error).message}`, 0);
+      throw new CoreError(t("Impossibile avviare {path}: {error}", { path: serverPath, error: (e as Error).message }), 0);
     }
     this.spawnedByUs = true;
     for (let i = 0; i < 100; i++) {
@@ -147,7 +171,7 @@ export class CoreClient {
         return lock;
       }
     }
-    throw new CoreError("Il nucleo senza interfaccia non è partito entro 20 secondi.", 0);
+    throw new CoreError(t("Il nucleo senza interfaccia non è partito entro 20 secondi."), 0);
   }
 
   private async fetch(path: string, init: RequestInit, retry = true): Promise<Response> {
@@ -166,7 +190,7 @@ export class CoreClient {
       // si rilegge il file di blocco e si riprova una volta.
       this.lock = null;
       if (retry) return this.fetch(path, init, false);
-      throw new CoreError(`Il nucleo non risponde: ${(e as Error).message}`, 0);
+      throw new CoreError(t("Il nucleo non risponde: {error}", { error: (e as Error).message }), 0);
     }
     if (response.status === 401 && retry) {
       // Token rigenerato dall'app: è già nel nuovo file di blocco.
@@ -181,7 +205,7 @@ export class CoreClient {
       } catch {
         // Non è JSON: si mostra il testo così com'è.
       }
-      throw new CoreError(message || `Errore ${response.status}`, response.status);
+      throw new CoreError(message ? tc(message) : t("Errore {status}", { status: String(response.status) }), response.status);
     }
     return response;
   }
@@ -199,7 +223,7 @@ export class CoreClient {
   /** Una richiesta che risponde con un flusso SSE. */
   async stream(path: string, body: unknown, onEvent: SseHandler, signal?: AbortSignal): Promise<void> {
     const response = await this.fetch(path, { method: "POST", body: JSON.stringify(body), signal });
-    if (!response.body) throw new CoreError("Risposta vuota dal nucleo.", 0);
+    if (!response.body) throw new CoreError(t("Risposta vuota dal nucleo."), 0);
     await readSse(response.body, onEvent);
   }
 

@@ -171,7 +171,14 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
     onStatusChange();
   };
 
-  const details = [model.sizeLabel, model.quantization, `${gb(model.sizeBytes)} GB`, model.architecture]
+  const details = [
+    model.sizeLabel,
+    model.quantization,
+    `${gb(model.sizeBytes)} GB`,
+    model.architecture,
+    model.parts > 1 && t("diviso in {n} file", { n: model.parts }),
+    model.mmproj && t("legge le immagini"),
+  ]
     .filter(Boolean)
     .join(" · ");
   const maxContext = model.contextLength ?? 131072;
@@ -238,6 +245,25 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
               <option value="q4_0">{t("q4_0 — minima memoria, qualità inferiore")}</option>
             </select>
           </div>
+
+          {model.mmproj && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={preset.load.vision}
+                onChange={(e) => setLoad({ vision: e.target.checked })}
+              />
+              <span>
+                <strong>{t("Lettura delle immagini")}</strong>
+                <span className="dim note block">
+                  {tn("Carica anche il componente visivo {file} ({size} GB in più).", {
+                    file: <span className="mono">{model.mmproj.split(/[\\/]/).pop()}</span>,
+                    size: gb(model.mmprojBytes ?? 0),
+                  })}
+                </span>
+              </span>
+            </label>
+          )}
 
           <details className="advanced">
             <summary>{t("Avanzate")}</summary>

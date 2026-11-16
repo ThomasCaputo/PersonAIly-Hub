@@ -16,7 +16,7 @@ use crate::tools::files;
 const MAX_TEXT_CHARS: usize = 150_000;
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum AttachmentKind {
     Text,
@@ -36,7 +36,7 @@ pub struct Attachment {
 }
 
 /// Ciò che l'interfaccia mostra di un allegato: non il contenuto.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInfo {
     pub name: String,

@@ -26,7 +26,8 @@ Other useful commands:
 ```
 cargo build -p app-server                      # headless core (target/debug/app-server.exe)
 npm run check:i18n -w desktop                  # list UI strings without an English translation
-npm test -w personaily-hub-vscode              # VS Code extension tests
+npm test -w personaily-hub-vscode              # VS Code extension tests and translation check
+UPDATE_BINDINGS=1 cargo test -p app-server bindings   # regenerate packages/api-client/index.d.ts
 npm run package -w personaily-hub-vscode       # build extensions/vscode/personaily-hub.vsix
 powershell -File scripts/release.ps1           # release build: setup.exe + portable exe in release/
 ```
@@ -41,7 +42,8 @@ are built by GitHub Actions (`.github/workflows/release.yml`) when a `v*` tag is
 apps/desktop/        Tauri app (React + TypeScript UI, Rust shell)
 crates/core/         Core: providers, local models, tools, agents, storage
 crates/server/       Local API (also used by the app) and the headless app-server
-extensions/vscode/   VS Code extension: chat, editor context, changes as diffs
+extensions/vscode/   VS Code extension: chat, editor context, changes as diffs, agents
+packages/api-client/ TypeScript types of the local API, generated from the Rust types
 docs/                Requirements, architecture, roadmap and decision records (Italian)
 scripts/             Release build
 ```
@@ -50,7 +52,8 @@ scripts/             Release build
 
 UI strings are written in Italian inside `t("…")`, with the English translation in
 `apps/desktop/src/locales/en.ts`. `npm run check:i18n -w desktop` (also part of
-`npm run check`) reports missing translations. See
+`npm run check`) reports missing translations. The VS Code extension follows the same
+scheme (`extensions/vscode/src/locales/en.ts`, plus `package.nls*.json` for its manifest). See
 [ADR 0012](docs/adr/0012-lingue-interfaccia.md).
 
 ## Before opening a pull request

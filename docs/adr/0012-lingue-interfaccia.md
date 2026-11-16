@@ -1,7 +1,8 @@
 # 0012 — Lingue dell'interfaccia: italiano e inglese
 
-**Stato:** accettata e realizzata nell'app desktop (14-11-2026). L'estensione VS Code e i
-messaggi d'errore meno comuni del nucleo restano in italiano (vedi Conseguenze).
+**Stato:** accettata e realizzata nell'app desktop (14-11-2026) e, il 16-11-2026,
+nell'estensione VS Code e per i messaggi d'errore meno comuni del nucleo (vedi
+Aggiornamento del 16-11-2026).
 
 ## Contesto
 
@@ -55,6 +56,21 @@ con errore se ne manca qualcuna.
 - Cambiando un testo italiano nel codice, la sua traduzione va aggiornata (lo segnala
   `check:i18n`). Se il nucleo cambia un testo tradotto in `core-en.ts`, quel testo torna in
   italiano finché non si aggiorna il file: non c'è un controllo automatico.
-- Rimandato: estensione VS Code in inglese (potrebbe seguire la lingua di VS Code o quella
-  salvata nel nucleo); traduzione dei messaggi d'errore rari del nucleo.
 - Una terza lingua richiede un dizionario in più e una voce in `LANGUAGES`.
+
+## Aggiornamento del 16-11-2026
+
+- **Estensione VS Code:** segue la lingua di VS Code (italiano se è italiano, altrimenti
+  inglese), con lo stesso schema: testo italiano come chiave, `src/locales/en.ts`,
+  `npm run check:i18n -w personaily-hub-vscode` (anche dentro `npm test`). I testi di
+  `package.json` (comandi, impostazioni) stanno in `package.nls.json` (inglese) e
+  `package.nls.it.json`. Anche i prompt con cui l'estensione chiede una modifica sono
+  nella lingua scelta: un prompt italiano spingeva il modello a rispondere in italiano.
+- **Testi del nucleo:** `core-en.ts` copre ora anche gli errori meno comuni. Una
+  sostituzione può tradurre a sua volta la parte variabile (`$T1`), per gli errori che
+  ne avvolgono un altro. L'estensione usa lo stesso dizionario, copiato in
+  `src/generated/` a ogni build (`scripts/sync-core-texts.mjs`). Restano in italiano i
+  testi che legge solo il modello (descrizioni degli strumenti, preambolo).
+- **Lingua delle risposte:** il prompt di sistema di chat e agenti chiede al modello di
+  rispondere nella lingua in cui scrive l'utente e, se non si capisce, in quella scelta
+  per l'interfaccia o, in mancanza, in quella del sistema (`sys-locale`).

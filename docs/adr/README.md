@@ -17,4 +17,6 @@ ADR che sostituisce il precedente.
 | [0009](0009-mcp.md) | MCP: server stdio avviati con la sessione, strumenti in classe "esecuzione" | Accettata e provata con un server di prova |
 | [0010](0010-api-locale-e-vscode.md) | API locale con axum, file di blocco, estensione VS Code con diff | Accettata e provata con un modello locale e VS Code |
 | [0011](0011-revisione-sicurezza-e-prestazioni.md) | Revisione di sicurezza e prestazioni; protezioni che l'utente può spegnere | Accettata e realizzata |
-| [0012](0012-lingue-interfaccia.md) | Lingue dell'interfaccia: italiano e inglese, testo italiano come chiave | Accettata e realizzata nell'app; VS Code ancora solo in italiano |
+| [0012](0012-lingue-interfaccia.md) | Lingue dell'interfaccia: italiano e inglese, testo italiano come chiave | Accettata e realizzata nell'app e nell'estensione VS Code |
+| [0013](0013-nucleo-in-area-di-notifica.md) | Nucleo nell'area di notifica: l'interfaccia si chiude, il modello resta | Accettata e provata in sviluppo |
+| [0014](0014-modelli-locali-varianti-visione-download.md) | Modelli locali: varianti di llama.cpp, immagini (mmproj), modelli divisi, più download, scaricamento per inattività | Accettata; immagini e modelli divisi solo con test automatici |

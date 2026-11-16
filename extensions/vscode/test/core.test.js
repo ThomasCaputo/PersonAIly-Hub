@@ -6,7 +6,8 @@ const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { CoreClient, readSse, defaultDataDir, readLock } = require("../out/core.js");
+const { CoreClient, readSse, defaultDataDir, readLock, findServer } = require("../out/core.js");
+const i18n = require("../out/i18n.js");
 const { extractCode, fitReplacement, fence, editPrompt, contextBlock, openAiModelName } = require("../out/edits.js");
 
 test("estrae il blocco di codice più lungo", () => {
@@ -117,10 +118,62 @@ test("client: token, nuovo token dopo 401, errori leggibili", async () => {
 
 test("client: senza nucleo né app-server spiega cosa fare", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "personaily-hub-"));
+  // Un'app installata davvero su questo PC non deve partire durante la prova.
+  const saved = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = dir;
   try {
     const client = new CoreClient({ dataDir: () => dir, serverPath: () => "", log: () => {} });
     await assert.rejects(client.request("GET", "/api/info"), (e) => e.status === 0 && /serverPath/.test(e.message));
   } finally {
+    process.env.LOCALAPPDATA = saved;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("trova app-server: impostazione, poi install.json dell'app, poi la cartella dell'installer", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "personaily-hub-"));
+  try {
+    const exists = (p) => fs.existsSync(p);
+    const env = { LOCALAPPDATA: path.join(dir, "local") };
+    assert.equal(findServer("  C:\a\app-server.exe ", dir, env, "win32", exists), "C:\a\app-server.exe");
+    assert.equal(findServer("", dir, env, "win32", exists), "");
+
+    const installed = path.join(dir, "local", "PersonAIly Hub", "app-server.exe");
+    fs.mkdirSync(path.dirname(installed), { recursive: true });
+    fs.writeFileSync(installed, "");
+    assert.equal(findServer("", dir, env, "win32", exists), installed);
+
+    const recorded = path.join(dir, "altrove", "app-server.exe");
+    fs.mkdirSync(path.dirname(recorded), { recursive: true });
+    fs.writeFileSync(recorded, "");
+    fs.writeFileSync(path.join(dir, "install.json"), JSON.stringify({ serverPath: recorded, version: "0.1.0" }));
+    assert.equal(findServer("", dir, env, "win32", exists), recorded);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lingua di VS Code, testi tradotti e messaggi del nucleo in inglese", () => {
+  assert.equal(i18n.languageFor("it"), "it");
+  assert.equal(i18n.languageFor("en-us"), "en");
+  assert.equal(i18n.languageFor("de"), "en");
+  try {
+    i18n.setLanguage("en");
+    assert.equal(i18n.t("Invia"), "Send");
+    assert.equal(i18n.t("{n} caratteri", { n: 1234 }), "1,234 characters");
+    assert.equal(i18n.tc("Nessun modello locale caricato."), "No local model loaded.");
+    assert.equal(
+      i18n.tc("file del modello non leggibile: il modello è diviso in 3 file e ne mancano 1"),
+      "model file not readable: the model is split into 3 files and 1 are missing",
+    );
+    assert.match(contextBlock({ fileName: "a.ts", languageId: "ts", code: "x" }), /^\[Context from VS Code: a\.ts, whole file\]/);
+    assert.match(
+      editPrompt({ fileName: "a.ts", languageId: "ts", code: "x" }, "rename"),
+      /^Whole file: a\.ts\.[\s\S]*Instruction: rename$/,
+    );
+  } finally {
+    i18n.setLanguage("it");
+  }
+  assert.equal(i18n.t("Invia"), "Invia");
+  assert.equal(i18n.tc("Nessun modello locale caricato."), "Nessun modello locale caricato.");
 });

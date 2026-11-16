@@ -23,10 +23,10 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
   const [openRepo, setOpenRepo] = useState(kept.openRepo);
   const [files, setFiles] = useState(kept.files);
   const [folder, setFolder] = useState("");
-  const [download, setDownload] = useState<DownloadState | null>(null);
+  const [downloads, setDownloads] = useState<DownloadState[]>([]);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const lastPhase = useRef<string | null>(null);
+  const lastPhases = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     // Una scheda lasciata a metà lettura dei file si riapre chiusa, non bloccata.
@@ -36,14 +36,16 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
   const destination = folders.includes(folder) ? folder : (folders[0] ?? "");
   const vramTotal = status?.memory.gpu?.totalBytes ?? null;
 
-  // L'avanzamento si legge dal nucleo: il download prosegue anche cambiando pagina.
+  // L'avanzamento si legge dal nucleo: i download proseguono anche cambiando
+  // pagina o chiudendo la finestra.
   const poll = useCallback(() => {
     api
-      .downloadStatus()
-      .then((state) => {
-        setDownload(state);
-        if (state && lastPhase.current === "downloading" && state.phase === "done") onDownloaded();
-        lastPhase.current = state?.phase ?? null;
+      .listDownloads()
+      .then((list) => {
+        setDownloads(list);
+        const finished = list.some((d) => d.phase === "done" && lastPhases.current.get(d.id) === "downloading");
+        lastPhases.current = new Map(list.map((d) => [d.id, d.phase]));
+        if (finished) onDownloaded();
       })
       .catch(() => {});
   }, [onDownloaded]);
@@ -86,13 +88,16 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
     poll();
   };
 
-  const active = download?.phase === "downloading";
+  const running = (repo: string, file: HubFile) =>
+    downloads.some((d) => d.id === `${repo}/${file.path}` && d.phase === "downloading");
 
   return (
     <section className="section">
       <h2>{t("Scarica un modello")}</h2>
 
-      {download && <DownloadBar download={download} />}
+      {downloads.map((download) => (
+        <DownloadBar key={download.id} download={download} onDismiss={() => api.dismissDownload(download.id).then(poll)} />
+      ))}
 
       {folders.length === 0 ? (
         <p className="dim">{t("Aggiungi prima una cartella qui sopra: è lì che verranno salvati i modelli.")}</p>
@@ -117,6 +122,9 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
             </button>
           </form>
 
+          <p className="dim note">
+            {t("Ogni repository si salva in una sua sottocartella (autore/nome), così i componenti visivi restano accanto al loro modello.")}
+          </p>
           {folders.length > 1 && (
             <div className="field">
               <label htmlFor="hub-folder">{t("Salva in")}</label>
@@ -143,10 +151,11 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
               {openRepo === repo.id && (
                 <div className="card-body">
                   {files === null && <p className="dim note">{t("Lettura dei file…")}</p>}
-                  {files?.length === 0 && (
+                  {files?.length === 0 && <p className="dim note">{t("Nessun file GGUF completo in questo repository.")}</p>}
+                  {files?.some((f) => f.kind === "vision") && (
                     <p className="dim note">
                       {t(
-                        "Nessun modello scaricabile: questo repository contiene solo modelli divisi in più file, non ancora supportati.",
+                        "I componenti visivi (mmproj) fanno leggere le immagini ai modelli dello stesso repository: scaricane uno insieme al modello.",
                       )}
                     </p>
                   )}
@@ -154,12 +163,14 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
                     <div key={file.path} className="hub-file">
                       <div>
                         <span className="mono">{file.path}</span>
+                        {file.kind === "vision" && <span className="badge">{t("Componente visivo")}</span>}
                         <div className="dim">
                           {size(file.sizeBytes)}
-                          {vramTotal !== null && ` · ${fitHint(file.sizeBytes, vramTotal)}`}
+                          {file.parts.length > 1 && ` · ${t("diviso in {n} file", { n: file.parts.length })}`}
+                          {file.kind === "model" && vramTotal !== null && ` · ${fitHint(file.sizeBytes, vramTotal)}`}
                         </div>
                       </div>
-                      <button className="btn" disabled={active} onClick={() => start(repo.id, file)}>
+                      <button className="btn" disabled={running(repo.id, file)} onClick={() => start(repo.id, file)}>
                         {t("Scarica")}
                       </button>
                     </div>
@@ -176,7 +187,7 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
   );
 }
 
-function DownloadBar({ download }: { download: DownloadState }) {
+function DownloadBar({ download, onDismiss }: { download: DownloadState; onDismiss: () => void }) {
   const percent = download.totalBytes > 0 ? Math.round((download.doneBytes / download.totalBytes) * 100) : 0;
   const file = download.file;
   const label = {
@@ -203,9 +214,13 @@ function DownloadBar({ download }: { download: DownloadState }) {
     <div className={download.phase === "failed" ? "estimate bad" : "estimate"}>
       <div className="hub-progress-head">
         <span>{label}</span>
-        {download.phase === "downloading" && (
-          <button className="btn" onClick={() => api.cancelDownload()}>
+        {download.phase === "downloading" ? (
+          <button className="btn" onClick={() => api.cancelDownload(download.id)}>
             {t("Interrompi")}
+          </button>
+        ) : (
+          <button className="conversation-delete" aria-label={t("Togli dall'elenco")} title={t("Togli dall'elenco")} onClick={onDismiss}>
+            ×
           </button>
         )}
       </div>

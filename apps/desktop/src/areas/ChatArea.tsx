@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   mcpToolLabel,
@@ -12,13 +12,15 @@ import {
   type Preset,
   type ProviderInfo,
   type RuntimeStatus,
+  type SendOutcome,
+  type StreamEvent,
   type ToolRequest,
   type ToolSettings,
 } from "../api";
 import { Markdown } from "../components/Markdown";
 import { ParamsPanel } from "../components/ParamsPanel";
 import { ToolRequestCard, ToolsBar } from "../components/ToolsBar";
-import { msg, num, t, tc } from "../i18n";
+import { currentLanguage, msg, num, t, tc } from "../i18n";
 
 const attachmentFilters = () => [
   {
@@ -37,6 +39,10 @@ const STREAM_FLUSH_MS = 60;
 
 /** Nome del file da un percorso di Windows o di altri sistemi. */
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+/** Un titolo trasformato in un nome di file accettato da Windows. */
+const safeFileName = (title: string) =>
+  title.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "conversazione";
 
 type Props = {
   status: RuntimeStatus | null;
@@ -78,6 +84,9 @@ export function ChatArea({
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState<{ id: number; title: string } | null>(null);
+  // Un tuo messaggio in modifica: si rimanda e la risposta si rigenera (CH-8).
+  const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const [exported, setExported] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Testo e ragionamento arrivati ma non ancora mostrati (vedi STREAM_FLUSH_MS).
   const streamBuffer = useRef({ text: "", reasoning: "", timer: null as number | null });
@@ -158,6 +167,8 @@ export function ChatArea({
   useEffect(() => {
     setStats(null);
     setNotice(null);
+    setEditing(null);
+    setExported(null);
     if (activeId === null) {
       setMessages([]);
       return;
@@ -211,57 +222,82 @@ export function ChatArea({
     if (id === activeId) setActiveId(list[0]?.id ?? null);
   };
 
+  /** Segue una risposta in arrivo per la conversazione `id`. */
+  const eventsFor = (id: number) => (event: StreamEvent) => {
+    if (event.type === "text") queueStream("text", event.text);
+    else if (event.type === "reasoning") queueStream("reasoning", event.text);
+    else if (event.type === "toolRequest") {
+      // Prima di chiedere conferma si mostra tutto ciò che il modello ha scritto.
+      flushStream();
+      setToolRequest(event);
+    } else {
+      discardStream();
+      // Il nucleo ha salvato un pezzo di risposta o il risultato di uno
+      // strumento: si rilegge l'archivio e si ricomincia a raccogliere il testo.
+      api
+        .getMessages(id)
+        .then((saved) => {
+          setMessages(saved);
+          setPendingUser(null);
+        })
+        .catch(() => {});
+      setStreaming("");
+      setReasoning("");
+    }
+  };
+
   const send = async () => {
     const text = draft.trim();
     if (!text || generating || !preset || !canSend) return;
-    setError(null);
-    setStats(null);
-    setNotice(null);
-
     let conversationId = activeId;
     try {
       if (conversationId === null) {
         conversationId = (await api.createConversation()).id;
         setActiveId(conversationId);
       }
-      const files = attachments;
-      setDraft("");
-      setAttachments([]);
-      setPendingUser(text);
-      setStreaming("");
-      setReasoning("");
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    const files = attachments;
+    setDraft("");
+    setAttachments([]);
+    const id = conversationId;
+    await reply(id, text, (onEvent) =>
+      api.sendMessage(id, text, files, preset.sampling, preset.systemPrompt, activeModel, onEvent),
+    );
+  };
 
-      const id = conversationId;
-      const outcome = await api.sendMessage(
-        id,
-        text,
-        files,
-        preset.sampling,
-        preset.systemPrompt,
-        activeModel,
-        (event) => {
-          if (event.type === "text") queueStream("text", event.text);
-          else if (event.type === "reasoning") queueStream("reasoning", event.text);
-          else if (event.type === "toolRequest") {
-            // Prima di chiedere conferma si mostra tutto ciò che il modello ha scritto.
-            flushStream();
-            setToolRequest(event);
-          } else {
-            discardStream();
-            // Il nucleo ha salvato un pezzo di risposta o il risultato di uno
-            // strumento: si rilegge l'archivio e si ricomincia a raccogliere il testo.
-            api
-              .getMessages(id)
-              .then((saved) => {
-                setMessages(saved);
-                setPendingUser(null);
-              })
-              .catch(() => {});
-            setStreaming("");
-            setReasoning("");
-          }
-        },
-      );
+  /**
+   * Rimanda un tuo messaggio, modificato (`text`) o così com'era, e rigenera
+   * la risposta. I messaggi che lo seguono si cancellano.
+   */
+  const resend = async (message: Message, text: string | null) => {
+    if (activeId === null || generating || !preset || !canSend) return;
+    const id = activeId;
+    setEditing(null);
+    // Ciò che segue sparisce subito: l'archivio lo cancella con la nuova risposta.
+    setMessages((current) => current.filter((m) => m.id < message.id));
+    await reply(id, text ?? message.content, (onEvent) =>
+      api.resendMessage(id, message.id, text, preset.sampling, preset.systemPrompt, activeModel, onEvent),
+    );
+  };
+
+  /** Il lavoro comune all'invio di un messaggio nuovo e a quello di uno rimandato. */
+  const reply = async (
+    conversationId: number,
+    shownText: string,
+    start: (onEvent: (event: StreamEvent) => void) => Promise<SendOutcome>,
+  ) => {
+    setError(null);
+    setStats(null);
+    setNotice(null);
+    setExported(null);
+    setPendingUser(shownText);
+    setStreaming("");
+    setReasoning("");
+    try {
+      const outcome = await start(eventsFor(conversationId));
       setStats(outcome.stats);
       setNotice(outcome.notice);
     } catch (e) {
@@ -283,6 +319,25 @@ export function ChatArea({
     }
   };
 
+  /** Salva la conversazione aperta come file Markdown (CH-9). */
+  const exportConversation = async () => {
+    if (activeId === null) return;
+    const title = conversations.find((c) => c.id === activeId)?.title ?? "conversazione";
+    const path = await save({
+      title: t("Esporta la conversazione"),
+      defaultPath: `${safeFileName(tc(title))}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!path) return;
+    setError(null);
+    try {
+      await api.exportConversation(activeId, path, currentLanguage());
+      setExported(path);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   // Consumo, ricavato dai messaggi salvati: sopravvive al riavvio dell'app.
   // Il contesto occupato è quello dell'ultima risposta: token letti + generati.
   const replies = messages.filter((m) => m.role === "assistant" && m.promptTokens != null);
@@ -291,6 +346,13 @@ export function ChatArea({
   const conversationCost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
   const lastCost = lastMessage?.role === "assistant" ? lastMessage.costUsd : null;
+  // La risposta si può rigenerare quando la conversazione finisce con il modello.
+  const lastUser = [...messages].reverse().find((m) => m.role === "user") ?? null;
+  const canRegenerate =
+    !generating && canSend && lastUser !== null && lastMessage !== null && lastMessage.role !== "user";
+  const lastShownAssistant = [...messages]
+    .reverse()
+    .find((m) => m.role === "assistant" && !(m.content === "" && m.toolCalls.length > 0));
 
   // Una risposta fatta solo di chiamate a strumenti si vede già nelle righe dei risultati.
   const shown: Shown[] = messages
@@ -359,13 +421,23 @@ export function ChatArea({
       </aside>
 
       <section className="thread">
-        <ModelPicker
-          providers={providers}
-          loadedName={loaded?.modelName ?? null}
-          value={activeModel}
-          disabled={generating}
-          onChange={onModelChange}
-        />
+        <div className="thread-head">
+          <ModelPicker
+            providers={providers}
+            loadedName={loaded?.modelName ?? null}
+            value={activeModel}
+            disabled={generating}
+            onChange={onModelChange}
+          />
+          <button
+            className="btn"
+            disabled={activeId === null || messages.length === 0 || generating}
+            title={t("Salva la conversazione come file Markdown")}
+            onClick={exportConversation}
+          >
+            {t("Esporta")}
+          </button>
+        </div>
         {toolSettings && (
           <ToolsBar
             settings={toolSettings}
@@ -407,12 +479,56 @@ export function ChatArea({
                     ))}
                   </div>
                 )}
-                {m.role === "user" ? (
+                {m.role === "user" && editing && m.saved && editing.id === m.saved.id ? (
+                  <div className="message-edit">
+                    <textarea
+                      aria-label={t("Modifica il messaggio")}
+                      autoFocus
+                      rows={3}
+                      value={editing.text}
+                      onChange={(e) => setEditing({ id: editing.id, text: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (editing.text.trim()) resend(m.saved!, editing.text.trim());
+                        }
+                        if (e.key === "Escape") setEditing(null);
+                      }}
+                    />
+                    <div className="row">
+                      <button className="btn" onClick={() => setEditing(null)}>
+                        {t("Annulla")}
+                      </button>
+                      <button
+                        className="btn primary"
+                        disabled={!editing.text.trim() || !canSend}
+                        onClick={() => resend(m.saved!, editing.text.trim())}
+                      >
+                        {t("Invia")}
+                      </button>
+                    </div>
+                    <span className="dim note">{t("La risposta e i messaggi che seguono verranno sostituiti.")}</span>
+                  </div>
+                ) : m.role === "user" ? (
                   <div className="message-text">{m.content}</div>
                 ) : m.content ? (
                   <Markdown text={m.content} />
                 ) : m.saved && m.saved.toolCalls.length > 0 ? null : (
                   !reasoning && !toolRequest && <div className="dim">{t("Sto elaborando…")}</div>
+                )}
+                {m.saved && !generating && !editing && m.role === "user" && canSend && (
+                  <div className="message-actions">
+                    <button className="btn-link" onClick={() => setEditing({ id: m.saved!.id, text: m.saved!.content })}>
+                      {t("Modifica")}
+                    </button>
+                  </div>
+                )}
+                {m.saved && canRegenerate && !editing && m.saved.id === lastShownAssistant?.id && (
+                  <div className="message-actions">
+                    <button className="btn-link" onClick={() => resend(lastUser!, null)}>
+                      {t("Rigenera")}
+                    </button>
+                  </div>
                 )}
               </div>
             ),
@@ -420,6 +536,7 @@ export function ChatArea({
           {toolRequest && <ToolRequestCard request={toolRequest} onAnswer={answer} />}
           {stats && !generating && <StatsLine stats={stats} cost={lastCost} />}
           {notice && !generating && <p className="notice">{tc(notice)}</p>}
+          {exported && <p className="dim note">{t("Conversazione salvata in {path}", { path: exported })}</p>}
           {error && <p className="error pre">{tc(error)}</p>}
           <div ref={bottomRef} />
         </div>

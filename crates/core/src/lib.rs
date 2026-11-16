@@ -8,6 +8,7 @@ pub mod agents;
 pub mod attachments;
 pub mod chat;
 pub mod error;
+mod export;
 pub mod gguf;
 pub mod hub;
 pub mod instance;
@@ -36,7 +37,7 @@ use chat::{ChatEvent, ChatMessage, GenerationStats};
 use error::{Error, Result};
 use hub::{DownloadEnd, HubFile, HubRepo};
 use local::install::{self, Variant};
-use local::runtime::{LoadedModel, LocalRuntime};
+use local::runtime::{InstalledEngine, LoadedModel, LocalRuntime};
 use local::sysmon::{self, MemorySnapshot, ProcessGpuMemory};
 use local::{LoadParams, MemoryEstimate, Placement, Preset, SamplingParams};
 use models::ModelInfo;
@@ -54,6 +55,10 @@ const SETTING_MCP_SERVERS: &str = "mcp_servers";
 const SETTING_ACTION_LOG_DAYS: &str = "action_log_days";
 const SETTING_SECURITY: &str = "security";
 const SETTING_LANGUAGE: &str = "language";
+const SETTING_PREFERENCES: &str = "preferences";
+const SETTING_ENGINE_VARIANT: &str = "engine_variant";
+/// Ogni quanto si controlla se il modello locale è inattivo da scaricare.
+const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Lingue dell'interfaccia.
 pub const LANGUAGES: &[&str] = &["it", "en"];
@@ -75,6 +80,12 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// `true` se la lingua del sistema è l'italiano: serve finché l'utente non
+/// ne sceglie una.
+pub fn system_language_is_italian() -> bool {
+    sys_locale::get_locale().is_some_and(|tag| tag.to_lowercase().starts_with("it"))
+}
+
 /// Esito del controllo "questo modello entra in memoria?".
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +97,7 @@ pub struct LoadCheck {
 }
 
 /// Stato dei modelli locali e della memoria, per gli indicatori dell'interfaccia.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
     /// `true` mentre un modello è in fase di caricamento.
@@ -103,7 +114,7 @@ pub struct RuntimeStatus {
 }
 
 /// Esito dell'invio di un messaggio.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SendOutcome {
     pub conversation: Conversation,
@@ -124,10 +135,12 @@ pub enum DownloadPhase {
     Cancelled,
 }
 
-/// Avanzamento del download di un modello.
+/// Avanzamento del download di un modello. Più download possono procedere
+/// insieme: ognuno ha il suo identificatore (`<repo>/<file>`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadState {
+    pub id: String,
     pub repo: String,
     pub file: String,
     pub done_bytes: u64,
@@ -137,6 +150,40 @@ pub struct DownloadState {
     /// Hugging Face non ha pubblicato l'impronta del file: è stata controllata
     /// solo la dimensione.
     pub unverified: bool,
+}
+
+/// Tema dell'interfaccia.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Chiaro o scuro come il sistema.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Preferenze generali dell'app.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Preferences {
+    pub theme: Theme,
+    /// Chiudendo la finestra il nucleo resta attivo nell'area di notifica:
+    /// modello caricato, agenti al lavoro e API locale per VS Code.
+    pub keep_running: bool,
+    /// Dopo quanti minuti senza richieste il modello locale si scarica da
+    /// solo e libera la memoria (LO-8); `0` = mai.
+    pub idle_unload_minutes: u32,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            keep_running: true,
+            idle_unload_minutes: 0,
+        }
+    }
 }
 
 /// Protezioni che rendono l'app più sicura ma chiedono qualche conferma in
@@ -161,7 +208,7 @@ impl Default for SecuritySettings {
 }
 
 /// Il modello a cui inviare un messaggio.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ModelRef {
     /// Il modello locale attualmente caricato.
@@ -172,7 +219,7 @@ pub enum ModelRef {
 }
 
 /// Un provider con le informazioni che servono all'interfaccia.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
     #[serde(flatten)]
@@ -198,10 +245,13 @@ pub struct Core {
     sessions: Mutex<HashMap<i64, Arc<LiveSession>>>,
     /// Occupato mentre llama.cpp viene scaricato e installato.
     installing: tokio::sync::Mutex<()>,
-    /// Stato dell'ultimo download di un modello, letto dall'interfaccia.
-    download: Mutex<Option<DownloadState>>,
-    /// Segnale per interrompere il download in corso.
-    download_cancel: Mutex<Option<Arc<Notify>>>,
+    /// I download dei modelli, in corso e conclusi, letti dall'interfaccia.
+    downloads: Mutex<Vec<DownloadState>>,
+    /// Segnali per interrompere i download in corso, per identificatore.
+    download_cancel: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Ultima volta in cui il modello locale ha lavorato: per scaricarlo dopo
+    /// un periodo di inattività (LO-8).
+    last_local_use: Mutex<std::time::Instant>,
     /// Per scaricare pagine web su richiesta dei modelli.
     web_http: reqwest::Client,
     /// Strumenti in attesa della conferma dell'utente. La chiave è
@@ -267,7 +317,7 @@ struct CallResult {
 }
 
 /// Risposta dell'utente alla richiesta di usare uno strumento.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Approval {
     Deny,
@@ -285,6 +335,15 @@ enum Target {
 }
 
 impl Target {
+    /// I modelli cloud ricevono le immagini (rifiuta il servizio, se il
+    /// modello non le legge); quelli locali solo con il componente visivo.
+    fn reads_images(&self) -> bool {
+        match self {
+            Target::Local(loaded) => loaded.vision,
+            Target::Cloud(..) => true,
+        }
+    }
+
     /// Chiave del preset del modello (vedi [`Core::preset`]).
     fn preset_key(&self) -> String {
         match self {
@@ -327,16 +386,30 @@ impl SamplingOverrides {
     }
 }
 
+/// Una variante di llama.cpp che l'app sa installare.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VariantInfo {
+    pub variant: Variant,
+    pub download_bytes: u64,
+}
+
 /// Stato dell'installazione di llama.cpp.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
-    /// Cartella della versione installata, se c'è.
+    /// Cartella della versione che verrà usata per il prossimo caricamento.
     pub installed: Option<String>,
+    /// Tutte le versioni installate.
+    pub engines: Vec<InstalledEngine>,
+    /// Variante scelta dall'utente; `None` finché non ne installa una.
+    pub selected: Option<Variant>,
     /// Build che l'app installerebbe.
     pub build: &'static str,
+    /// Variante adatta a questo PC.
     pub recommended: Variant,
     pub download_bytes: u64,
+    pub variants: Vec<VariantInfo>,
 }
 
 impl Core {
@@ -362,8 +435,9 @@ impl Core {
             generation: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
-            download: Mutex::new(None),
-            download_cancel: Mutex::new(None),
+            downloads: Mutex::new(Vec::new()),
+            download_cancel: Mutex::new(HashMap::new()),
+            last_local_use: Mutex::new(std::time::Instant::now()),
             web_http: tools::web::client()?,
             approvals: Mutex::new(HashMap::new()),
             last_action_prune: Mutex::new(std::time::Instant::now()),
@@ -455,13 +529,32 @@ impl Core {
 
     // ── Motore llama.cpp ────────────────────────────────────────────────
 
-    /// Dice se llama.cpp è installato e quale variante conviene a questo PC.
+    /// La variante di llama.cpp scelta dall'utente (LO-9).
+    pub fn engine_variant(&self) -> Option<Variant> {
+        self.store()
+            .setting(SETTING_ENGINE_VARIANT)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+    }
+
+    /// Sceglie la variante da usare dal prossimo caricamento di un modello.
+    pub fn set_engine_variant(&self, variant: Variant) -> Result<()> {
+        self.store()
+            .set_setting(SETTING_ENGINE_VARIANT, &serde_json::to_string(&variant)?)
+    }
+
+    /// La versione di llama.cpp con cui caricare il prossimo modello.
+    fn engine(&self) -> Result<InstalledEngine> {
+        local::runtime::find_server(&self.data_dir, self.engine_variant())
+    }
+
+    /// Dice se llama.cpp è installato, quali varianti ci sono e quale
+    /// conviene a questo PC.
     pub async fn engine_status(&self) -> EngineStatus {
         // Senza passare dal motore: mentre un modello si carica è occupato, e
         // llama.cpp risulterebbe "non installato".
-        let installed = local::runtime::find_server(&self.data_dir)
-            .ok()
-            .and_then(|exe| Some(exe.parent()?.file_name()?.to_string_lossy().into_owned()));
+        let installed = self.engine().ok().map(|e| e.dir_name);
         // Con una GPU NVIDIA si usa CUDA; altrimenti Vulkan, che copre AMD e Intel.
         let has_nvidia = tokio::task::spawn_blocking(|| sysmon::snapshot().gpu.is_some())
             .await
@@ -473,13 +566,23 @@ impl Core {
         };
         EngineStatus {
             installed,
+            engines: local::runtime::installed_engines(&self.data_dir),
+            selected: self.engine_variant(),
             build: local::LLAMA_CPP_BUILD,
             recommended,
             download_bytes: recommended.download_bytes(),
+            variants: Variant::ALL
+                .into_iter()
+                .map(|variant| VariantInfo {
+                    variant,
+                    download_bytes: variant.download_bytes(),
+                })
+                .collect(),
         }
     }
 
-    /// Scarica e installa llama.cpp. Una sola installazione alla volta.
+    /// Scarica e installa una variante di llama.cpp, che diventa quella in
+    /// uso. Una sola installazione alla volta.
     pub async fn install_engine(
         &self,
         variant: Variant,
@@ -489,9 +592,35 @@ impl Core {
             .installing
             .try_lock()
             .map_err(|_| Error::msg("Un'installazione è già in corso."))?;
-        let bin_dir = self.data_dir.join("bin").join("llama.cpp");
+        let bin_dir = local::runtime::bin_dir(&self.data_dir);
         std::fs::create_dir_all(&bin_dir)?;
         install::install(&self.cloud_http, &bin_dir, variant, on_progress).await?;
+        self.set_engine_variant(variant)
+    }
+
+    /// Elimina una versione installata di llama.cpp, se nessun modello la usa.
+    pub async fn remove_engine(&self, dir_name: &str) -> Result<()> {
+        let engine = local::runtime::installed_engines(&self.data_dir)
+            .into_iter()
+            .find(|e| e.dir_name == dir_name)
+            .ok_or_else(|| Error::msg("Questa versione di llama.cpp non è installata."))?;
+        let in_use = match self.runtime.try_lock() {
+            Ok(mut runtime) => runtime.loaded().is_some_and(|m| m.engine == dir_name),
+            // Un caricamento in corso potrebbe usarla.
+            Err(_) => true,
+        };
+        if in_use {
+            return Err(Error::msg(
+                "Questa versione di llama.cpp è in uso: scarica prima il modello.",
+            ));
+        }
+        let _guard = self
+            .installing
+            .try_lock()
+            .map_err(|_| Error::msg("Un'installazione è in corso: riprova quando finisce."))?;
+        if let Some(dir) = engine.exe.parent() {
+            std::fs::remove_dir_all(dir)?;
+        }
         Ok(())
     }
 
@@ -532,6 +661,8 @@ impl Core {
                 "file del modello non leggibile: {error}"
             )));
         }
+        let engine = self.engine()?;
+        let mmproj = model.mmproj.as_deref().filter(|_| params.vision);
 
         if !force {
             let path = model_path.to_string();
@@ -550,7 +681,11 @@ impl Core {
             }
         }
 
-        runtime.load(model_path, &model.name, params).await
+        let loaded = runtime
+            .load(&engine, model_path, &model.name, params, mmproj)
+            .await?;
+        self.touch_local();
+        Ok(loaded)
     }
 
     async fn check_load_blocking(&self, path: String, params: LoadParams) -> Result<LoadCheck> {
@@ -647,28 +782,32 @@ impl Core {
         hub::files(&self.cloud_http, repo).await
     }
 
-    /// Stato dell'ultimo download avviato, se ce n'è stato uno.
-    pub fn download_status(&self) -> Option<DownloadState> {
-        self.download
+    /// I download avviati da quando il nucleo è acceso, in corso e conclusi,
+    /// nell'ordine in cui sono partiti.
+    pub fn downloads(&self) -> Vec<DownloadState> {
+        self.downloads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
-    fn update_download(&self, change: impl FnOnce(&mut DownloadState)) {
+    fn update_download(&self, id: &str, change: impl FnOnce(&mut DownloadState)) {
         if let Some(state) = self
-            .download
+            .downloads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_mut()
+            .iter_mut()
+            .find(|d| d.id == id)
         {
             change(state);
         }
     }
 
-    /// Scarica un modello in una delle cartelle della libreria. Termina a
-    /// download concluso: chi la chiama la esegue in sottofondo e segue
-    /// l'avanzamento con [`Core::download_status`].
+    /// Scarica un modello in una delle cartelle della libreria, nella
+    /// sottocartella del suo repository. Più download possono procedere
+    /// insieme, ma non due volte lo stesso file. Termina a download concluso:
+    /// chi la chiama la esegue in sottofondo e segue l'avanzamento con
+    /// [`Core::downloads`].
     pub async fn download_model(&self, repo: &str, file: &HubFile, folder: &str) -> Result<()> {
         // Si scrive solo dove l'utente ha già detto di tenere i modelli.
         if !self.model_folders()?.iter().any(|f| f == folder) {
@@ -677,28 +816,32 @@ impl Core {
             ));
         }
 
+        let id = format!("{repo}/{}", file.path);
         let cancel = Arc::new(Notify::new());
         {
-            let mut current = self.download.lock().unwrap_or_else(|e| e.into_inner());
-            if current
-                .as_ref()
-                .is_some_and(|d| d.phase == DownloadPhase::Downloading)
+            let mut all = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
+            if all
+                .iter()
+                .any(|d| d.id == id && d.phase == DownloadPhase::Downloading)
             {
-                return Err(Error::msg("C'è già un download in corso."));
+                return Err(Error::msg("Questo file si sta già scaricando."));
             }
-            *current = Some(DownloadState {
+            // Un download ripetuto prende il posto del tentativo precedente.
+            all.retain(|d| d.id != id);
+            all.push(DownloadState {
+                id: id.clone(),
                 repo: repo.to_string(),
                 file: file.path.clone(),
                 done_bytes: 0,
                 total_bytes: file.size_bytes,
                 phase: DownloadPhase::Downloading,
                 error: None,
-                unverified: file.sha256.is_none(),
+                unverified: file.unverified(),
             });
-            *self
-                .download_cancel
+            self.download_cancel
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone(), cancel.clone());
         }
 
         let result = hub::download(
@@ -707,11 +850,15 @@ impl Core {
             file,
             Path::new(folder),
             cancel,
-            |done| self.update_download(|state| state.done_bytes = done),
+            |done| self.update_download(&id, |state| state.done_bytes = done),
         )
         .await;
 
-        self.update_download(|state| match &result {
+        self.download_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        self.update_download(&id, |state| match &result {
             Ok(DownloadEnd::Completed(_)) => state.phase = DownloadPhase::Done,
             Ok(DownloadEnd::Cancelled) => state.phase = DownloadPhase::Cancelled,
             Err(e) => {
@@ -722,16 +869,24 @@ impl Core {
         result.map(|_| ())
     }
 
-    /// Interrompe il download in corso; il file parziale resta per riprendere.
-    pub fn cancel_download(&self) {
+    /// Interrompe un download in corso; il file parziale resta per riprendere.
+    pub fn cancel_download(&self, id: &str) {
         if let Some(cancel) = self
             .download_cancel
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
+            .get(id)
         {
             cancel.notify_one();
         }
+    }
+
+    /// Toglie dall'elenco un download concluso.
+    pub fn dismiss_download(&self, id: &str) {
+        self.downloads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|d| d.id != id || d.phase == DownloadPhase::Downloading);
     }
 
     // ── Conversazioni ───────────────────────────────────────────────────
@@ -824,6 +979,42 @@ impl Core {
             return Err(Error::msg(format!("Lingua non disponibile: {language}")));
         }
         self.store().set_setting(SETTING_LANGUAGE, language)
+    }
+
+    /// In che lingua devono rispondere i modelli: in quella dell'utente; se
+    /// non si capisce, in quella scelta per l'interfaccia o, in mancanza, in
+    /// quella del sistema.
+    fn language_instruction(&self) -> String {
+        let tag = self
+            .language()
+            .ok()
+            .flatten()
+            .or_else(sys_locale::get_locale)
+            .unwrap_or_else(|| "en".to_string());
+        format!(
+            "Reply in the language the user writes in. If that is unclear (for example a \
+             message made only of code), reply in {}.",
+            language_name(&tag)
+        )
+    }
+
+    /// Preferenze generali (tema, area di notifica, scaricamento automatico).
+    pub fn preferences(&self) -> Preferences {
+        self.store()
+            .setting(SETTING_PREFERENCES)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_preferences(&self, preferences: &Preferences) -> Result<()> {
+        self.store()
+            .set_setting(SETTING_PREFERENCES, &serde_json::to_string(preferences)?)?;
+        // Il tempo di inattività si conta da adesso: accorciarlo non deve
+        // scaricare il modello all'istante.
+        self.touch_local();
+        Ok(())
     }
 
     /// Protezioni che l'utente può spegnere (vedi [`SecuritySettings`]).
@@ -1033,7 +1224,7 @@ impl Core {
                 all.extend(rest);
                 let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
                 let body = chat::request_body(&all, tools, &sampling, None, chat::Flavor::Llama);
-                chat::stream_chat(
+                let result = chat::stream_chat(
                     &self.http,
                     &url,
                     Some(&loaded.api_key),
@@ -1041,7 +1232,9 @@ impl Core {
                     cancel,
                     on_event,
                 )
-                .await
+                .await;
+                self.touch_local();
+                result
             }
             Target::Cloud(provider, key, id) => {
                 providers::stream(
@@ -1064,13 +1257,16 @@ impl Core {
     /// A chi mandare le richieste per un modello; errore se non è raggiungibile.
     fn target(&self, model: &ModelRef) -> Result<Target> {
         Ok(match model {
-            ModelRef::Local => Target::Local(
-                self.runtime
+            ModelRef::Local => {
+                let loaded = self
+                    .runtime
                     .try_lock()
                     .ok()
                     .and_then(|mut runtime| runtime.loaded())
-                    .ok_or_else(|| Error::msg("Nessun modello locale caricato."))?,
-            ),
+                    .ok_or_else(|| Error::msg("Nessun modello locale caricato."))?;
+                self.touch_local();
+                Target::Local(loaded)
+            }
             ModelRef::Cloud {
                 provider_id,
                 model: id,
@@ -1100,6 +1296,71 @@ impl Core {
         sampling: &SamplingParams,
         system_prompt: &str,
         model: &ModelRef,
+        on_event: impl FnMut(ChatEvent),
+    ) -> Result<SendOutcome> {
+        let paths = attachment_paths.to_vec();
+        self.send_with(
+            conversation_id,
+            text,
+            Attachments::Paths(paths),
+            None,
+            sampling,
+            system_prompt,
+            model,
+            on_event,
+        )
+        .await
+    }
+
+    /// Modifica un messaggio dell'utente e rigenera la risposta (CH-8). I
+    /// messaggi da quello in poi si cancellano e il messaggio si rimanda con
+    /// i suoi allegati; con `text` assente si rimanda così com'era, cioè si
+    /// rigenera la risposta che lo segue.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resend_message(
+        &self,
+        conversation_id: i64,
+        message_id: i64,
+        text: Option<&str>,
+        sampling: &SamplingParams,
+        system_prompt: &str,
+        model: &ModelRef,
+        on_event: impl FnMut(ChatEvent),
+    ) -> Result<SendOutcome> {
+        let original = self.store().message_in(conversation_id, message_id)?;
+        if original.role != "user" {
+            return Err(Error::msg("Si può modificare solo un tuo messaggio."));
+        }
+        let text = text.map(str::trim).unwrap_or(&original.content).to_string();
+        if text.is_empty() && original.attachment_data.is_empty() {
+            return Err(Error::msg("Il messaggio è vuoto."));
+        }
+        self.send_with(
+            conversation_id,
+            &text,
+            Attachments::Loaded(original.attachment_data),
+            Some(message_id),
+            sampling,
+            system_prompt,
+            model,
+            on_event,
+        )
+        .await
+    }
+
+    /// Il lavoro comune di [`Core::send_message`] e [`Core::resend_message`].
+    /// Con `replace_from` i messaggi da quello in poi si cancellano prima di
+    /// salvare il nuovo.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_with(
+        &self,
+        conversation_id: i64,
+        text: &str,
+        attachments: Attachments,
+        replace_from: Option<i64>,
+        sampling: &SamplingParams,
+        system_prompt: &str,
+        model: &ModelRef,
         mut on_event: impl FnMut(ChatEvent),
     ) -> Result<SendOutcome> {
         // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
@@ -1121,21 +1382,24 @@ impl Core {
             conversation_id,
         };
 
-        // Fino a 20 MB per file, e i PDF vanno interpretati: fuori dal ciclo asincrono.
-        let paths = attachment_paths.to_vec();
-        let attachments = tokio::task::spawn_blocking(move || {
-            paths
-                .iter()
-                .map(|path| attachments::load(Path::new(path)))
-                .collect::<Result<Vec<Attachment>>>()
-        })
-        .await
-        .map_err(|e| Error::msg(e.to_string()))??;
-        let reads_images = matches!(target, Target::Cloud(..));
+        let attachments = match attachments {
+            Attachments::Loaded(loaded) => loaded,
+            // Fino a 20 MB per file, e i PDF vanno interpretati: fuori dal ciclo asincrono.
+            Attachments::Paths(paths) => tokio::task::spawn_blocking(move || {
+                paths
+                    .iter()
+                    .map(|path| attachments::load(Path::new(path)))
+                    .collect::<Result<Vec<Attachment>>>()
+            })
+            .await
+            .map_err(|e| Error::msg(e.to_string()))??,
+        };
+        let reads_images = target.reads_images();
         if !reads_images && attachments.iter().any(|a| a.kind == AttachmentKind::Image) {
             return Err(Error::msg(
-                "Il modello locale caricato non legge le immagini: scegli un modello cloud \
-                 che le supporti, oppure togli l'immagine.",
+                "Il modello locale caricato non legge le immagini: caricalo con il suo \
+                 componente visivo (mmproj), scegli un modello cloud che le supporti, \
+                 oppure togli l'immagine.",
             ));
         }
 
@@ -1148,11 +1412,19 @@ impl Core {
             .map(PathBuf::from)
             .collect();
         let defs = tools::available(&settings, &folders);
-        let system = join_prompt(&[system_prompt, &tools::system_preamble(&defs, &folders)]);
+        let system = join_prompt(&[
+            system_prompt,
+            &self.language_instruction(),
+            &tools::system_preamble(&defs, &folders),
+        ]);
 
         let (chat, title) = {
             let store = self.store();
-            let is_first = store.has_no_messages(conversation_id)?;
+            if let Some(from) = replace_from {
+                store.delete_messages_from(conversation_id, from)?;
+            }
+            // Modificando il primo messaggio il titolo resta: forse l'ha scelto l'utente.
+            let is_first = replace_from.is_none() && store.has_no_messages(conversation_id)?;
             store.add_message_with(conversation_id, "user", text, None, None, &attachments)?;
             if is_first {
                 store.rename_conversation(conversation_id, &title_from(text))?;
@@ -1245,6 +1517,7 @@ impl Core {
                         &mut *on_event,
                     )
                     .await;
+                    self.touch_local();
                     (result, loaded.model_name.clone())
                 }
                 Target::Cloud(provider, key, id) => {
@@ -1546,7 +1819,7 @@ impl Core {
             .map(|id| {
                 all.iter().find(|s| &s.id == id).cloned().ok_or_else(|| {
                     Error::msg(
-                        "Un server MCP di questo agente è stato eliminato: togli il segno                          dall'agente o configura di nuovo il server nelle Impostazioni.",
+                        "Un server MCP di questo agente è stato eliminato: togli il segno dall'agente o configura di nuovo il server nelle Impostazioni.",
                     )
                 })
             })
@@ -1742,7 +2015,7 @@ impl Core {
         })?;
         let target = self.target(&agent.model)?;
         let sampling = self.preset(&target.preset_key())?.sampling;
-        let reads_images = matches!(target, Target::Cloud(..));
+        let reads_images = target.reads_images();
 
         let mut settings = self.conversation_tools(session.conversation_id)?;
         let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
@@ -1767,6 +2040,7 @@ impl Core {
         let system = join_prompt(&[
             agents::AGENT_PREAMBLE,
             &agent.instructions,
+            &self.language_instruction(),
             &tools::system_preamble(&defs, &folders),
         ]);
         let chat = chat_history(
@@ -1955,6 +2229,112 @@ impl Core {
             .is_empty()
             || !self.live_sessions().is_empty()
     }
+
+    // ── Esportazione ────────────────────────────────────────────────────
+
+    /// La conversazione in Markdown (CH-9). `lang` è la lingua delle
+    /// intestazioni (`it` o `en`).
+    pub fn conversation_markdown(&self, conversation_id: i64, lang: &str) -> Result<String> {
+        let (conversation, messages) = {
+            let store = self.store();
+            (
+                store.conversation(conversation_id)?,
+                store.messages_for_display(conversation_id)?,
+            )
+        };
+        Ok(export::markdown(&conversation, &messages, lang == "en"))
+    }
+
+    /// Salva la conversazione in Markdown. `path` arriva dalla finestra
+    /// "Salva con nome" del sistema.
+    pub fn export_conversation(&self, conversation_id: i64, path: &Path, lang: &str) -> Result<()> {
+        let text = self.conversation_markdown(conversation_id, lang)?;
+        std::fs::write(path, text)?;
+        Ok(())
+    }
+
+    // ── Manutenzione ────────────────────────────────────────────────────
+
+    /// Segna che il modello locale ha appena lavorato.
+    fn touch_local(&self) {
+        *self
+            .last_local_use
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// Scarica il modello locale se è rimasto inattivo più a lungo di quanto
+    /// scelto nelle preferenze (LO-8). Restituisce `true` se l'ha scaricato.
+    pub async fn unload_if_idle(&self) -> bool {
+        let minutes = self.preferences().idle_unload_minutes;
+        if minutes == 0 || self.is_busy() {
+            return false;
+        }
+        let idle = self
+            .last_local_use
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed();
+        if idle < std::time::Duration::from_secs(u64::from(minutes) * 60) {
+            return false;
+        }
+        // Un caricamento in corso tiene occupato il motore: non si tocca.
+        let Ok(mut runtime) = self.runtime.try_lock() else {
+            return false;
+        };
+        if runtime.loaded().is_none() {
+            return false;
+        }
+        runtime.unload().await;
+        true
+    }
+
+    /// Lavori di sottofondo del nucleo, finché il programma resta acceso:
+    /// chi lo avvia (app o `app-server`) la esegue come compito a parte.
+    pub async fn maintenance(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(MAINTENANCE_INTERVAL);
+        loop {
+            tick.tick().await;
+            self.unload_if_idle().await;
+        }
+    }
+}
+
+/// Gli allegati di un messaggio: da leggere dal disco, o già letti (quando
+/// si rimanda un messaggio salvato).
+enum Attachments {
+    Paths(Vec<String>),
+    Loaded(Vec<Attachment>),
+}
+
+/// Nome inglese di una lingua da un'etichetta come `it-IT`, per le istruzioni
+/// ai modelli; le lingue meno comuni restano come etichetta, che i modelli
+/// capiscono lo stesso.
+fn language_name(tag: &str) -> String {
+    let code = tag
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(tag)
+        .to_ascii_lowercase();
+    let name = match code.as_str() {
+        "it" => "Italian",
+        "en" => "English",
+        "fr" => "French",
+        "de" => "German",
+        "es" => "Spanish",
+        "pt" => "Portuguese",
+        "nl" => "Dutch",
+        "pl" => "Polish",
+        "ru" => "Russian",
+        "uk" => "Ukrainian",
+        "zh" => "Chinese",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "ar" => "Arabic",
+        "tr" => "Turkish",
+        _ => return format!("the language with tag {tag}"),
+    };
+    name.to_string()
 }
 
 /// Unisce le parti di un prompt di sistema, saltando quelle vuote.

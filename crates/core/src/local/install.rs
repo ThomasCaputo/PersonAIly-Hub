@@ -37,12 +37,21 @@ pub enum Variant {
 }
 
 impl Variant {
+    /// Tutte le varianti, nell'ordine in cui si propongono.
+    pub const ALL: [Variant; 3] = [Variant::Cuda, Variant::Vulkan, Variant::Cpu];
+
     pub fn id(self) -> &'static str {
         match self {
             Self::Cuda => "cuda",
             Self::Vulkan => "vulkan",
             Self::Cpu => "cpu",
         }
+    }
+
+    /// La variante di una cartella di installazione (`b12110-cuda`).
+    pub fn from_dir_name(name: &str) -> Option<Variant> {
+        let (_, id) = name.rsplit_once('-')?;
+        Self::ALL.into_iter().find(|v| v.id() == id)
     }
 
     /// Archivi che compongono questa variante (solo Windows x64, per ora).

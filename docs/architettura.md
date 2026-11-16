@@ -56,7 +56,7 @@ Un eseguibile piccolo che avvia il nucleo ed espone l'**API locale**. Serve a du
 2. offrire un endpoint compatibile con OpenAI (`/v1/chat/completions`, `/v1/models`)
    utilizzabile da qualsiasi programma.
 
-Quando l'app desktop è aperta, è lei ad avviare lo stesso server dentro il proprio
+Quando l'app desktop è accesa, è lei ad avviare lo stesso server dentro il proprio
 processo: esiste sempre **un solo nucleo attivo**, così non si rischia di caricare due
 volte un modello. Un file di blocco nella cartella dati (`core.lock`) indica porta e
 token del nucleo in esecuzione; se all'apertura l'app trova `app-server` attivo, gli
@@ -67,13 +67,18 @@ Il crate è insieme libreria (l'API, usata anche dall'app) ed eseguibile `app-se
 ### App desktop — `apps/desktop`
 
 Tauri 2. Il lato Rust è sottile: crea la finestra e inoltra i comandi al nucleo.
+Il nucleo vive quanto il processo, non quanto la finestra: chiudendola l'interfaccia si
+distrugge e l'app resta nell'area di notifica con modello, agenti e API locale; un clic
+sull'icona (o riaprire l'app, che ha una sola copia) ricrea la finestra
+([ADR 0013](adr/0013-nucleo-in-area-di-notifica.md)).
 Il lato web (React + TypeScript) ha quattro aree:
 
 - **Chat** — conversazioni, allegati, selettore del modello, pannello parametri laterale;
 - **Agenti** — elenco agenti, sessioni in corso, vista dettagliata dell'attività;
 - **Modelli** — libreria locale, download, provider cloud e chiavi, stato della memoria;
-- **Impostazioni** — lingua, cartelle, permessi predefiniti, protezioni di sicurezza, server
-  MCP, API locale (in futuro: variante di llama.cpp, tema).
+- **Impostazioni** — lingua, tema, chiusura della finestra, cartelle, permessi predefiniti,
+  protezioni di sicurezza, server MCP, API locale. La variante di llama.cpp e lo
+  scaricamento per inattività stanno in Modelli → Motore.
 
 I testi dell'interfaccia sono in italiano nel codice e passano da `t()`; la traduzione
 inglese sta in `src/locales/` ([ADR 0012](adr/0012-lingue-interfaccia.md)). I comandi
@@ -84,16 +89,18 @@ mostra solo l'app: i collegamenti esterni si aprono nel browser di sistema con i
 ### Estensione VS Code — `extensions/vscode`
 
 TypeScript, senza dipendenze a runtime. Legge il file di blocco, si collega all'API
-locale (avviando `app-server` se serve) e mostra un pannello chat che usa le
-conversazioni dell'app. Aggiunge al contesto il file aperto o la selezione e presenta le
+locale (avviando `app-server` se serve: lo trova da `install.json`, scritto dall'app, o
+nella cartella dell'installer) e mostra un pannello chat che usa le conversazioni
+dell'app. Segue gli agenti avviati da VS Code e ne mostra le richieste di conferma come
+notifiche. Parla la lingua di VS Code. Aggiunge al contesto il file aperto o la selezione e presenta le
 modifiche proposte come diff, da accettare o rifiutare. La logica che non dipende da VS
 Code (`core.ts`, `edits.ts`) si prova con Node da sola.
 
 ### Client API — `packages/api-client`
 
-Tipi TypeScript e funzioni per chiamare l'API locale, generati dalle definizioni Rust per
-non doverli tenere allineati a mano. **Non ancora realizzato**: per ora l'estensione ha i
-suoi tipi scritti a mano.
+Tipi TypeScript dell'API locale (`index.d.ts`), generati dai tipi Rust con ts-rs
+(`crates/server/src/bindings.rs`): l'estensione li importa invece di tenerne una copia
+scritta a mano, e `cargo test` fallisce se il file non è aggiornato.
 
 ## Modelli locali
 
@@ -167,11 +174,12 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 | Conversazioni, agenti, sessioni, impostazioni (lingua e protezioni comprese) | `data.sqlite`, con `data.sqlite-wal` e `data.sqlite-shm` (modalità WAL) |
 | Preset dei modelli | `presets\*.json` (leggibili e condivisibili) |
 | Preset con nome | `presets\named\*.json` (parametri di generazione e prompt di sistema, applicabili a qualsiasi modello) |
-| Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` |
+| Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` (anche più varianti; quella in uso è un'impostazione) |
 | File di blocco del nucleo | `core.lock` (porta, token in chiaro, pid; esiste solo mentre il nucleo è attivo; protetto dai permessi della cartella utente) |
+| Dove è installato `app-server` | `install.json` (scritto dall'app a ogni avvio, letto dall'estensione VS Code) |
 
 | Chiavi API, token dell'API locale, variabili d'ambiente dei server MCP | Gestore credenziali di Windows — **non** su disco |
-| Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati |
+| Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati; quelli scaricati dall'app in `<autore>\<nome>` |
 
 ## API locale
 

@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::local::SamplingParams;
 use crate::tools::ToolDef;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Anthropic,
@@ -36,7 +36,7 @@ impl ProviderKind {
 }
 
 /// Un modello offerto da un provider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudModel {
     pub id: String,
@@ -72,7 +72,7 @@ fn price_per_million(value: Option<&Value>) -> Option<f64> {
 
 /// Un provider configurato dall'utente. La chiave API non sta qui ma nel
 /// portachiavi di sistema (vedi `secrets`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {
     pub id: String,

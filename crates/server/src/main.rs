@@ -107,6 +107,8 @@ async fn run() -> Result<(), String> {
         app_server::start(core.clone(), &data_dir, InstanceKind::Server, options.port).await?;
     println!("API locale su http://127.0.0.1:{}", api.port());
     println!("Cartella dati: {}", data_dir.display());
+    // Scaricamento del modello dopo un periodo di inattività (LO-8).
+    tokio::spawn(core.clone().maintenance());
 
     let idle_limit =
         (options.idle_minutes > 0).then(|| Duration::from_secs(options.idle_minutes * 60));

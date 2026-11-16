@@ -2,6 +2,7 @@
 
 import * as vscode from "vscode";
 import { fitReplacement, replaceRange } from "./edits";
+import { t } from "./i18n";
 
 export const PROPOSAL_SCHEME = "personaily-proposta";
 
@@ -29,10 +30,10 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
   private readonly listeners: vscode.Disposable[];
 
   constructor() {
-    this.acceptItem.text = "$(check) Accetta la modifica";
+    this.acceptItem.text = `$(check) ${t("Accetta la modifica")}`;
     this.acceptItem.command = "personailyHub.acceptProposal";
     this.acceptItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-    this.rejectItem.text = "$(close) Rifiuta";
+    this.rejectItem.text = `$(close) ${t("Rifiuta")}`;
     this.rejectItem.command = "personailyHub.rejectProposal";
     this.listeners = [
       vscode.window.onDidChangeActiveTextEditor(() => this.updateButtons()),
@@ -65,7 +66,7 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
     const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
     const newText = fitReplacement(proposedCode, originalText, eol);
     if (newText === originalText) {
-      vscode.window.showInformationMessage("Il modello non ha proposto cambiamenti.");
+      vscode.window.showInformationMessage(t("Il modello non ha proposto cambiamenti."));
       return;
     }
     const id = String(++this.counter);
@@ -78,7 +79,7 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
     this.previews.set(preview.toString(), replaceRange(full, start, end, newText));
     this.proposals.set(id, { id, target: document.uri, range, originalText, newText, preview });
 
-    await vscode.commands.executeCommand("vscode.diff", document.uri, preview, `${name} ↔ proposta di PersonAIly Hub`, {
+    await vscode.commands.executeCommand("vscode.diff", document.uri, preview, t("{name} ↔ proposta di PersonAIly Hub", { name }), {
       preview: false,
     });
     this.updateButtons();
@@ -102,14 +103,14 @@ export class Proposals implements vscode.TextDocumentContentProvider, vscode.Dis
     // Se nel frattempo il testo è cambiato proprio lì, non si sovrascrive nulla.
     if (document.getText(proposal.range) !== proposal.originalText) {
       vscode.window.showWarningMessage(
-        "Il file è cambiato nel punto da modificare dopo la proposta: chiedi di nuovo la modifica.",
+        t("Il file è cambiato nel punto da modificare dopo la proposta: chiedi di nuovo la modifica."),
       );
       return;
     }
     const edit = new vscode.WorkspaceEdit();
     edit.replace(proposal.target, proposal.range, proposal.newText);
     if (!(await vscode.workspace.applyEdit(edit))) {
-      vscode.window.showErrorMessage("Non è stato possibile applicare la modifica.");
+      vscode.window.showErrorMessage(t("Non è stato possibile applicare la modifica."));
       return;
     }
     await this.close(proposal);

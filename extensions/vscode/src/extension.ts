@@ -3,10 +3,13 @@
 // nel nucleo dell'app, raggiunto tramite l'API locale (ADR 0004 e 0010).
 
 import * as vscode from "vscode";
+import type { Conversation } from "../../../packages/api-client";
+import { AgentSessions } from "./agents";
 import { ChatView } from "./chatView";
 import { CoreClient, defaultDataDir } from "./core";
-import { EDIT_SYSTEM_PROMPT, editPrompt, extractCode, openAiModelName } from "./edits";
+import { editPrompt, editSystemPrompt, extractCode, openAiModelName } from "./edits";
 import { currentEditor, editorContext } from "./editor";
+import { languageFor, setLanguage, t } from "./i18n";
 import { type ModelChoice, pickModel } from "./models";
 import { PROPOSAL_SCHEME, Proposals } from "./proposals";
 
@@ -15,6 +18,8 @@ const MODEL_KEY = "personailyHub.model";
 let client: CoreClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  // L'estensione parla la lingua di VS Code.
+  setLanguage(languageFor(vscode.env.language));
   const output = vscode.window.createOutputChannel("PersonAIly Hub");
   const config = () => vscode.workspace.getConfiguration("personailyHub");
   const core = new CoreClient({
@@ -25,13 +30,14 @@ export function activate(context: vscode.ExtensionContext): void {
   client = core;
 
   const proposals = new Proposals();
+  const sessions = new AgentSessions(core);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "personailyHub.chooseModel";
-  status.tooltip = "PersonAIly Hub: scegli il modello";
+  status.tooltip = t("PersonAIly Hub: scegli il modello");
 
   const model = () => context.globalState.get<ModelChoice>(MODEL_KEY);
   const showModel = () => {
-    status.text = `$(sparkle) ${model()?.label ?? "Scegli il modello"}`;
+    status.text = `$(sparkle) ${model()?.label ?? t("Scegli il modello")}`;
     status.show();
   };
   showModel();
@@ -69,6 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     status,
     proposals,
+    sessions,
     vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposals),
     vscode.window.registerWebviewViewProvider("personailyHub.chat", chat, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -81,13 +88,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "personailyHub.history",
       guarded(async () => {
-        const list = await core.request<{ id: number; title: string; updatedAt: string }[]>(
+        const list = await core.request<Conversation[]>(
           "GET",
           "/api/conversations",
         );
         const picked = await vscode.window.showQuickPick(
           list.map((c) => ({ label: c.title, description: c.updatedAt.replace("T", " ").slice(0, 16), id: c.id })),
-          { title: "PersonAIly Hub: apri una conversazione", matchOnDescription: true },
+          { title: t("PersonAIly Hub: apri una conversazione"), matchOnDescription: true },
         );
         if (picked) await chat.openConversation(picked.id);
       }),
@@ -104,7 +111,14 @@ export function activate(context: vscode.ExtensionContext): void {
       "personailyHub.rejectProposal",
       guarded(() => proposals.reject()),
     ),
-    vscode.commands.registerCommand("personailyHub.startAgent", guarded(() => startAgent(core))),
+    vscode.commands.registerCommand(
+      "personailyHub.startAgent",
+      guarded(() => sessions.start()),
+    ),
+    vscode.commands.registerCommand(
+      "personailyHub.sessions",
+      guarded(() => sessions.pick()),
+    ),
   );
 }
 
@@ -123,7 +137,7 @@ async function requestEdit(
 ): Promise<void> {
   const editor = currentEditor();
   if (!editor) {
-    vscode.window.showWarningMessage("Apri il file da modificare.");
+    vscode.window.showWarningMessage(t("Apri il file da modificare."));
     return;
   }
   if (!model) return;
@@ -134,12 +148,12 @@ async function requestEdit(
   }
   const where =
     context.target.startLine !== undefined
-      ? `righe ${context.target.startLine}-${context.target.endLine}`
-      : "tutto il file";
+      ? t("righe {start}-{end}", { start: String(context.target.startLine), end: String(context.target.endLine) })
+      : t("tutto il file");
   const instruction = await vscode.window.showInputBox({
     title: `PersonAIly Hub · ${model.label}`,
-    prompt: `Che modifica vuoi su ${where}?`,
-    placeHolder: "Per esempio: aggiungi la gestione degli errori",
+    prompt: t("Che modifica vuoi su {where}?", { where }),
+    placeHolder: t("Per esempio: aggiungi la gestione degli errori"),
     ignoreFocusOut: true,
   });
   if (!instruction?.trim()) return;
@@ -148,7 +162,7 @@ async function requestEdit(
   const finished = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `${model.label} sta scrivendo la modifica`,
+      title: t("{model} sta scrivendo la modifica", { model: model.label }),
       cancellable: true,
     },
     async (progress, token) => {
@@ -161,7 +175,7 @@ async function requestEdit(
             model: openAiModelName(model.ref),
             stream: true,
             messages: [
-              { role: "system", content: EDIT_SYSTEM_PROMPT },
+              { role: "system", content: editSystemPrompt() },
               { role: "user", content: editPrompt(context.target, instruction.trim()) },
             ],
           },
@@ -172,7 +186,7 @@ async function requestEdit(
             const text = chunk.choices?.[0]?.delta?.content;
             if (text) {
               reply += text;
-              progress.report({ message: `${reply.length} caratteri` });
+              progress.report({ message: t("{n} caratteri", { n: reply.length }) });
             }
           },
           abort.signal,
@@ -187,33 +201,9 @@ async function requestEdit(
   if (!finished) return;
   const code = extractCode(reply);
   if (!code) {
-    vscode.window.showWarningMessage("Il modello non ha proposto codice.");
+    vscode.window.showWarningMessage(t("Il modello non ha proposto codice."));
     return;
   }
   const document = await vscode.workspace.openTextDocument(context.uri);
   await proposals.show(document, context.range, code);
-}
-
-/** Avvia un agente dell'app su un compito; lo si segue nella pagina Agenti dell'app. */
-async function startAgent(core: CoreClient): Promise<void> {
-  const agents = await core.request<{ id: number; name: string; description: string }[]>("GET", "/api/agents");
-  if (agents.length === 0) {
-    vscode.window.showInformationMessage("Nessun agente: crealo nella pagina Agenti dell'app.");
-    return;
-  }
-  const agent = await vscode.window.showQuickPick(
-    agents.map((a) => ({ label: a.name, description: a.description, id: a.id })),
-    { title: "PersonAIly Hub: scegli l'agente" },
-  );
-  if (!agent) return;
-  const task = await vscode.window.showInputBox({
-    title: `PersonAIly Hub · ${agent.label}`,
-    prompt: "Che cosa deve fare?",
-    ignoreFocusOut: true,
-  });
-  if (!task?.trim()) return;
-  await core.request("POST", `/api/agents/${agent.id}/sessions`, { task: task.trim() });
-  vscode.window.showInformationMessage(
-    `${agent.label} è al lavoro. Le richieste di conferma e l'avanzamento sono nella pagina Agenti dell'app.`,
-  );
 }

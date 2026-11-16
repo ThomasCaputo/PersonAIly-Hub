@@ -1,7 +1,7 @@
 {
   "name": "personaily-hub-vscode",
   "displayName": "PersonAIly Hub",
-  "description": "Chat e modifiche al codice con i modelli locali e cloud di PersonAIly Hub.",
+  "description": "%description%",
   "version": "0.1.0",
   "publisher": "personaily",
   "private": true,
@@ -45,41 +45,46 @@
     "commands": [
       {
         "command": "personailyHub.edit",
-        "title": "Chiedi una modifica…",
+        "title": "%command.edit%",
         "category": "PersonAIly Hub"
       },
       {
         "command": "personailyHub.chooseModel",
-        "title": "Scegli il modello",
+        "title": "%command.chooseModel%",
         "category": "PersonAIly Hub",
         "icon": "$(chip)"
       },
       {
         "command": "personailyHub.newChat",
-        "title": "Nuova conversazione",
+        "title": "%command.newChat%",
         "category": "PersonAIly Hub",
         "icon": "$(add)"
       },
       {
         "command": "personailyHub.history",
-        "title": "Apri una conversazione",
+        "title": "%command.history%",
         "category": "PersonAIly Hub",
         "icon": "$(history)"
       },
       {
         "command": "personailyHub.startAgent",
-        "title": "Avvia un agente",
+        "title": "%command.startAgent%",
+        "category": "PersonAIly Hub"
+      },
+      {
+        "command": "personailyHub.sessions",
+        "title": "%command.sessions%",
         "category": "PersonAIly Hub"
       },
       {
         "command": "personailyHub.acceptProposal",
-        "title": "Accetta la modifica",
+        "title": "%command.acceptProposal%",
         "category": "PersonAIly Hub",
         "icon": "$(check)"
       },
       {
         "command": "personailyHub.rejectProposal",
-        "title": "Rifiuta la modifica",
+        "title": "%command.rejectProposal%",
         "category": "PersonAIly Hub",
         "icon": "$(close)"
       }
@@ -146,27 +151,29 @@
         "personailyHub.serverPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Percorso di `app-server.exe`, il nucleo senza interfaccia. Serve solo quando l'app desktop è chiusa: l'estensione lo avvia da sé."
+          "markdownDescription": "%config.serverPath%"
         },
         "personailyHub.dataDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.personaily.hub`)."
+          "markdownDescription": "%config.dataDir%"
         },
         "personailyHub.maxContextChars": {
           "type": "number",
           "default": 60000,
           "minimum": 1000,
-          "markdownDescription": "Caratteri massimi del file aperto inviati come contesto. Per i file più lunghi si invia solo la selezione."
+          "markdownDescription": "%config.maxContextChars%"
         }
       }
     }
   },
   "scripts": {
-    "build": "tsc -p .",
-    "watch": "tsc -p . --watch",
-    "test": "tsc -p . && node --test test/",
-    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license -o personaily-hub.vsix"
+    "sync": "node scripts/sync-core-texts.mjs",
+    "build": "npm run sync && tsc -p .",
+    "watch": "npm run sync && tsc -p . --watch",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test": "npm run sync && tsc -p . && node scripts/check-i18n.mjs && node --test test/",
+    "package": "npm run sync && tsc -p . && node -e \"require('fs').copyFileSync('../../LICENSE', 'LICENSE')\" && vsce package --no-dependencies -o personaily-hub.vsix"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

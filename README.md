@@ -28,13 +28,15 @@ chat, the same agents and the same tools whichever model you pick.
 
 **Local models**
 - Run `.gguf` models on your PC through [llama.cpp](https://github.com/ggml-org/llama.cpp),
-  which the app downloads and updates for you (CUDA, Vulkan or CPU-only build).
-- Search and download models from Hugging Face, with resumable downloads, or import files
-  you already have.
+  which the app downloads and updates for you. Pick the CUDA, Vulkan or CPU-only build, or
+  keep several and switch between them.
+- Search and download models from Hugging Face (several at once, resumable, models split
+  into multiple files included), or import files you already have.
+- Image input for local vision models through their `mmproj` component.
 - A memory estimate before loading: the model and its KV cache live **either in VRAM or in
   RAM**, never silently split, and you are warned if they don't fit.
 - Live VRAM/RAM usage, tokens per second and context fill. KV cache quantized to `q8_0`
-  by default.
+  by default. Optionally unload the model by itself after some idle minutes.
 
 **Cloud models**
 - Anthropic, plus any OpenAI-compatible service (OpenAI, OpenRouter, Groq, Mistral,
@@ -45,7 +47,9 @@ chat, the same agents and the same tools whichever model you pick.
 - Streaming answers you can stop, Markdown with code highlighting and math formulas.
 - Attachments (text, PDF, images for vision models) and web search with sources.
 - Controlled access to the folders you choose: the model can read, create and edit files there.
-- Switch model mid-conversation; full-text search through your history.
+- Switch model mid-conversation; edit a message and regenerate the reply; export a
+  conversation as Markdown; full-text search through your history.
+- Models reply in the language you write in.
 - Per-model parameters (temperature, top-p, context length, GPU layers…) and named presets
   you can export and import.
 
@@ -57,10 +61,14 @@ chat, the same agents and the same tools whichever model you pick.
 
 **Integrations**
 - A local **OpenAI-compatible API**, so existing tools can use your models.
-- A **VS Code extension**: chat in the editor with the open file as context, and proposed
-  changes shown as diffs to accept or reject ([details](extensions/vscode/README.md)).
+- A **VS Code extension**: chat in the editor with the open file as context, proposed
+  changes shown as diffs to accept or reject, and agents you can follow and approve from
+  the editor ([details](extensions/vscode/README.md)).
+- Closing the window keeps the app running in the notification area: the loaded model,
+  working agents and the VS Code extension carry on, while the interface frees its memory.
 
-The interface is available in **English** and **Italian**.
+The interface (and the VS Code extension) is available in **English** and **Italian**, with
+a light and a dark theme.
 
 ## Download
 
@@ -68,8 +76,9 @@ Get the latest version from the [Releases page](https://github.com/ThomasCaputo/
 
 | File | What it is |
 |---|---|
-| `PersonAIly-Hub_<version>_x64-setup.exe` | Installer (recommended). No administrator rights needed, adds a Start menu entry and an uninstaller. |
+| `PersonAIly-Hub_<version>_x64-setup.exe` | Installer (recommended). No administrator rights needed, adds a Start menu entry and an uninstaller. Also installs the headless core the VS Code extension uses when the app is closed. |
 | `PersonAIly-Hub_<version>_x64-portable.exe` | Single executable, nothing to install. |
+| `personaily-hub-vscode_<version>.vsix` | VS Code extension. In VS Code: **Extensions** view → **⋯** → **Install from VSIX…** |
 | `SHA256SUMS.txt` | Checksums to verify the downloads. |
 
 > [!NOTE]

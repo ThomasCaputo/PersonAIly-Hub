@@ -1,6 +1,12 @@
 //! Guscio dell'app desktop: crea la finestra e inoltra i comandi al nucleo.
 //! Qui non va logica propria: sta tutta in `app-core`.
+//!
+//! Il nucleo vive finché vive il processo, non la finestra: chiudendola,
+//! l'interfaccia si distrugge (e libera la sua memoria) mentre il nucleo resta
+//! attivo nell'area di notifica, con il modello caricato, gli agenti al lavoro
+//! e l'API locale per VS Code ([ADR 0013](../../../../docs/adr/0013-nucleo-in-area-di-notifica.md)).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use app_core::DownloadState;
@@ -9,6 +15,7 @@ use app_core::chat::ChatEvent;
 use app_core::hub::{HubFile, HubRepo};
 use app_core::instance::InstanceKind;
 use app_core::local::install::{Phase, Progress, Variant};
+use app_core::local::runtime::InstalledEngine;
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
 use app_core::mcp::{McpServerConfig, McpToolInfo};
@@ -18,13 +25,28 @@ use app_core::providers::Provider;
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
-    Approval, Core, EngineStatus, LoadCheck, ModelRef, ProviderInfo, RuntimeStatus,
+    Approval, Core, EngineStatus, LoadCheck, ModelRef, Preferences, ProviderInfo, RuntimeStatus,
     SecuritySettings, SendOutcome,
 };
 use app_server::ApiHandle;
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{Manager, RunEvent, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindowBuilder};
+
+const MAIN_WINDOW: &str = "main";
+const TRAY_ID: &str = "main";
+
+/// Come si sta chiudendo l'app.
+#[derive(Default)]
+struct Lifecycle {
+    /// L'icona nell'area di notifica c'è: si può chiudere la finestra senza
+    /// perdere il modo di riaprirla.
+    tray: AtomicBool,
+    /// L'utente ha scelto "Esci": il processo deve finire davvero.
+    quitting: AtomicBool,
+}
 
 type CoreState<'a> = State<'a, Arc<Core>>;
 
@@ -74,6 +96,17 @@ fn core_info(core: CoreState<'_>) -> CmdResult<CoreInfo> {
 #[tauri::command]
 async fn engine_status(core: CoreState<'_>) -> CmdResult<EngineStatus> {
     Ok(core.engine_status().await)
+}
+
+#[tauri::command(async)]
+fn set_engine_variant(core: CoreState<'_>, variant: Variant) -> CmdResult<()> {
+    core.set_engine_variant(variant).map_err(text)
+}
+
+#[tauri::command]
+async fn remove_engine(core: CoreState<'_>, dir_name: String) -> CmdResult<Vec<InstalledEngine>> {
+    core.remove_engine(&dir_name).await.map_err(text)?;
+    Ok(core.engine_status().await.engines)
 }
 
 #[tauri::command]
@@ -203,20 +236,9 @@ enum StreamEvent {
     },
 }
 
-/// Tauri passa ogni parametro a parte: raggrupparli complicherebbe l'interfaccia.
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-async fn send_message(
-    core: CoreState<'_>,
-    conversation_id: i64,
-    text: String,
-    attachments: Vec<String>,
-    sampling: SamplingParams,
-    system_prompt: String,
-    model: ModelRef,
-    on_event: Channel<StreamEvent>,
-) -> CmdResult<SendOutcome> {
-    let on_chunk = |event| {
+/// Inoltra all'interfaccia gli eventi di una risposta in arrivo.
+fn stream_to(channel: Channel<StreamEvent>) -> impl FnMut(ChatEvent) {
+    move |event| {
         let event = match event {
             ChatEvent::Text(text) => StreamEvent::Text { text },
             ChatEvent::Reasoning(text) => StreamEvent::Reasoning { text },
@@ -233,9 +255,25 @@ async fn send_message(
                 arguments,
             },
         };
-        // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare.
-        let _ = on_event.send(event);
-    };
+        // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare: la
+        // risposta continua e finisce comunque nell'archivio.
+        let _ = channel.send(event);
+    }
+}
+
+/// Tauri passa ogni parametro a parte: raggrupparli complicherebbe l'interfaccia.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn send_message(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    text: String,
+    attachments: Vec<String>,
+    sampling: SamplingParams,
+    system_prompt: String,
+    model: ModelRef,
+    on_event: Channel<StreamEvent>,
+) -> CmdResult<SendOutcome> {
     core.send_message(
         conversation_id,
         &text,
@@ -243,10 +281,51 @@ async fn send_message(
         &sampling,
         &system_prompt,
         &model,
-        on_chunk,
+        stream_to(on_event),
     )
     .await
     .map_err(self::text)
+}
+
+/// Modifica (con `text`) o ripete un messaggio dell'utente e rigenera la
+/// risposta; i messaggi successivi si cancellano.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn resend_message(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    message_id: i64,
+    text: Option<String>,
+    sampling: SamplingParams,
+    system_prompt: String,
+    model: ModelRef,
+    on_event: Channel<StreamEvent>,
+) -> CmdResult<SendOutcome> {
+    core.resend_message(
+        conversation_id,
+        message_id,
+        text.as_deref(),
+        &sampling,
+        &system_prompt,
+        &model,
+        stream_to(on_event),
+    )
+    .await
+    .map_err(self::text)
+}
+
+/// `path` arriva dalla finestra "Salva con nome" del sistema.
+#[tauri::command]
+async fn export_conversation(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    path: String,
+    lang: String,
+) -> CmdResult<()> {
+    blocking(&core, move |core| {
+        core.export_conversation(conversation_id, std::path::Path::new(&path), &lang)
+    })
+    .await
 }
 
 // ── Strumenti e permessi ────────────────────────────────────────────────
@@ -591,8 +670,31 @@ fn language(core: CoreState<'_>) -> CmdResult<Option<String>> {
 }
 
 #[tauri::command(async)]
-fn set_language(core: CoreState<'_>, language: String) -> CmdResult<()> {
-    core.set_language(&language).map_err(text)
+fn set_language(app: AppHandle, core: CoreState<'_>, language: String) -> CmdResult<()> {
+    core.set_language(&language).map_err(text)?;
+    // Il menu dell'icona nell'area di notifica segue la lingua scelta.
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Ok(menu) = tray_menu(&app, &core)
+    {
+        let _ = tray.set_menu(Some(menu));
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn preferences(core: CoreState<'_>) -> Preferences {
+    core.preferences()
+}
+
+#[tauri::command(async)]
+fn set_preferences(core: CoreState<'_>, preferences: Preferences) -> CmdResult<()> {
+    core.set_preferences(&preferences).map_err(text)
+}
+
+/// `true` se chiudendo la finestra il nucleo resta attivo nell'area di notifica.
+#[tauri::command]
+fn runs_in_tray(lifecycle: State<'_, Arc<Lifecycle>>) -> bool {
+    lifecycle.tray.load(Ordering::Relaxed)
 }
 
 /// Apre un collegamento nel browser di sistema. Solo indirizzi web e di
@@ -626,18 +728,130 @@ fn is_app_page(url: &tauri::Url) -> bool {
 }
 
 #[tauri::command]
-fn download_status(core: CoreState<'_>) -> Option<DownloadState> {
-    core.download_status()
+fn list_downloads(core: CoreState<'_>) -> Vec<DownloadState> {
+    core.downloads()
 }
 
 #[tauri::command]
-fn cancel_download(core: CoreState<'_>) {
-    core.cancel_download();
+fn cancel_download(core: CoreState<'_>, id: String) {
+    core.cancel_download(&id);
+}
+
+#[tauri::command]
+fn dismiss_download(core: CoreState<'_>, id: String) {
+    core.dismiss_download(&id);
+}
+
+// ── Finestra e area di notifica ─────────────────────────────────────────
+
+/// Mostra la finestra principale, creandola di nuovo se era stata chiusa.
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == MAIN_WINDOW)
+        .cloned()
+    else {
+        return;
+    };
+    // Su Windows una finestra creata dentro un callback del thread principale
+    // (menu, icona, seconda copia dell'app) non parte: si crea da un altro thread.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        match WebviewWindowBuilder::from_config(&app, &config).and_then(|b| b.build()) {
+            Ok(window) => {
+                let _ = window.set_focus();
+            }
+            Err(e) => eprintln!("finestra non riaperta: {e}"),
+        }
+    });
+}
+
+/// Chiude davvero l'app: finestra, nucleo e modello.
+fn quit(app: &AppHandle) {
+    if let Some(lifecycle) = app.try_state::<Arc<Lifecycle>>() {
+        lifecycle.quitting.store(true, Ordering::Relaxed);
+    }
+    app.exit(0);
+}
+
+/// Il menu dell'icona, nella lingua dell'interfaccia.
+fn tray_menu(app: &AppHandle, core: &Core) -> tauri::Result<Menu<tauri::Wry>> {
+    let english = match core.language().ok().flatten() {
+        Some(lang) => lang == "en",
+        None => !app_core::system_language_is_italian(),
+    };
+    let (open, exit) = if english {
+        ("Open PersonAIly Hub", "Quit")
+    } else {
+        ("Apri PersonAIly Hub", "Esci")
+    };
+    let open = MenuItem::with_id(app, "open", open, true, None::<&str>)?;
+    let exit = MenuItem::with_id(app, "quit", exit, true, None::<&str>)?;
+    Menu::with_items(app, &[&open, &exit])
+}
+
+/// L'icona nell'area di notifica: un clic riapre la finestra, il menu
+/// permette di uscire davvero.
+fn create_tray(app: &AppHandle, core: &Core) -> tauri::Result<()> {
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("PersonAIly Hub")
+        .menu(&tray_menu(app, core)?)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app),
+            "quit" => quit(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+/// Annota dove si trova `app-server.exe`, installato accanto all'app: così
+/// l'estensione VS Code può avviarlo da sola ad app chiusa.
+fn record_server_path(data_dir: &std::path::Path) {
+    let name = if cfg!(windows) {
+        "app-server.exe"
+    } else {
+        "app-server"
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        let server = exe.with_file_name(name);
+        if server.is_file() {
+            let _ = app_core::instance::write_install_info(data_dir, &server);
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        // Per primo: una seconda copia dell'app non parte, riapre la finestra
+        // di quella già accesa (che magari è solo nell'area di notifica).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -649,14 +863,24 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let core = Arc::new(Core::new(&data_dir)?);
             let api = Arc::new(LocalApi::default());
+            let lifecycle = Arc::new(Lifecycle::default());
+            record_server_path(&data_dir);
             spawn_local_api(core.clone(), data_dir, api.clone());
+            tauri::async_runtime::spawn(core.clone().maintenance());
+            // Senza icona la finestra resta l'unico modo di usare l'app:
+            // chiuderla chiude tutto, come prima.
+            let tray = create_tray(app.handle(), &core).is_ok();
+            lifecycle.tray.store(tray, Ordering::Relaxed);
             app.manage(core);
             app.manage(api);
+            app.manage(lifecycle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             core_info,
             engine_status,
+            set_engine_variant,
+            remove_engine,
             install_engine,
             model_folders,
             set_model_folders,
@@ -673,6 +897,8 @@ pub fn run() {
             delete_conversation,
             get_messages,
             send_message,
+            resend_message,
+            export_conversation,
             stop_generation,
             api_info,
             regenerate_api_token,
@@ -716,18 +942,38 @@ pub fn run() {
             search_hub,
             hub_files,
             start_model_download,
-            download_status,
+            list_downloads,
             cancel_download,
+            dismiss_download,
             security_settings,
             set_security_settings,
             language,
             set_language,
+            preferences,
+            set_preferences,
+            runs_in_tray,
             open_external,
         ])
         .build(tauri::generate_context!())
         .expect("errore durante l'avvio dell'app");
 
     app.run(|handle, event| {
+        // Chiusa l'ultima finestra il processo resterebbe senza motivo di
+        // vivere: se l'utente lo preferisce, resta invece nell'area di notifica.
+        if let RunEvent::ExitRequested {
+            code: None, api, ..
+        } = &event
+            && let (Some(core), Some(lifecycle)) = (
+                handle.try_state::<Arc<Core>>(),
+                handle.try_state::<Arc<Lifecycle>>(),
+            )
+            && lifecycle.tray.load(Ordering::Relaxed)
+            && !lifecycle.quitting.load(Ordering::Relaxed)
+            && core.preferences().keep_running
+        {
+            api.prevent_exit();
+            return;
+        }
         // Alla chiusura il modello va scaricato, altrimenti llama-server
         // resterebbe in esecuzione con la memoria occupata.
         if let RunEvent::Exit = event

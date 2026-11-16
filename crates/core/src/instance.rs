@@ -17,7 +17,7 @@ pub const APP_IDENTIFIER: &str = "dev.personaily.hub";
 pub const LOCK_FILE: &str = "core.lock";
 
 /// Chi ha avviato il nucleo in esecuzione.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceKind {
     /// L'app desktop.
@@ -27,7 +27,7 @@ pub enum InstanceKind {
 }
 
 /// Contenuto del file di blocco.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LockInfo {
     pub port: u16,
@@ -56,6 +56,36 @@ pub fn default_data_dir() -> Option<PathBuf> {
 
 pub fn lock_path(data_dir: &Path) -> PathBuf {
     data_dir.join(LOCK_FILE)
+}
+
+/// File in cui l'app annota dove è installato `app-server`, così
+/// l'estensione VS Code lo trova da sola anche ad app chiusa.
+pub const INSTALL_FILE: &str = "install.json";
+
+/// Contenuto di [`INSTALL_FILE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallInfo {
+    pub server_path: String,
+    pub version: String,
+}
+
+/// Annota dove si trova `app-server`. Si scrive solo se cambia: l'app lo
+/// chiama a ogni avvio.
+pub fn write_install_info(data_dir: &Path, server: &Path) -> Result<()> {
+    let info = InstallInfo {
+        server_path: server.to_string_lossy().into_owned(),
+        version: crate::version().to_string(),
+    };
+    let path = data_dir.join(INSTALL_FILE);
+    let current = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<InstallInfo>(&text).ok());
+    if current.as_ref() != Some(&info) {
+        std::fs::create_dir_all(data_dir)?;
+        std::fs::write(path, serde_json::to_string_pretty(&info)?)?;
+    }
+    Ok(())
 }
 
 /// Il file di blocco, se c'è ed è leggibile.

@@ -4,6 +4,10 @@
 //! interrotto riprende da dove era arrivato, e il file prende il nome
 //! definitivo solo dopo il controllo dell'impronta SHA-256. Così in libreria
 //! non compaiono mai modelli incompleti.
+//!
+//! Ogni repository finisce in una sua sottocartella (`autore/nome`): i
+//! componenti visivi (`mmproj`) hanno spesso lo stesso nome in repository
+//! diversi, e devono stare accanto al loro modello.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -17,6 +21,7 @@ use tokio::sync::Notify;
 
 use crate::chat;
 use crate::error::{Error, Result};
+use crate::models;
 
 const HUB: &str = "https://huggingface.co";
 const SEARCH_LIMIT: usize = 25;
@@ -30,14 +35,62 @@ pub struct HubRepo {
     pub likes: u64,
 }
 
-/// Un file GGUF dentro un repository.
+/// Che cosa contiene un file GGUF.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HubFileKind {
+    #[default]
+    Model,
+    /// Componente visivo (`mmproj`): fa leggere le immagini al modello accanto.
+    Vision,
+}
+
+/// Un file come lo pubblica il sito.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HubFile {
+pub struct HubPart {
     pub path: String,
     pub size_bytes: u64,
     /// Impronta dichiarata dal sito, usata per verificare il download.
     pub sha256: Option<String>,
+}
+
+/// Un modello (o componente visivo) scaricabile: un file, oppure le parti di
+/// un modello diviso (`-00001-of-00003.gguf`), che si scaricano insieme.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFile {
+    /// Il file, o la prima parte.
+    pub path: String,
+    /// Dimensione totale.
+    pub size_bytes: u64,
+    /// Impronta del file; per un modello diviso è in `parts`.
+    pub sha256: Option<String>,
+    /// Tutte le parti di un modello diviso; vuoto per un file solo.
+    #[serde(default)]
+    pub parts: Vec<HubPart>,
+    #[serde(default)]
+    pub kind: HubFileKind,
+}
+
+impl HubFile {
+    /// I file da scaricare, nell'ordine.
+    pub fn pieces(&self) -> Vec<HubPart> {
+        if self.parts.is_empty() {
+            vec![HubPart {
+                path: self.path.clone(),
+                size_bytes: self.size_bytes,
+                sha256: self.sha256.clone(),
+            }]
+        } else {
+            self.parts.clone()
+        }
+    }
+
+    /// `true` se di almeno un file il sito non pubblica l'impronta.
+    pub fn unverified(&self) -> bool {
+        self.pieces().iter().any(|p| p.sha256.is_none())
+    }
 }
 
 /// Com'è finito un download.
@@ -89,14 +142,17 @@ pub async fn files(http: &reqwest::Client, repo: &str) -> Result<Vec<HubFile>> {
     Ok(parse_files(&response.json::<Value>().await?))
 }
 
+/// I file GGUF del repository: modelli in un file solo, modelli divisi (le
+/// cui parti diventano una voce sola, se ci sono tutte) e componenti visivi.
+/// Prima i modelli, dal più piccolo; in fondo i componenti visivi.
 fn parse_files(value: &Value) -> Vec<HubFile> {
-    let mut files: Vec<HubFile> = value
+    let parts: Vec<HubPart> = value
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|entry| {
             let path = entry.get("path")?.as_str()?.to_string();
-            is_single_model_file(&path).then(|| HubFile {
+            path.to_lowercase().ends_with(".gguf").then(|| HubPart {
                 size_bytes: entry.get("size").and_then(Value::as_u64).unwrap_or(0),
                 sha256: entry
                     .pointer("/lfs/oid")
@@ -106,37 +162,123 @@ fn parse_files(value: &Value) -> Vec<HubFile> {
             })
         })
         .collect();
-    files.sort_by_key(|f| f.size_bytes);
+
+    let mut files = Vec::new();
+    for part in &parts {
+        let name = part.path.rsplit('/').next().unwrap_or(&part.path);
+        if models::is_mmproj(name) {
+            files.push(HubFile {
+                path: part.path.clone(),
+                size_bytes: part.size_bytes,
+                sha256: part.sha256.clone(),
+                parts: Vec::new(),
+                kind: HubFileKind::Vision,
+            });
+            continue;
+        }
+        match models::split_part(name) {
+            None => files.push(HubFile {
+                path: part.path.clone(),
+                size_bytes: part.size_bytes,
+                sha256: part.sha256.clone(),
+                parts: Vec::new(),
+                kind: HubFileKind::Model,
+            }),
+            Some((1, _)) => {
+                // Le parti si chiamano come la prima, cambia solo il numero.
+                let wanted: Vec<String> = models::split_files(Path::new(&part.path))
+                    .iter()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .collect();
+                let set: Option<Vec<HubPart>> = wanted
+                    .iter()
+                    .map(|w| parts.iter().find(|p| p.path == *w).cloned())
+                    .collect();
+                if let Some(set) = set {
+                    files.push(HubFile {
+                        path: part.path.clone(),
+                        size_bytes: set.iter().map(|p| p.size_bytes).sum(),
+                        sha256: None,
+                        parts: set,
+                        kind: HubFileKind::Model,
+                    });
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    files.sort_by_key(|f| (f.kind == HubFileKind::Vision, f.size_bytes));
     files
 }
 
-/// Vero per un modello contenuto in un solo file. Esclusi i componenti visivi
-/// (`mmproj`) e i modelli divisi in più parti (`-00001-of-00003`), che l'app
-/// non sa ancora ricomporre.
-fn is_single_model_file(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path).to_lowercase();
-    name.ends_with(".gguf") && !name.starts_with("mmproj") && !name.contains("-of-0")
+/// La cartella in cui finiscono i file di un repository: `autore/nome`
+/// dentro la cartella della libreria.
+pub fn repo_dir(library: &Path, repo: &str) -> Result<PathBuf> {
+    check_repo(repo)?;
+    let mut dir = library.to_path_buf();
+    for part in repo.split('/') {
+        dir.push(part);
+    }
+    Ok(dir)
 }
 
-/// Scarica un file del repository in `dest_dir`, riprendendo un eventuale
-/// download interrotto. `on_progress` riceve i byte scaricati finora.
+/// Scarica un modello (tutte le sue parti, se è diviso) nella sottocartella
+/// del repository dentro `library`, riprendendo un eventuale download
+/// interrotto. `on_progress` riceve i byte scaricati finora, in totale.
 pub async fn download(
     http: &reqwest::Client,
     repo: &str,
     file: &HubFile,
-    dest_dir: &Path,
+    library: &Path,
     cancel: Arc<Notify>,
     mut on_progress: impl FnMut(u64),
 ) -> Result<DownloadEnd> {
-    check_repo(repo)?;
-    let name = safe_file_name(&file.path)?;
-    let dest = dest_dir.join(name);
-    let part = dest_dir.join(format!("{name}.part"));
-    if dest.exists() {
+    let dest_dir = repo_dir(library, repo)?;
+    let pieces = file.pieces();
+    let mut names = Vec::with_capacity(pieces.len());
+    for piece in &pieces {
+        names.push(safe_file_name(&piece.path)?);
+    }
+    if names.iter().all(|name| dest_dir.join(name).exists()) {
         return Err(Error::msg(format!(
-            "{name} è già presente nella cartella dei modelli."
+            "{} è già presente nella cartella dei modelli.",
+            names[0]
         )));
     }
+    std::fs::create_dir_all(&dest_dir)?;
+
+    let mut before = 0;
+    for (piece, name) in pieces.iter().zip(&names) {
+        let dest = dest_dir.join(name);
+        // Una parte già completa (download precedente interrotto più avanti)
+        // ha superato il controllo dell'impronta prima di prendere il suo nome.
+        if !dest.exists() {
+            let end = download_piece(http, repo, piece, &dest_dir, name, cancel.clone(), |done| {
+                on_progress(before + done)
+            })
+            .await?;
+            if end == DownloadEnd::Cancelled {
+                return Ok(DownloadEnd::Cancelled);
+            }
+        }
+        before += piece.size_bytes;
+        on_progress(before);
+    }
+    Ok(DownloadEnd::Completed(dest_dir.join(names[0])))
+}
+
+/// Scarica un singolo file in `dest_dir/name`, passando da `name.part`.
+async fn download_piece(
+    http: &reqwest::Client,
+    repo: &str,
+    file: &HubPart,
+    dest_dir: &Path,
+    name: &str,
+    cancel: Arc<Notify>,
+    mut on_progress: impl FnMut(u64),
+) -> Result<DownloadEnd> {
+    let dest = dest_dir.join(name);
+    let part = dest_dir.join(format!("{name}.part"));
 
     // Quanto c'è già di un download precedente.
     let mut done = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
@@ -288,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn elenca_solo_i_modelli_in_un_unico_file() {
+    fn elenca_modelli_divisi_e_componenti_visivi() {
         let files = parse_files(&json!([
             {"type": "file", "path": "README.md", "size": 100},
             {"type": "file", "path": "modello-Q8_0.gguf", "size": 8000,
@@ -296,14 +438,36 @@ mod tests {
             {"type": "file", "path": "modello-Q4_K_M.gguf", "size": 4000,
              "lfs": {"oid": "aa", "size": 4000}},
             {"type": "file", "path": "mmproj-modello.gguf", "size": 500},
-            {"type": "file", "path": "grande-00001-of-00002.gguf", "size": 9000},
+            {"type": "file", "path": "Q8/grande-00001-of-00002.gguf", "size": 9000,
+             "lfs": {"oid": "c1", "size": 9000}},
+            {"type": "file", "path": "Q8/grande-00002-of-00002.gguf", "size": 7000,
+             "lfs": {"oid": "c2", "size": 7000}},
+            {"type": "file", "path": "monco-00001-of-00002.gguf", "size": 9000},
             {"type": "directory", "path": "sottocartella"}
         ]));
         assert_eq!(
             files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
-            ["modello-Q4_K_M.gguf", "modello-Q8_0.gguf"]
+            [
+                "modello-Q4_K_M.gguf",
+                "modello-Q8_0.gguf",
+                "Q8/grande-00001-of-00002.gguf",
+                "mmproj-modello.gguf"
+            ]
         );
         assert_eq!(files[0].sha256.as_deref(), Some("aa"));
+        assert_eq!(files[2].size_bytes, 16000);
+        assert_eq!(files[2].parts.len(), 2);
+        assert_eq!(files[2].pieces()[1].sha256.as_deref(), Some("c2"));
+        assert_eq!(files[3].kind, HubFileKind::Vision);
+        assert!(files[3].unverified());
+        assert!(!files[2].unverified());
+    }
+
+    #[test]
+    fn ogni_repository_ha_la_sua_cartella() {
+        let dir = repo_dir(Path::new("modelli"), "autore/Nome-GGUF").unwrap();
+        assert_eq!(dir, Path::new("modelli").join("autore").join("Nome-GGUF"));
+        assert!(repo_dir(Path::new("modelli"), "../fuori").is_err());
     }
 
     #[test]

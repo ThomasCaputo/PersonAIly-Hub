@@ -91,12 +91,12 @@ chiudere da programma, e restava a chiedere una decisione già presa.
 
 - Qualsiasi programma compatibile con OpenAI può usare i modelli dell'app (indirizzo e
   token in Impostazioni → API locale).
-- Ad app chiusa l'estensione ha bisogno del percorso di `app-server.exe`
-  (`personailyHub.serverPath`): l'installer della Tappa 6 dovrà installarlo e l'estensione
-  trovarlo da sola.
-- Le conferme degli agenti avviati da VS Code si danno nella pagina Agenti dell'app: con
-  l'app chiusa un agente che chiede conferma resta in attesa. Aprire l'app chiude
+- Ad app chiusa l'estensione ha bisogno di `app-server.exe`. Dal 16-11-2026 l'installer lo
+  mette accanto all'app (`bundle.externalBin` in `tauri.bundle.conf.json`, preparato da
+  `scripts/build-server.mjs`), l'app annota dove si trova in `install.json` e l'estensione
+  lo trova da sola; `personailyHub.serverPath` serve solo per l'exe portatile o una build.
+- Le conferme degli agenti avviati da VS Code arrivano (dal 16-11-2026) come notifiche in
+  VS Code, oltre che nella pagina Agenti dell'app. Aprire l'app chiude
   `app-server` e con lui le sessioni in corso, che restano interrotte e si riprendono
   scrivendo all'agente.
-- I tipi dell'API sono scritti a mano nell'estensione; la generazione automatica dai tipi
-  Rust (`packages/api-client`) è rimandata.
+- I tipi dell'API sono generati dai tipi Rust in `packages/api-client` (dal 16-11-2026).

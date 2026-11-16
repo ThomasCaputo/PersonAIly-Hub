@@ -1,20 +1,37 @@
 // Parti delle modifiche al codice che non dipendono da VS Code.
 
+import type { ModelRef } from "../../../packages/api-client";
+import { currentLanguage, t } from "./i18n";
+
 /** Il modello scelto, nella forma dell'API (`ModelRef` del nucleo). */
-export type ModelRef = { kind: "local" } | { kind: "cloud"; providerId: string; model: string };
+export type { ModelRef };
 
 /** Nome del modello per l'endpoint compatibile con OpenAI. */
 export function openAiModelName(model: ModelRef): string {
   return model.kind === "local" ? "local" : `${model.providerId}/${model.model}`;
 }
 
-export const EDIT_SYSTEM_PROMPT = [
-  "Sei un assistente di programmazione che modifica codice.",
-  "Ricevi un frammento di un file e un'istruzione.",
-  "Rispondi SOLO con il frammento modificato per intero, in un unico blocco di codice delimitato da ```,",
-  "senza spiegazioni prima o dopo.",
-  "Mantieni lo stile, l'indentazione e tutto ciò che l'istruzione non chiede di cambiare.",
-].join(" ");
+/**
+ * Le istruzioni per chiedere una modifica, nella lingua dell'estensione: un
+ * prompt in italiano spinge il modello a rispondere in italiano.
+ */
+export function editSystemPrompt(): string {
+  return currentLanguage() === "en"
+    ? [
+        "You are a programming assistant that edits code.",
+        "You receive a fragment of a file and an instruction.",
+        "Reply ONLY with the whole edited fragment, in a single code block delimited by ```,",
+        "with no explanation before or after.",
+        "Keep the style, the indentation and everything the instruction does not ask to change.",
+      ].join(" ")
+    : [
+        "Sei un assistente di programmazione che modifica codice.",
+        "Ricevi un frammento di un file e un'istruzione.",
+        "Rispondi SOLO con il frammento modificato per intero, in un unico blocco di codice delimitato da ```,",
+        "senza spiegazioni prima o dopo.",
+        "Mantieni lo stile, l'indentazione e tutto ciò che l'istruzione non chiede di cambiare.",
+      ].join(" ");
+}
 
 export interface EditTarget {
   fileName: string;
@@ -28,9 +45,13 @@ export interface EditTarget {
 export function editPrompt(target: EditTarget, instruction: string): string {
   const where =
     target.startLine !== undefined
-      ? `Righe ${target.startLine}-${target.endLine} del file ${target.fileName}.`
-      : `File intero: ${target.fileName}.`;
-  return `${where}\n\n${fence(target.code, target.languageId)}\n\nIstruzione: ${instruction}`;
+      ? t("Righe {start}-{end} del file {file}.", {
+          start: String(target.startLine),
+          end: String(target.endLine),
+          file: target.fileName,
+        })
+      : t("File intero: {file}.", { file: target.fileName });
+  return `${where}\n\n${fence(target.code, target.languageId)}\n\n${t("Istruzione:")} ${instruction}`;
 }
 
 /** Il codice in un blocco delimitato, con abbastanza apici da non chiudersi prima. */
@@ -99,13 +120,21 @@ export function replaceRange(text: string, start: number, end: number, replaceme
   return text.slice(0, start) + replacement + text.slice(end);
 }
 
-/** Intestazione con cui il contesto dell'editor entra nel messaggio della chat. */
-export const CONTEXT_MARK = "[Contesto da VS Code:";
+/**
+ * Intestazioni con cui il contesto dell'editor entra nel messaggio della
+ * chat, in italiano e in inglese: il pannello le riconosce entrambe.
+ */
+export const CONTEXT_MARKS = ["[Contesto da VS Code:", "[Context from VS Code:"] as const;
 
 export function contextBlock(target: EditTarget): string {
+  const mark = currentLanguage() === "en" ? CONTEXT_MARKS[1] : CONTEXT_MARKS[0];
   const where =
     target.startLine !== undefined
-      ? `${target.fileName}, righe ${target.startLine}-${target.endLine} selezionate`
-      : `${target.fileName}, file intero`;
-  return `${CONTEXT_MARK} ${where}]\n${fence(target.code, target.languageId)}`;
+      ? t("{file}, righe {start}-{end} selezionate", {
+          file: target.fileName,
+          start: String(target.startLine),
+          end: String(target.endLine),
+        })
+      : t("{file}, file intero", { file: target.fileName });
+  return `${mark} ${where}]\n${fence(target.code, target.languageId)}`;
 }

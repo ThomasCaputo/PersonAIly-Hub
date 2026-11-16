@@ -78,9 +78,9 @@ pub(crate) async fn blocking<T: Send + 'static>(
 
 // ── Nucleo ──────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-struct Info {
+pub(crate) struct Info {
     version: &'static str,
     kind: InstanceKind,
     pid: u32,
@@ -113,17 +113,17 @@ async fn status(State(state): State<ApiState>) -> Json<RuntimeStatus> {
 
 // ── Modelli ─────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-struct LocalModels {
+pub(crate) struct LocalModels {
     loaded: Option<LoadedModel>,
     loading: bool,
     library: Vec<ModelInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-struct Models {
+pub(crate) struct Models {
     local: LocalModels,
     cloud: Vec<ProviderInfo>,
 }
@@ -146,12 +146,13 @@ async fn models(State(state): State<ApiState>) -> ApiResult<Json<Models>> {
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-struct LoadBody {
+pub(crate) struct LoadBody {
     path: String,
     /// Carica anche se la stima dice che non entra in memoria.
     #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
     force: bool,
 }
 
@@ -212,8 +213,8 @@ async fn create_conversation(State(state): State<ApiState>) -> ApiResult<Json<Co
     ))
 }
 
-#[derive(Deserialize)]
-struct RenameBody {
+#[derive(Deserialize, ts_rs::TS)]
+pub(crate) struct RenameBody {
     title: String,
 }
 
@@ -246,16 +247,19 @@ async fn messages(
     ))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-struct SendBody {
+pub(crate) struct SendBody {
     text: String,
     /// Percorsi di file da allegare.
     #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
     attachments: Vec<String>,
     model: ModelRef,
     /// Assenti: si usano quelli del preset del modello.
+    #[ts(optional)]
     sampling: Option<SamplingParams>,
+    #[ts(optional)]
     system_prompt: Option<String>,
 }
 
@@ -305,17 +309,45 @@ async fn send_message(
         watcher.abort();
         let event = match result {
             Ok(outcome) => sse_json(Some("done"), &outcome),
-            Err(e) => sse_json(Some("error"), &json!({ "message": e.to_string() })),
+            Err(e) => sse_json(
+                Some("error"),
+                &ErrorEvent {
+                    message: e.to_string(),
+                },
+            ),
         };
         let _ = tx.send(Outgoing { event, last: true });
     });
     Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
 }
 
+/// Dati degli eventi `text` e `reasoning` del flusso di una risposta.
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct TextEvent {
+    pub text: String,
+}
+
+/// Dati dell'evento `toolRequest`: uno strumento aspetta la conferma
+/// dell'utente (si risponde con `POST /api/tool-requests`).
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct ToolRequestEvent {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Dati dell'evento `error`, che chiude il flusso. (L'evento `done` porta un
+/// `SendOutcome`; `saved` nessun dato.)
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct ErrorEvent {
+    pub message: String,
+}
+
 fn chat_event(event: ChatEvent) -> axum::response::sse::Event {
     match event {
-        ChatEvent::Text(text) => sse_json(Some("text"), &json!({ "text": text })),
-        ChatEvent::Reasoning(text) => sse_json(Some("reasoning"), &json!({ "text": text })),
+        ChatEvent::Text(text) => sse_json(Some("text"), &TextEvent { text }),
+        ChatEvent::Reasoning(text) => sse_json(Some("reasoning"), &TextEvent { text }),
         ChatEvent::Saved => sse_json(Some("saved"), &json!({})),
         ChatEvent::ToolRequest {
             id,
@@ -324,7 +356,12 @@ fn chat_event(event: ChatEvent) -> axum::response::sse::Event {
             arguments,
         } => sse_json(
             Some("toolRequest"),
-            &json!({ "id": id, "name": name, "summary": summary, "arguments": arguments }),
+            &ToolRequestEvent {
+                id,
+                name,
+                summary,
+                arguments,
+            },
         ),
     }
 }
@@ -355,8 +392,8 @@ async fn set_conversation_tools(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-struct AnswerBody {
+#[derive(Deserialize, ts_rs::TS)]
+pub(crate) struct AnswerBody {
     id: String,
     approval: Approval,
 }
@@ -406,8 +443,8 @@ fn spawn_session(core: &Arc<Core>, id: i64) {
     });
 }
 
-#[derive(Deserialize)]
-struct TaskBody {
+#[derive(Deserialize, ts_rs::TS)]
+pub(crate) struct TaskBody {
     task: String,
 }
 
@@ -465,8 +502,8 @@ async fn stop_session(State(state): State<ApiState>, Path(id): Path<i64>) -> Sta
     StatusCode::NO_CONTENT
 }
 
-#[derive(Deserialize)]
-struct ReplyBody {
+#[derive(Deserialize, ts_rs::TS)]
+pub(crate) struct ReplyBody {
     text: String,
 }
 

@@ -16,7 +16,7 @@ pub const LLAMA_CPP_BUILD: &str = "b12110";
 
 /// Dove risiedono modello e cache KV. Mai in entrambe le memorie
 /// (vedi `docs/adr/0003-collocazione-memoria.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Placement {
     Vram,
@@ -24,7 +24,7 @@ pub enum Placement {
 }
 
 /// Quantizzazione della cache KV.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 pub enum KvCacheType {
     #[serde(rename = "f16")]
     F16,
@@ -55,7 +55,7 @@ impl KvCacheType {
 }
 
 /// Parametri di caricamento: cambiarli richiede di ricaricare il modello.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LoadParams {
     pub placement: Placement,
@@ -67,6 +67,9 @@ pub struct LoadParams {
     /// Modalità di lettura del file (`--load-mode`). `None` usa quella
     /// predefinita per la collocazione scelta. Solo per prove e misure.
     pub load_mode: Option<String>,
+    /// Carica anche il componente visivo (`mmproj`) se accanto al modello ce
+    /// n'è uno: il modello legge le immagini, al costo di un po' di memoria.
+    pub vision: bool,
 }
 
 impl Default for LoadParams {
@@ -78,6 +81,7 @@ impl Default for LoadParams {
             threads: None,
             batch_size: None,
             load_mode: None,
+            vision: true,
         }
     }
 }
@@ -95,7 +99,7 @@ impl LoadParams {
 }
 
 /// Parametri di generazione: viaggiano con ogni richiesta, effetto immediato.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SamplingParams {
     pub temperature: f32,
@@ -134,8 +138,14 @@ pub struct Preset {
     pub system_prompt: String,
 }
 
-/// Argomenti con cui avviare `llama-server`.
-pub fn build_args(model_path: &str, params: &LoadParams, port: u16) -> Vec<String> {
+/// Argomenti con cui avviare `llama-server`. `mmproj` è il componente
+/// visivo da caricare insieme al modello, se c'è.
+pub fn build_args(
+    model_path: &str,
+    params: &LoadParams,
+    port: u16,
+    mmproj: Option<&str>,
+) -> Vec<String> {
     let kv = params.kv_cache_type.arg();
     let mut args: Vec<String> = [
         "--model",
@@ -186,6 +196,13 @@ pub fn build_args(model_path: &str, params: &LoadParams, port: u16) -> Vec<Strin
     if let Some(batch) = params.batch_size {
         args.extend(["--batch-size".to_string(), batch.to_string()]);
     }
+    if let Some(mmproj) = mmproj {
+        args.extend(["--mmproj".to_string(), mmproj.to_string()]);
+        // Anche il componente visivo resta nella memoria scelta (ADR 0003).
+        if params.placement == Placement::Ram {
+            args.push("--no-mmproj-offload".to_string());
+        }
+    }
     args
 }
 
@@ -222,7 +239,13 @@ const OVERHEAD_FIXED: u64 = 400 * 1024 * 1024;
 const OVERHEAD_RATIO: f64 = 0.03;
 
 pub fn estimate_memory(model: &ModelInfo, params: &LoadParams) -> MemoryEstimate {
-    let weights_bytes = model.size_bytes;
+    // Il componente visivo si carica accanto ai pesi, nella stessa memoria.
+    let vision_bytes = if params.vision {
+        model.mmproj_bytes.unwrap_or(0)
+    } else {
+        0
+    };
+    let weights_bytes = model.size_bytes + vision_bytes;
 
     // Cache KV: per ogni layer e ogni token si conservano una chiave e un valore,
     // ciascuno grande (dimensione di una testa) × (numero di teste KV).
@@ -261,7 +284,7 @@ mod tests {
 
     #[test]
     fn vram_mette_tutto_sulla_gpu() {
-        let args = build_args("m.gguf", &LoadParams::default(), 4000);
+        let args = build_args("m.gguf", &LoadParams::default(), 4000, None);
         assert!(has_pair(&args, "--gpu-layers", "all"));
         assert!(has(&args, "--kv-offload"));
         assert!(!has(&args, "--no-kv-offload"));
@@ -274,7 +297,7 @@ mod tests {
             placement: Placement::Ram,
             ..Default::default()
         };
-        let args = build_args("m.gguf", &params, 4000);
+        let args = build_args("m.gguf", &params, 4000, None);
         assert!(has_pair(&args, "--gpu-layers", "0"));
         assert!(has_pair(&args, "--device", "none"));
         assert!(has(&args, "--no-kv-offload"));
@@ -283,12 +306,25 @@ mod tests {
 
     #[test]
     fn cache_kv_q8_di_default_e_nessuna_copia_in_ram() {
-        let args = build_args("m.gguf", &LoadParams::default(), 4000);
+        let args = build_args("m.gguf", &LoadParams::default(), 4000, None);
         assert!(has_pair(&args, "--cache-type-k", "q8_0"));
         assert!(has_pair(&args, "--cache-type-v", "q8_0"));
         assert!(has_pair(&args, "--flash-attn", "on"));
         assert!(has_pair(&args, "--cache-ram", "0"));
         assert!(has_pair(&args, "--fit", "off"));
+    }
+
+    #[test]
+    fn il_componente_visivo_segue_la_collocazione() {
+        let vram = build_args("m.gguf", &LoadParams::default(), 4000, Some("v.gguf"));
+        assert!(has_pair(&vram, "--mmproj", "v.gguf"));
+        assert!(!has(&vram, "--no-mmproj-offload"));
+        let params = LoadParams {
+            placement: Placement::Ram,
+            ..Default::default()
+        };
+        let ram = build_args("m.gguf", &params, 4000, Some("v.gguf"));
+        assert!(has(&ram, "--no-mmproj-offload"));
     }
 
     #[test]
@@ -314,6 +350,9 @@ mod tests {
             embedding_length: Some(3584),
             head_count: Some(28),
             head_count_kv: Some(4),
+            mmproj: None,
+            mmproj_bytes: None,
+            parts: 1,
             error: None,
         };
         let q8 = estimate_memory(&model, &LoadParams::default());

@@ -3,24 +3,16 @@
 
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
+import type { Conversation, ErrorEvent, Message, SendBody, SendOutcome, TextEvent, ToolRequestEvent } from "../../../packages/api-client";
 import { CoreClient, CoreError } from "./core";
 import { contextBlock, extractCode } from "./edits";
 import { currentEditor, editorContext, type EditorContext } from "./editor";
+import { currentLanguage, t, tc, viewTexts } from "./i18n";
 import type { ModelChoice } from "./models";
 import type { Proposals } from "./proposals";
 
 const CONVERSATION_KEY = "personailyHub.conversationId";
 
-/** Un messaggio dell'archivio, come lo restituisce l'API. */
-interface ApiMessage {
-  id: number;
-  role: string;
-  content: string;
-  model: string | null;
-  toolCalls: { id: string; name: string }[];
-  toolName: string | null;
-  isError: boolean;
-}
 
 /** Messaggi dal pannello all'estensione. */
 type FromView =
@@ -31,9 +23,13 @@ type FromView =
   | { type: "apply"; code: string }
   | { type: "chooseModel" };
 
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
+}
+
 /** Titolo dalla prima riga del testo, come fa il nucleo. */
 function titleFrom(text: string): string {
-  const line = text.split(/\r?\n/).find((l) => l.trim())?.trim() ?? "Nuova conversazione";
+  const line = text.split(/\r?\n/).find((l) => l.trim())?.trim() ?? t("Nuova conversazione");
   return line.length <= 48 ? line : `${line.slice(0, 48).trimEnd()}…`;
 }
 
@@ -62,7 +58,7 @@ export class ChatView implements vscode.WebviewViewProvider {
     const script = view.webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.js"));
     const style = view.webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.css"));
     view.webview.html = `<!DOCTYPE html>
-<html lang="it">
+<html lang="${currentLanguage()}">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}';">
@@ -70,12 +66,12 @@ export class ChatView implements vscode.WebviewViewProvider {
 <link rel="stylesheet" href="${style}">
 </head>
 <body>
-<div id="top"><button id="model" class="link" title="Scegli il modello"></button><span id="title"></span></div>
+<div id="top"><button id="model" class="link" title="${escapeHtml(t("Scegli il modello"))}"></button><span id="title"></span></div>
 <div id="messages"></div>
 <div id="composer">
-  <label class="context"><input type="checkbox" id="includeContext" checked> Includi il file aperto o la selezione</label>
-  <textarea id="input" rows="3" placeholder="Scrivi un messaggio… (Invio per inviare, Maiusc+Invio per andare a capo)"></textarea>
-  <div class="row"><span id="status"></span><button id="send">Invia</button></div>
+  <label class="context"><input type="checkbox" id="includeContext" checked> ${escapeHtml(t("Includi il file aperto o la selezione"))}</label>
+  <textarea id="input" rows="3" placeholder="${escapeHtml(t("Scrivi un messaggio… (Invio per inviare, Maiusc+Invio per andare a capo)"))}"></textarea>
+  <div class="row"><span id="status"></span><button id="send">${escapeHtml(t("Invia"))}</button></div>
 </div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
@@ -99,6 +95,7 @@ export class ChatView implements vscode.WebviewViewProvider {
     try {
       switch (message.type) {
         case "ready":
+          this.post({ type: "texts", texts: viewTexts() });
           await this.refresh();
           break;
         case "send":
@@ -128,13 +125,13 @@ export class ChatView implements vscode.WebviewViewProvider {
   /** Ridisegna il pannello: modello, titolo e messaggi della conversazione. */
   async refresh(): Promise<void> {
     const model = this.model();
-    let title = "Nuova conversazione";
-    let messages: ApiMessage[] = [];
+    let title = t("Nuova conversazione");
+    let messages: Message[] = [];
     const id = this.conversationId;
     if (id !== undefined) {
       try {
-        messages = await this.client.request<ApiMessage[]>("GET", `/api/conversations/${id}/messages`);
-        const all = await this.client.request<{ id: number; title: string }[]>("GET", "/api/conversations");
+        messages = await this.client.request<Message[]>("GET", `/api/conversations/${id}/messages`);
+        const all = await this.client.request<Conversation[]>("GET", "/api/conversations");
         const found = all.find((c) => c.id === id);
         if (found) title = found.title;
         else await this.setConversation(undefined); // eliminata nell'app
@@ -195,7 +192,7 @@ export class ChatView implements vscode.WebviewViewProvider {
     let id = this.conversationId;
     const isNew = id === undefined;
     if (id === undefined) {
-      id = (await this.client.request<{ id: number }>("POST", "/api/conversations")).id;
+      id = (await this.client.request<Conversation>("POST", "/api/conversations")).id;
       await this.setConversation(id);
     }
     this.post({ type: "pending", text: full });
@@ -204,25 +201,28 @@ export class ChatView implements vscode.WebviewViewProvider {
     try {
       await this.client.stream(
         `/api/conversations/${id}/messages`,
-        { text: full, model: model.ref },
+        { text: full, model: model.ref } satisfies SendBody,
         (event, data) => {
-          const payload = JSON.parse(data);
           switch (event) {
             case "text":
             case "reasoning":
-              this.post({ type: event, text: payload.text });
+              this.post({ type: event, text: (JSON.parse(data) as TextEvent).text });
               break;
             case "saved":
               void this.refresh();
               break;
-            case "toolRequest":
-              this.post({ type: "toolRequest", request: payload });
+            case "toolRequest": {
+              const request = JSON.parse(data) as ToolRequestEvent;
+              this.post({ type: "toolRequest", request: { ...request, summary: tc(request.summary) } });
               break;
-            case "done":
-              this.post({ type: "notice", text: payload.notice ?? null });
+            }
+            case "done": {
+              const outcome = JSON.parse(data) as SendOutcome;
+              this.post({ type: "notice", text: outcome.notice ? tc(outcome.notice) : null });
               break;
+            }
             case "error":
-              this.post({ type: "error", message: payload.message });
+              this.post({ type: "error", message: tc((JSON.parse(data) as ErrorEvent).message) });
               break;
           }
         },
@@ -256,7 +256,7 @@ export class ChatView implements vscode.WebviewViewProvider {
     // Nessun contesto inviato: si sostituisce la selezione o il file aperto.
     const editor = currentEditor();
     if (!editor) {
-      vscode.window.showWarningMessage("Apri il file a cui applicare il codice.");
+      vscode.window.showWarningMessage(t("Apri il file a cui applicare il codice."));
       return;
     }
     const context = editorContext(editor, Number.MAX_SAFE_INTEGER);

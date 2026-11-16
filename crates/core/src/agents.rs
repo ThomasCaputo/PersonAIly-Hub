@@ -31,7 +31,7 @@ pub const AGENT_PREAMBLE: &str = "Sei un agente che lavora in autonomia su un co
     manca un'informazione indispensabile, fermati e chiedila.";
 
 /// La definizione di un agente (AG-1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Agent {
     /// 0 per un agente non ancora salvato.
@@ -86,7 +86,7 @@ impl Agent {
 }
 
 /// Stato di una sessione.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
     /// Al lavoro.
@@ -137,7 +137,7 @@ impl SessionStatus {
 }
 
 /// Una sessione come la vede l'interfaccia (AG-4).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
     pub id: i64,
@@ -158,7 +158,7 @@ pub struct AgentSession {
 }
 
 /// Uno strumento in attesa di conferma, per l'interfaccia.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingRequest {
     pub id: String,
@@ -169,7 +169,7 @@ pub struct PendingRequest {
 
 /// Ciò che una sessione sta facendo in questo momento: il testo in arrivo e
 /// l'eventuale richiesta di conferma. L'interfaccia lo legge a intervalli.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveState {
     pub status: Option<SessionStatus>,

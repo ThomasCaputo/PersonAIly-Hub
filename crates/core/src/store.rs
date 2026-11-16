@@ -125,7 +125,7 @@ const SESSION_COLUMNS: &str = "id, agent_id, agent_name, conversation_id, task, 
      created_at, updated_at, definition";
 
 /// Una voce del registro delle azioni (SI-6).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionRecord {
     pub id: i64,
@@ -189,7 +189,7 @@ pub struct ToolData {
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversation {
     pub id: i64,
@@ -198,7 +198,7 @@ pub struct Conversation {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: i64,
@@ -439,6 +439,33 @@ impl Store {
             [id],
             row_to_message,
         )?)
+    }
+
+    /// Un messaggio di una conversazione, con il contenuto degli allegati.
+    pub fn message_in(&self, conversation_id: i64, id: i64) -> Result<Message> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1 AND conversation_id = ?2"
+                ),
+                params![id, conversation_id],
+                row_to_message,
+            )
+            .optional()?
+            .ok_or_else(|| Error::msg("Messaggio non trovato: forse è stato eliminato."))
+    }
+
+    /// Cancella un messaggio e tutti quelli che lo seguono nella conversazione.
+    pub fn delete_messages_from(&self, conversation_id: i64, id: i64) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND id >= ?2",
+            params![conversation_id, id],
+        )?;
+        self.conn.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            [conversation_id],
+        )?;
+        Ok(deleted)
     }
 
     /// Registra quanto è costata una risposta.

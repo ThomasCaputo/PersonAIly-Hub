@@ -9,7 +9,15 @@
   const sendButton = /** @type {HTMLButtonElement} */ ($("send"));
   const includeContext = /** @type {HTMLInputElement} */ ($("includeContext"));
   const status = $("status");
-  const CONTEXT_MARK = "[Contesto da VS Code:";
+  // Come CONTEXT_MARKS in src/edits.ts: in italiano e in inglese.
+  const CONTEXT_MARKS = ["[Contesto da VS Code:", "[Context from VS Code:"];
+
+  /** Testi già tradotti dall'estensione (messaggio "texts"); chiave = testo italiano. */
+  let texts = {};
+  function L(text, vars) {
+    const out = texts[text] ?? text;
+    return vars ? out.replace(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole)) : out;
+  }
 
   let busy = false;
   /** Elemento della risposta in arrivo. */
@@ -58,15 +66,15 @@
       bar.appendChild(Object.assign(document.createElement("span"), { textContent: language }));
       const apply = Object.assign(document.createElement("button"), {
         className: "link",
-        textContent: "Applica come diff",
-        title: "Mostra la modifica nel file e chiedi conferma",
+        textContent: L("Applica come diff"),
+        title: L("Mostra la modifica nel file e chiedi conferma"),
       });
       apply.addEventListener("click", () => vscode.postMessage({ type: "apply", code }));
-      const copy = Object.assign(document.createElement("button"), { className: "link", textContent: "Copia" });
+      const copy = Object.assign(document.createElement("button"), { className: "link", textContent: L("Copia") });
       copy.addEventListener("click", async () => {
         await navigator.clipboard.writeText(code);
-        copy.textContent = "Copiato";
-        setTimeout(() => (copy.textContent = "Copia"), 1500);
+        copy.textContent = L("Copiato");
+        setTimeout(() => (copy.textContent = L("Copia")), 1500);
       });
       bar.append(apply, copy);
       box.appendChild(bar);
@@ -80,13 +88,14 @@
   /** Il contesto dell'editor si mostra come etichetta, non come codice intero. */
   function renderUser(text) {
     const out = document.createElement("div");
-    if (text.startsWith(CONTEXT_MARK)) {
+    const mark = CONTEXT_MARKS.find((m) => text.startsWith(m));
+    if (mark) {
       const header = text.slice(0, text.indexOf("]") + 1);
       const fenceMatch = text.slice(header.length).match(/^\n(`{3,})[^\n]*\n[\s\S]*?\n\1(\n|$)/);
       if (fenceMatch) {
         const chip = document.createElement("div");
         chip.className = "chip";
-        chip.textContent = "📎 " + header.slice(CONTEXT_MARK.length, -1).trim();
+        chip.textContent = "📎 " + header.slice(mark.length, -1).trim();
         out.appendChild(chip);
         text = text.slice(header.length + fenceMatch[0].length).trim();
       }
@@ -100,13 +109,13 @@
     el.className = `msg ${role}`;
     if (role === "user") el.appendChild(renderUser(content));
     else if (role === "tool") {
-      el.textContent = `${extra.isError ? "⚠️" : "🔧"} ${extra.toolName ?? "strumento"}: ${content.slice(0, 160)}${content.length > 160 ? "…" : ""}`;
+      el.textContent = `${extra.isError ? "⚠️" : "🔧"} ${extra.toolName ?? L("strumento")}: ${content.slice(0, 160)}${content.length > 160 ? "…" : ""}`;
     } else {
       if (content) el.appendChild(render(content, true));
       if (extra?.tools?.length) {
         const t = document.createElement("div");
         t.className = "dim";
-        t.textContent = `Usa: ${extra.tools.join(", ")}`;
+        t.textContent = L("Usa: {tools}", { tools: extra.tools.join(", ") });
         el.appendChild(t);
       }
     }
@@ -120,8 +129,8 @@
 
   function setBusy(value) {
     busy = value;
-    sendButton.textContent = value ? "Interrompi" : "Invia";
-    status.textContent = value ? "Sto rispondendo…" : "";
+    sendButton.textContent = value ? L("Interrompi") : L("Invia");
+    status.textContent = value ? L("Sto rispondendo…") : "";
   }
 
   function send() {
@@ -156,17 +165,20 @@
   window.addEventListener("message", (event) => {
     const msg = event.data;
     switch (msg.type) {
+      case "texts":
+        texts = msg.texts;
+        break;
       case "state": {
-        $("model").textContent = msg.model ? `● ${msg.model}` : "Scegli il modello";
+        $("model").textContent = msg.model ? `● ${msg.model}` : L("Scegli il modello");
         $("title").textContent = msg.title;
         list.replaceChildren();
         for (const m of msg.messages) addMessage(m.role, m.content, m);
         if (msg.messages.length === 0) {
           const hint = document.createElement("div");
           hint.className = "dim hint";
-          hint.textContent =
-            "Fai una domanda sul codice. Con la casella sotto spuntata il modello vede il file aperto, o solo la selezione. " +
-            "Per modificare direttamente il file: Ctrl+Alt+I.";
+          hint.textContent = L(
+            "Fai una domanda sul codice. Con la casella sotto spuntata il modello vede il file aperto, o solo la selezione. Per modificare direttamente il file: Ctrl+Alt+I.",
+          );
           list.appendChild(hint);
         }
         live = null;
@@ -182,10 +194,10 @@
       case "text":
       case "reasoning":
         if (msg.type === "reasoning") {
-          status.textContent = "Sto ragionando…";
+          status.textContent = L("Sto ragionando…");
           break;
         }
-        status.textContent = "Sto rispondendo…";
+        status.textContent = L("Sto rispondendo…");
         if (!live) live = addMessage("assistant", "");
         liveText += msg.text;
         live.replaceChildren(render(liveText, false));
@@ -195,7 +207,7 @@
         const r = msg.request;
         const box = document.createElement("div");
         box.className = "msg request";
-        box.appendChild(Object.assign(document.createElement("div"), { textContent: `Il modello chiede: ${r.summary}` }));
+        box.appendChild(Object.assign(document.createElement("div"), { textContent: L("Il modello chiede: {summary}", { summary: r.summary }) }));
         const row = document.createElement("div");
         row.className = "row";
         for (const [approval, label] of [
@@ -203,7 +215,7 @@
           ["always", "Consenti sempre"],
           ["deny", "Nega"],
         ]) {
-          const b = Object.assign(document.createElement("button"), { textContent: label });
+          const b = Object.assign(document.createElement("button"), { textContent: L(label) });
           if (approval !== "once") b.className = "secondary";
           b.addEventListener("click", () => {
             vscode.postMessage({ type: "approve", id: r.id, approval });

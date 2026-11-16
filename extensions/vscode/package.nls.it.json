@@ -1,0 +1,14 @@
+{
+  "description": "Chat e modifiche al codice con i modelli locali e cloud di PersonAIly Hub.",
+  "command.edit": "Chiedi una modifica…",
+  "command.chooseModel": "Scegli il modello",
+  "command.newChat": "Nuova conversazione",
+  "command.history": "Apri una conversazione",
+  "command.startAgent": "Avvia un agente",
+  "command.sessions": "Segui gli agenti al lavoro",
+  "command.acceptProposal": "Accetta la modifica",
+  "command.rejectProposal": "Rifiuta la modifica",
+  "config.serverPath": "Percorso di `app-server.exe`, il nucleo senza interfaccia, che l'estensione avvia quando l'app desktop è chiusa. Vuoto: quello installato con l'app, che l'estensione trova da sola.",
+  "config.dataDir": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.personaily.hub`).",
+  "config.maxContextChars": "Caratteri massimi del file aperto inviati come contesto. Per i file più lunghi si invia solo la selezione."
+}

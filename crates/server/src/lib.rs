@@ -10,6 +10,7 @@
 //! indirizzate a un nome diverso da `127.0.0.1`/`localhost` (DNS rebinding).
 
 mod api;
+pub mod bindings;
 mod openai;
 
 use std::convert::Infallible;

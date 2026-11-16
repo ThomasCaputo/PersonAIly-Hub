@@ -6,7 +6,7 @@ use std::process::Command;
 use serde::Serialize;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySnapshot {
     pub ram_total_bytes: u64,
@@ -15,7 +15,7 @@ pub struct MemorySnapshot {
     pub gpu: Option<GpuMemory>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuMemory {
     pub name: String,
@@ -49,7 +49,7 @@ pub fn process_ram(pid: u32) -> Option<u64> {
 }
 
 /// Memoria grafica usata da un singolo processo.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessGpuMemory {
     /// Memoria sulla scheda video (VRAM vera).
