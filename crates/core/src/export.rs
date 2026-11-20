@@ -1,6 +1,32 @@
-//! Esportazione di una conversazione in Markdown (CH-9).
+//! Esportazione di una conversazione in Markdown (CH-9) o in JSON.
 
-use crate::store::{Conversation, Message};
+use serde::Serialize;
+
+use crate::error::Result;
+use crate::store::{Conversation, Message, TreeMessage};
+
+/// Versione del formato JSON: cresce se cambia in modo incompatibile.
+const JSON_FORMAT: u32 = 1;
+
+/// La conversazione in JSON, con tutti i messaggi di tutti i rami: ognuno ha
+/// `parentId` (il messaggio a cui risponde) e `active` (fa parte del ramo
+/// che si vede). Degli allegati solo nome e tipo.
+pub fn json(conversation: &Conversation, messages: &[TreeMessage]) -> Result<String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Export<'a> {
+        format: &'static str,
+        version: u32,
+        conversation: &'a Conversation,
+        messages: &'a [TreeMessage],
+    }
+    Ok(serde_json::to_string_pretty(&Export {
+        format: "personaily-hub-conversation",
+        version: JSON_FORMAT,
+        conversation,
+        messages,
+    })?)
+}
 
 /// Caratteri del risultato di uno strumento riportati nell'esportazione:
 /// una pagina web letta intera renderebbe il file illeggibile.

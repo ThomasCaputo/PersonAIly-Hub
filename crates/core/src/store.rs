@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{Agent, AgentSession, SessionStatus};
 use crate::attachments::{Attachment, AttachmentInfo};
 use crate::error::{Error, Result};
+use crate::snapshots::RestorePoint;
 use crate::tools::ToolCall;
 
 /// Passi di aggiornamento dello schema, in ordine.
@@ -115,6 +116,52 @@ const MIGRATIONS: &[&str] = &[
         INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
     END;
     ",
+    // 7 — rami della conversazione. Ogni messaggio ricorda quello a cui
+    //     risponde (`parent_id`); `active` segna il ramo che si vede e che va
+    //     al modello. Modificare un messaggio non cancella più ciò che segue:
+    //     lo mette da parte. Lungo un ramo gli id crescono sempre (un messaggio
+    //     nasce dopo il suo genitore), quindi il ramo attivo letto `ORDER BY id`
+    //     è nell'ordine giusto.
+    "
+    ALTER TABLE messages ADD COLUMN parent_id INTEGER REFERENCES messages(id) ON DELETE CASCADE;
+    ALTER TABLE messages ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+    UPDATE messages SET parent_id = (
+        SELECT MAX(p.id) FROM messages p
+        WHERE p.conversation_id = messages.conversation_id AND p.id < messages.id
+    );
+    CREATE INDEX messages_active ON messages (conversation_id, active, id);
+    CREATE INDEX messages_by_parent ON messages (parent_id);
+    ",
+    // 8 — punti di ripristino delle sessioni degli agenti (JSON)
+    "
+    ALTER TABLE agent_sessions ADD COLUMN restore_points TEXT;
+    ",
+    // 9 — sessioni avviate da un altro agente (AG-8)
+    "
+    ALTER TABLE agent_sessions ADD COLUMN parent_session_id INTEGER
+        REFERENCES agent_sessions(id) ON DELETE SET NULL;
+    ",
+    // 10 — documenti consultabili (RAG): file indicizzati e loro pezzi, con il
+    //      vettore dell'embedding (f32 little-endian)
+    "
+    CREATE TABLE rag_files (
+        id        INTEGER PRIMARY KEY,
+        folder    TEXT    NOT NULL,
+        path      TEXT    NOT NULL UNIQUE,
+        modified  INTEGER NOT NULL,
+        size      INTEGER NOT NULL
+    );
+
+    CREATE TABLE rag_chunks (
+        id         INTEGER PRIMARY KEY,
+        file_id    INTEGER NOT NULL REFERENCES rag_files(id) ON DELETE CASCADE,
+        position   INTEGER NOT NULL,
+        text       TEXT    NOT NULL,
+        embedding  BLOB    NOT NULL
+    );
+
+    CREATE INDEX rag_chunks_by_file ON rag_chunks (file_id);
+    ",
 ];
 
 /// Caratteri del risultato conservati nel registro delle azioni.
@@ -122,7 +169,7 @@ const ACTION_RESULT_CHARS: usize = 400;
 
 /// Colonne lette per ogni sessione, nell'ordine atteso da `row_to_session`.
 const SESSION_COLUMNS: &str = "id, agent_id, agent_name, conversation_id, task, status, note, \
-     created_at, updated_at, definition";
+     created_at, updated_at, definition, restore_points, parent_session_id";
 
 /// Una voce del registro delle azioni (SI-6).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -160,7 +207,7 @@ pub struct NewAction<'a> {
 
 /// Colonne lette per ogni messaggio, nell'ordine atteso da `row_to_message`.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, model, created_at, \
-     prompt_tokens, completion_tokens, cost_usd, tool_data, attachments";
+     prompt_tokens, completion_tokens, cost_usd, tool_data, attachments, parent_id";
 
 /// Come [`MESSAGE_COLUMNS`], ma degli allegati solo nome e tipo: un'immagine
 /// in base64 pesa megabyte, e l'interfaccia non la mostra.
@@ -168,7 +215,7 @@ const MESSAGE_COLUMNS_LIGHT: &str = "id, conversation_id, role, content, model, 
      prompt_tokens, completion_tokens, cost_usd, tool_data, \
      (SELECT json_group_array(json_object('name', json_extract(value, '$.name'), \
                                           'kind', json_extract(value, '$.kind'))) \
-      FROM json_each(attachments))";
+      FROM json_each(attachments)), parent_id";
 
 /// Sotto questa lunghezza l'indice a trigrammi non serve: si cerca con `LIKE`.
 const MIN_INDEXED_QUERY_CHARS: usize = 3;
@@ -226,6 +273,44 @@ pub struct Message {
     /// Contenuto degli allegati: serve al modello, non all'interfaccia.
     #[serde(skip)]
     pub attachment_data: Vec<Attachment>,
+    /// Il messaggio a cui risponde; `None` per il primo.
+    pub parent_id: Option<i64>,
+    /// Le versioni di questo messaggio nei vari rami (lui compreso), dalla più
+    /// vecchia. Vuoto se ce n'è una sola. Solo nei messaggi da mostrare.
+    pub siblings: Vec<i64>,
+}
+
+/// Un messaggio di qualunque ramo, per l'esportazione completa in JSON.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeMessage {
+    #[serde(flatten)]
+    pub message: Message,
+    /// Fa parte del ramo che si vede.
+    pub active: bool,
+}
+
+/// Un messaggio visto solo come punto dell'albero dei rami.
+struct Node {
+    id: i64,
+    parent_id: Option<i64>,
+    active: bool,
+}
+
+/// Lo schema più recente: il numero di passi di [`MIGRATIONS`].
+pub const LATEST_SCHEMA: i64 = MIGRATIONS.len() as i64;
+
+/// Quante copie "prima dell'aggiornamento" si tengono in `backups/`.
+const UPGRADE_BACKUPS_KEPT: usize = 3;
+
+/// Lo schema di un archivio su disco, senza modificarlo.
+pub fn schema_of(path: &Path) -> Result<i64> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let ok: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if ok != "ok" {
+        return Err(Error::msg(format!("archivio rovinato: {ok}")));
+    }
+    Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
 }
 
 /// Accesso all'archivio dell'app.
@@ -233,10 +318,64 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Tiene solo le copie più recenti fatte prima di un aggiornamento.
+fn prune_upgrade_backups(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut copies: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("data-schema") && n.ends_with(".sqlite"))
+        })
+        .collect();
+    // Il nome finisce con data e ora: l'ordine alfabetico è quello cronologico.
+    copies.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+    let excess = copies.len().saturating_sub(UPGRADE_BACKUPS_KEPT);
+    for old in &copies[..excess] {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
 impl Store {
     /// Apre (o crea) l'archivio nel file indicato e lo porta allo schema più recente.
+    ///
+    /// Se l'archivio esiste e va aggiornato, prima se ne fa una copia in
+    /// `backups/` accanto al file: un passo di aggiornamento sbagliato non deve
+    /// costare all'utente le sue conversazioni.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        let current: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current > 0
+            && current < LATEST_SCHEMA
+            && let Some(dir) = path.parent().map(|p| p.join("backups"))
+        {
+            std::fs::create_dir_all(&dir)?;
+            let copy = dir.join(format!(
+                "data-schema{current}-{}.sqlite",
+                crate::log::file_stamp()
+            ));
+            conn.execute("VACUUM INTO ?1", [copy.to_string_lossy()])?;
+            crate::log::info(format!(
+                "archivio dallo schema {current} al {LATEST_SCHEMA}: copia in {}",
+                copy.display()
+            ));
+            prune_upgrade_backups(&dir);
+        }
+        Self::init(conn)
+    }
+
+    /// Copia coerente dell'archivio in un file nuovo (anche mentre è in uso).
+    pub fn vacuum_into(&self, dest: &Path) -> Result<()> {
+        if dest.exists() {
+            std::fs::remove_file(dest)?;
+        }
+        self.conn
+            .execute("VACUUM INTO ?1", [dest.to_string_lossy()])?;
+        Ok(())
     }
 
     /// Archivio temporaneo in memoria, per i test.
@@ -264,6 +403,17 @@ impl Store {
         }
 
         Ok(Self { conn })
+    }
+
+    /// Applica solo i primi `steps` passi: per provare l'aggiornamento di un
+    /// archivio creato da una versione precedente.
+    #[cfg(test)]
+    fn open_at_schema(conn: Connection, steps: usize) -> Result<Connection> {
+        for (index, sql) in MIGRATIONS.iter().enumerate().take(steps) {
+            conn.execute_batch(sql)?;
+            conn.pragma_update(None, "user_version", index as i64 + 1)?;
+        }
+        Ok(conn)
     }
 
     /// Numero dell'ultimo passo di aggiornamento applicato.
@@ -362,7 +512,7 @@ impl Store {
     /// I messaggi con il contenuto degli allegati, per mandarli al modello.
     pub fn messages(&self, conversation_id: i64) -> Result<Vec<Message>> {
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?1 ORDER BY id"
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?1 AND active = 1 ORDER BY id"
         ))?;
         let rows = stmt.query_map([conversation_id], row_to_message)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -371,10 +521,104 @@ impl Store {
     /// I messaggi da mostrare: degli allegati solo nome e tipo.
     pub fn messages_for_display(&self, conversation_id: i64) -> Result<Vec<Message>> {
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS_LIGHT} FROM messages WHERE conversation_id = ?1 ORDER BY id"
+            "SELECT {MESSAGE_COLUMNS_LIGHT} FROM messages WHERE conversation_id = ?1 AND active = 1 ORDER BY id"
         ))?;
         let rows = stmt.query_map([conversation_id], row_to_message_light)?;
+        let mut messages: Vec<Message> = rows.collect::<rusqlite::Result<_>>()?;
+        // Le altre versioni di ogni messaggio: stesso genitore, altro ramo.
+        let tree = self.tree(conversation_id)?;
+        for m in &mut messages {
+            let siblings: Vec<i64> = tree
+                .iter()
+                .filter(|n| n.parent_id == m.parent_id)
+                .map(|n| n.id)
+                .collect();
+            if siblings.len() > 1 {
+                m.siblings = siblings;
+            }
+        }
+        Ok(messages)
+    }
+
+    /// La struttura dei rami: id, genitore e ramo attivo di ogni messaggio,
+    /// dal più vecchio.
+    fn tree(&self, conversation_id: i64) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, parent_id, active FROM messages WHERE conversation_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([conversation_id], |row| {
+            Ok(Node {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                active: row.get(2)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Mostra un altro ramo: quello che passa per `message_id`. Da lì in giù
+    /// si segue ogni volta la versione più recente.
+    pub fn switch_branch(&self, conversation_id: i64, message_id: i64) -> Result<()> {
+        let tree = self.tree(conversation_id)?;
+        let target = tree
+            .iter()
+            .find(|n| n.id == message_id)
+            .ok_or_else(|| Error::msg("Messaggio non trovato: forse è stato eliminato."))?;
+        if target.active {
+            return Ok(());
+        }
+        let mut path = vec![target.id];
+        let mut last = target.id;
+        while let Some(child) = tree.iter().rev().find(|n| n.parent_id == Some(last)) {
+            path.push(child.id);
+            last = child.id;
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        // Il ramo attivo da qui in giù: tutti i messaggi attivi dopo il genitore.
+        tx.execute(
+            "UPDATE messages SET active = 0
+             WHERE conversation_id = ?1 AND active = 1 AND id > ?2",
+            params![conversation_id, target.parent_id.unwrap_or(0)],
+        )?;
+        for id in path {
+            tx.execute("UPDATE messages SET active = 1 WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Tutti i messaggi di tutti i rami, per l'esportazione in JSON.
+    pub fn message_tree(&self, conversation_id: i64) -> Result<Vec<TreeMessage>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS_LIGHT}, active FROM messages WHERE conversation_id = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([conversation_id], |row| {
+            Ok(TreeMessage {
+                message: row_to_message_light(row)?,
+                active: row.get(12)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Costo stimato delle risposte dal primo del mese (ora UTC), ovunque:
+    /// chat, agenti, rami messi da parte.
+    pub fn spent_this_month(&self) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM messages
+             WHERE created_at >= datetime('now', 'start of month')",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Costo stimato delle risposte di una conversazione, rami compresi.
+    pub fn spent_in_conversation(&self, conversation_id: i64) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM messages WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )?)
     }
 
     /// La conversazione non ha ancora messaggi.
@@ -413,9 +657,11 @@ impl Store {
         } else {
             Some(serde_json::to_string(attachments)?)
         };
+        // Risponde all'ultimo messaggio del ramo che si vede.
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, model, tool_data, attachments)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (conversation_id, role, content, model, tool_data, attachments, parent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT MAX(id) FROM messages
+                                              WHERE conversation_id = ?1 AND active = 1))",
             params![
                 conversation_id,
                 role,
@@ -455,10 +701,12 @@ impl Store {
             .ok_or_else(|| Error::msg("Messaggio non trovato: forse è stato eliminato."))
     }
 
-    /// Cancella un messaggio e tutti quelli che lo seguono nella conversazione.
-    pub fn delete_messages_from(&self, conversation_id: i64, id: i64) -> Result<usize> {
+    /// Mette da parte un messaggio e tutti quelli che lo seguono nel ramo che
+    /// si vede: restano un ramo da riaprire. Il prossimo messaggio diventa
+    /// un'altra versione di `id`.
+    pub fn branch_from(&self, conversation_id: i64, id: i64) -> Result<usize> {
         let deleted = self.conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ?1 AND id >= ?2",
+            "UPDATE messages SET active = 0 WHERE conversation_id = ?1 AND active = 1 AND id >= ?2",
             params![conversation_id, id],
         )?;
         self.conn.execute(
@@ -560,6 +808,24 @@ impl Store {
     // ── Sessioni degli agenti ───────────────────────────────────────────
 
     /// Crea una sessione con la sua conversazione e il compito come primo messaggio.
+    /// Segna che la sessione è stata avviata da un'altra (AG-8).
+    pub fn set_session_parent(&self, id: i64, parent: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET parent_session_id = ?2 WHERE id = ?1",
+            params![id, parent],
+        )?;
+        Ok(())
+    }
+
+    /// Salva le foto delle cartelle scattate prima che l'agente lavorasse.
+    pub fn set_session_restore_points(&self, id: i64, points: &[RestorePoint]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET restore_points = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(points)?],
+        )?;
+        Ok(())
+    }
+
     pub fn create_session(&self, agent: &Agent, task: &str) -> Result<AgentSession> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -720,6 +986,108 @@ impl Store {
         Ok(self.conn.execute("DELETE FROM actions", [])?)
     }
 
+    // ── Documenti consultabili (RAG) ────────────────────────────────────
+
+    /// Data di modifica e dimensione con cui un file è stato indicizzato.
+    pub fn rag_stamp(&self, path: &str) -> Result<Option<(i64, i64)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT modified, size FROM rag_files WHERE path = ?1",
+                [path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Sostituisce i pezzi di un file (tutti insieme, o nessuno).
+    pub fn rag_replace_file(
+        &self,
+        folder: &str,
+        path: &str,
+        modified: i64,
+        size: i64,
+        chunks: &[(String, Vec<f32>)],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM rag_files WHERE path = ?1", [path])?;
+        tx.execute(
+            "INSERT INTO rag_files (folder, path, modified, size) VALUES (?1, ?2, ?3, ?4)",
+            params![folder, path, modified, size],
+        )?;
+        let file_id = tx.last_insert_rowid();
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO rag_chunks (file_id, position, text, embedding) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (position, (text, vector)) in chunks.iter().enumerate() {
+                insert.execute(params![
+                    file_id,
+                    position as i64,
+                    text,
+                    crate::rag::to_bytes(vector)
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Toglie dall'indice i file di `folder` che non ci sono più, e quelli
+    /// delle cartelle non più scelte (`folders`).
+    pub fn rag_prune(
+        &self,
+        folders: &[String],
+        existing: &std::collections::HashSet<String>,
+    ) -> Result<usize> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, folder, path FROM rag_files")?;
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut removed = 0;
+        for (id, folder, path) in rows {
+            if !folders.contains(&folder) || !existing.contains(&path) {
+                removed += self
+                    .conn
+                    .execute("DELETE FROM rag_files WHERE id = ?1", [id])?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Svuota l'indice (per esempio cambiando modello di embedding: i vettori
+    /// di modelli diversi non si confrontano).
+    pub fn rag_clear(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM rag_files", [])?;
+        Ok(())
+    }
+
+    /// File e pezzi nell'indice.
+    pub fn rag_counts(&self) -> Result<(u32, u32)> {
+        Ok(self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM rag_files), (SELECT COUNT(*) FROM rag_chunks)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    }
+
+    /// Tutti i pezzi con il loro file e il vettore, per la ricerca.
+    pub fn rag_chunks(&self) -> Result<Vec<(String, String, Vec<f32>)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.path, c.text, c.embedding FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                crate::rag::from_bytes(&row.get::<_, Vec<u8>>(2)?),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // ── Impostazioni ────────────────────────────────────────────────────
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
@@ -766,6 +1134,11 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSession> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         definition,
+        restore_points: row
+            .get::<_, Option<String>>(10)?
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default(),
+        parent_session_id: row.get(11)?,
     })
 }
 
@@ -814,12 +1187,92 @@ fn build_message(
         prompt_tokens: row.get::<_, Option<i64>>(6)?.map(|n| n.max(0) as u64),
         completion_tokens: row.get::<_, Option<i64>>(7)?.map(|n| n.max(0) as u64),
         cost_usd: row.get(8)?,
+        parent_id: row.get(11)?,
+        siblings: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quanti passi aveva lo schema nella versione 0.1.0, la prima pubblicata.
+    const SCHEMA_0_1_0: usize = 6;
+
+    /// Un archivio scritto dalla 0.1.0, con i dati nella forma di allora,
+    /// arriva all'ultimo schema senza perdere nulla e resta utilizzabile.
+    #[test]
+    fn archivio_della_0_1_0_si_aggiorna() {
+        let dir = std::env::temp_dir().join(format!("app-core-v010-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.sqlite");
+        let conn = Store::open_at_schema(Connection::open(&path).unwrap(), SCHEMA_0_1_0).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO conversations (id, title, tools) VALUES
+                (1, 'Ricetta', '{"files":true,"web":false,"terminal":false,"permission":"ask"}'),
+                (2, 'Sessione', NULL);
+            INSERT INTO messages (conversation_id, role, content, model, prompt_tokens, completion_tokens, cost_usd) VALUES
+                (1, 'user', 'Come si fa la carbonara?', NULL, NULL, NULL, NULL),
+                (1, 'assistant', 'Con guanciale e pecorino.', 'qwen', 12, 8, 0.001),
+                (1, 'user', 'E per quattro persone?', NULL, NULL, NULL, NULL),
+                (2, 'user', 'Crea a.txt', NULL, NULL, NULL, NULL);
+            INSERT INTO settings (key, value) VALUES ('language', '"it"');
+            INSERT INTO agents (id, name, definition) VALUES (1, 'Scrittore',
+                '{"id":1,"name":"Scrittore","description":"","instructions":"","model":{"kind":"local"},"folders":["C:\\prove"],"tools":{"files":true,"web":false,"terminal":true,"permission":"edits"},"mcpServers":[],"maxSteps":50}');
+            INSERT INTO agent_sessions (agent_id, agent_name, definition, conversation_id, task, status) VALUES
+                (1, 'Scrittore', (SELECT definition FROM agents WHERE id = 1), 2, 'Crea a.txt', 'done');
+            INSERT INTO actions (conversation_id, kind, source, tool, summary, approval, is_error, result) VALUES
+                (1, 'chat', 'Ricetta', 'read_file', 'Leggere il file a.txt', 'auto', 0, 'ciao');
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), LATEST_SCHEMA);
+        // Prima dell'aggiornamento è stata fatta una copia.
+        let copies: Vec<_> = std::fs::read_dir(dir.join("backups"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(schema_of(&copies[0].path()).unwrap(), SCHEMA_0_1_0 as i64);
+
+        // I messaggi di allora formano un ramo unico, nell'ordine giusto.
+        let messages = store.messages(1).unwrap();
+        let texts: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Come si fa la carbonara?",
+                "Con guanciale e pecorino.",
+                "E per quattro persone?"
+            ]
+        );
+        assert_eq!(store.list_conversations("carbonara").unwrap().len(), 1);
+        assert_eq!(
+            store.setting("language").unwrap().as_deref(),
+            Some("\"it\"")
+        );
+
+        // Agente e sessione si leggono con le strutture di oggi.
+        let agent = store.agent(1).unwrap();
+        assert_eq!(agent.name, "Scrittore");
+        assert_eq!(agent.folders, [r"C:\prove"]);
+        assert!(agent.tools.terminal);
+        let session = store.session(1).unwrap();
+        assert_eq!(session.status, SessionStatus::Done);
+
+        // E si continua a scrivere: un nuovo messaggio segue l'ultimo.
+        store
+            .add_message(1, "assistant", "Raddoppia le dosi.", None)
+            .unwrap();
+        assert_eq!(store.messages(1).unwrap().len(), 4);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn nuovo_archivio_arriva_all_ultimo_schema() {
@@ -1125,5 +1578,94 @@ mod tests {
         store.set_setting("lingua", "it").unwrap();
         store.set_setting("lingua", "en").unwrap();
         assert_eq!(store.setting("lingua").unwrap().as_deref(), Some("en"));
+    }
+
+    fn contents(store: &Store, conversation_id: i64) -> Vec<String> {
+        store
+            .messages(conversation_id)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.content)
+            .collect()
+    }
+
+    #[test]
+    fn modificare_un_messaggio_apre_un_ramo() {
+        let store = Store::open_in_memory().unwrap();
+        let c = store.create_conversation("Rami").unwrap().id;
+        let q1 = store.add_message(c, "user", "domanda", None).unwrap();
+        let a1 = store.add_message(c, "assistant", "risposta", None).unwrap();
+        assert_eq!(a1.parent_id, Some(q1.id));
+
+        // Modifica: il vecchio messaggio e la risposta restano da parte.
+        store.branch_from(c, q1.id).unwrap();
+        let q2 = store.add_message(c, "user", "domanda nuova", None).unwrap();
+        store
+            .add_message(c, "assistant", "risposta nuova", None)
+            .unwrap();
+        assert_eq!(q2.parent_id, None);
+        assert_eq!(contents(&store, c), ["domanda nuova", "risposta nuova"]);
+
+        let shown = store.messages_for_display(c).unwrap();
+        assert_eq!(shown[0].siblings, [q1.id, q2.id]);
+        assert!(shown[1].siblings.is_empty());
+
+        // Si torna al primo ramo, con la sua risposta.
+        store.switch_branch(c, q1.id).unwrap();
+        assert_eq!(contents(&store, c), ["domanda", "risposta"]);
+        store.switch_branch(c, q2.id).unwrap();
+        assert_eq!(contents(&store, c), ["domanda nuova", "risposta nuova"]);
+
+        // Tutti e quattro restano nell'esportazione completa.
+        let tree = store.message_tree(c).unwrap();
+        assert_eq!(tree.len(), 4);
+        assert_eq!(tree.iter().filter(|m| m.active).count(), 2);
+    }
+
+    #[test]
+    fn i_rami_si_annidano() {
+        let store = Store::open_in_memory().unwrap();
+        let c = store.create_conversation("Rami").unwrap().id;
+        store.add_message(c, "user", "a", None).unwrap();
+        let b = store.add_message(c, "assistant", "b", None).unwrap();
+        let x = store.add_message(c, "user", "x", None).unwrap();
+        store.add_message(c, "assistant", "x1", None).unwrap();
+        // Altra risposta a "x".
+        store.branch_from(c, x.id + 1).unwrap();
+        store.add_message(c, "assistant", "x2", None).unwrap();
+        // Altra versione di "x".
+        store.branch_from(c, x.id).unwrap();
+        let y = store.add_message(c, "user", "y", None).unwrap();
+        assert_eq!(y.parent_id, Some(b.id));
+        assert_eq!(contents(&store, c), ["a", "b", "y"]);
+
+        // Tornando a "x" si segue la sua risposta più recente.
+        store.switch_branch(c, x.id).unwrap();
+        assert_eq!(contents(&store, c), ["a", "b", "x", "x2"]);
+        let x1 = x.id + 1;
+        store.switch_branch(c, x1).unwrap();
+        assert_eq!(contents(&store, c), ["a", "b", "x", "x1"]);
+        // Un messaggio già visibile non cambia nulla.
+        store.switch_branch(c, b.id).unwrap();
+        assert_eq!(contents(&store, c), ["a", "b", "x", "x1"]);
+    }
+
+    #[test]
+    fn i_vecchi_messaggi_ricevono_il_genitore() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute_batch(
+            "INSERT INTO conversations (id, title) VALUES (1, 'vecchia');
+             INSERT INTO messages (conversation_id, role, content) VALUES (1, 'user', 'uno');
+             INSERT INTO messages (conversation_id, role, content) VALUES (1, 'assistant', 'due');",
+        )
+        .unwrap();
+        let store = Store::init(conn).unwrap();
+        let messages = store.messages(1).unwrap();
+        assert_eq!(messages[0].parent_id, None);
+        assert_eq!(messages[1].parent_id, Some(messages[0].id));
     }
 }

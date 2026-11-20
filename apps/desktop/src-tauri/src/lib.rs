@@ -26,7 +26,7 @@ use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
     Approval, Core, EngineStatus, LoadCheck, ModelRef, Preferences, ProviderInfo, RuntimeStatus,
-    SecuritySettings, SendOutcome,
+    SecuritySettings, SendOutcome, SpendLimits, Spending,
 };
 use app_server::ApiHandle;
 use serde::Serialize;
@@ -60,8 +60,12 @@ struct LocalApi {
 type ApiState<'a> = State<'a, Arc<LocalApi>>;
 type CmdResult<T> = Result<T, String>;
 
+/// Ogni errore mostrato all'interfaccia finisce anche nel registro
+/// diagnostico, così una segnalazione dice che cosa è successo.
 fn text(e: impl std::fmt::Display) -> String {
-    e.to_string()
+    let message = e.to_string();
+    app_core::log::warn(&message);
+    message
 }
 
 /// Esegue fuori dal thread dell'interfaccia un'operazione che legge il disco.
@@ -328,6 +332,19 @@ async fn export_conversation(
     .await
 }
 
+/// Mostra il ramo della conversazione che passa per `message_id`.
+#[tauri::command]
+async fn switch_branch(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    message_id: i64,
+) -> CmdResult<()> {
+    blocking(&core, move |core| {
+        core.switch_branch(conversation_id, message_id)
+    })
+    .await
+}
+
 // ── Strumenti e permessi ────────────────────────────────────────────────
 
 #[tauri::command(async)]
@@ -508,6 +525,17 @@ fn delete_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.delete_session(id).map_err(text)
 }
 
+/// Riporta le cartelle dell'agente a prima della sessione.
+#[tauri::command(async)]
+fn restore_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<AgentSession> {
+    core.restore_session(id).map_err(text)
+}
+
+#[tauri::command(async)]
+fn restore_points_available(core: CoreState<'_>) -> bool {
+    core.restore_points_available()
+}
+
 // ── Provider cloud ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -654,6 +682,41 @@ fn start_model_download(core: CoreState<'_>, repo: String, file: HubFile, folder
     });
 }
 
+// ── Documenti consultabili (RAG) ────────────────────────────────────────
+
+#[tauri::command(async)]
+fn rag_status(core: CoreState<'_>) -> CmdResult<app_core::rag::RagStatus> {
+    core.rag_status().map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_rag_settings(core: CoreState<'_>, settings: app_core::rag::RagSettings) -> CmdResult<()> {
+    core.set_rag_settings(&settings).map_err(text)
+}
+
+/// Avvia l'indicizzazione e torna subito: l'avanzamento si legge con `rag_status`.
+#[tauri::command]
+fn index_documents(core: CoreState<'_>) {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        // L'esito, errori compresi, finisce nello stato dell'indice.
+        let _ = core.index_documents().await;
+    });
+}
+
+/// Una ricerca di prova dalle Impostazioni: i brani e il loro punteggio.
+#[tauri::command]
+async fn search_documents(
+    core: CoreState<'_>,
+    query: String,
+) -> CmdResult<Vec<(String, String, f32)>> {
+    let hits = core.search_documents(&query).await.map_err(text)?;
+    Ok(hits
+        .into_iter()
+        .map(|h| (h.path, h.text, h.score))
+        .collect())
+}
+
 #[tauri::command(async)]
 fn security_settings(core: CoreState<'_>) -> SecuritySettings {
     core.security_settings()
@@ -662,6 +725,17 @@ fn security_settings(core: CoreState<'_>) -> SecuritySettings {
 #[tauri::command(async)]
 fn set_security_settings(core: CoreState<'_>, settings: SecuritySettings) -> CmdResult<()> {
     core.set_security_settings(&settings).map_err(text)
+}
+
+/// Spesa stimata del mese e limiti per i modelli cloud.
+#[tauri::command(async)]
+fn spending(core: CoreState<'_>) -> CmdResult<Spending> {
+    core.spending().map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_spend_limits(core: CoreState<'_>, limits: SpendLimits) -> CmdResult<()> {
+    core.set_spend_limits(&limits).map_err(text)
 }
 
 #[tauri::command(async)]
@@ -712,6 +786,165 @@ fn open_external(app: tauri::AppHandle, url: String) -> CmdResult<()> {
     }
     app.opener()
         .open_url(parsed.as_str(), None::<&str>)
+        .map_err(text)
+}
+
+/// L'aggiornamento trovato dall'ultimo controllo, in attesa di installazione.
+#[derive(Default)]
+struct Updates {
+    pending: tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>,
+}
+
+/// Una versione nuova dell'app.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    version: String,
+    current_version: String,
+    /// Note di rilascio, in Markdown.
+    notes: Option<String>,
+    /// Data di pubblicazione, `2026-11-20`.
+    date: Option<String>,
+    /// `false` per l'exe portatile: lì non c'è un installatore da avviare,
+    /// la versione nuova si scarica a mano.
+    installable: bool,
+}
+
+/// L'app è stata installata con `setup.exe` (accanto all'eseguibile c'è il
+/// programma di disinstallazione), non è l'exe portatile.
+fn installed_with_setup() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("uninstall.exe").is_file()))
+        .unwrap_or(false)
+}
+
+/// Chiede a GitHub se c'è una versione più recente di questa.
+#[tauri::command]
+async fn check_update(
+    app: tauri::AppHandle,
+    updates: State<'_, Arc<Updates>>,
+) -> CmdResult<Option<UpdateInfo>> {
+    use tauri_plugin_updater::UpdaterExt;
+    let failed = |e: tauri_plugin_updater::Error| {
+        text(format!("Controllo degli aggiornamenti non riuscito: {e}"))
+    };
+    let update = app
+        .updater()
+        .map_err(failed)?
+        .check()
+        .await
+        .map_err(failed)?;
+    let info = update.as_ref().map(|u| UpdateInfo {
+        version: u.version.clone(),
+        current_version: u.current_version.clone(),
+        notes: u.body.clone(),
+        date: u.date.map(|d| d.date().to_string()),
+        installable: installed_with_setup(),
+    });
+    if let Some(info) = &info {
+        app_core::log::info(format!("disponibile la versione {}", info.version));
+    }
+    *updates.pending.lock().await = update;
+    Ok(info)
+}
+
+/// Avanzamento del download di un aggiornamento.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    done_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+/// Scarica l'aggiornamento trovato da [`check_update`], ne controlla la firma
+/// e avvia l'installatore. Prima ferma tutto come alla chiusura dell'app:
+/// l'installatore la chiude e la riapre aggiornata.
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    core: CoreState<'_>,
+    api: ApiState<'_>,
+    updates: State<'_, Arc<Updates>>,
+    on_progress: Channel<UpdateProgress>,
+) -> CmdResult<()> {
+    let Some(update) = updates.pending.lock().await.take() else {
+        return Err(text(
+            "Nessun aggiornamento da installare: controlla di nuovo.",
+        ));
+    };
+    if !installed_with_setup() {
+        return Err(text(
+            "Questa è la versione portatile: scarica la nuova dalla pagina delle release.",
+        ));
+    }
+    let mut done = 0u64;
+    let bytes = update
+        .download(
+            |chunk, total| {
+                done += chunk as u64;
+                let _ = on_progress.send(UpdateProgress {
+                    done_bytes: done,
+                    total_bytes: total,
+                });
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| text(format!("Download dell'aggiornamento non riuscito: {e}")))?;
+    app_core::log::info(format!("installazione della versione {}", update.version));
+    if let Some(lifecycle) = app.try_state::<Arc<Lifecycle>>() {
+        lifecycle.quitting.store(true, Ordering::Relaxed);
+    }
+    // Come alla chiusura: via il file di blocco, fermi gli agenti, libera
+    // la memoria del modello.
+    if let Some(running) = api.handle.lock().await.take() {
+        running.stop().await;
+    }
+    core.stop_all_sessions();
+    core.unload_model().await;
+    update.install(bytes).map_err(|e| {
+        text(format!(
+            "Installazione dell'aggiornamento non riuscita: {e}"
+        ))
+    })
+}
+
+/// Salva un backup dei dati nel file scelto dall'utente.
+#[tauri::command(async)]
+fn create_backup(core: CoreState<'_>, path: String) -> CmdResult<app_core::backup::BackupInfo> {
+    core.create_backup(std::path::Path::new(&path))
+        .map_err(text)
+}
+
+/// Prepara il ripristino di un backup e riavvia l'app, che lo applica
+/// all'avvio, prima di aprire l'archivio.
+#[tauri::command(async)]
+fn restore_backup(app: tauri::AppHandle, core: CoreState<'_>, path: String) -> CmdResult<()> {
+    core.stage_restore(std::path::Path::new(&path))
+        .map_err(text)?;
+    if let Some(lifecycle) = app.try_state::<Arc<Lifecycle>>() {
+        lifecycle.quitting.store(true, Ordering::Relaxed);
+    }
+    app.request_restart();
+    Ok(())
+}
+
+/// Informazioni da allegare a una segnalazione (vedi [`Core::diagnostics`]).
+#[tauri::command(async)]
+fn diagnostics(core: CoreState<'_>) -> String {
+    core.diagnostics()
+}
+
+/// Apre in Esplora file la cartella dei registri: sempre quella, mai un
+/// percorso scelto dall'interfaccia.
+#[tauri::command]
+fn open_logs_folder(app: tauri::AppHandle, core: CoreState<'_>) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = core.logs_dir();
+    std::fs::create_dir_all(&dir).map_err(text)?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
         .map_err(text)
 }
 
@@ -854,6 +1087,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
                 .on_navigation(|_, url| is_app_page(url))
@@ -861,7 +1095,11 @@ pub fn run() {
         )
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            let core = Arc::new(Core::new(&data_dir)?);
+            app_core::log::init(&data_dir, "app");
+            app_core::log::install_panic_hook();
+            let core = Arc::new(Core::new(&data_dir).inspect_err(|e| {
+                app_core::log::error(format!("avvio del nucleo non riuscito: {e}"));
+            })?);
             let api = Arc::new(LocalApi::default());
             let lifecycle = Arc::new(Lifecycle::default());
             record_server_path(&data_dir);
@@ -874,6 +1112,7 @@ pub fn run() {
             app.manage(core);
             app.manage(api);
             app.manage(lifecycle);
+            app.manage(Arc::new(Updates::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -899,6 +1138,7 @@ pub fn run() {
             send_message,
             resend_message,
             export_conversation,
+            switch_branch,
             stop_generation,
             api_info,
             regenerate_api_token,
@@ -930,6 +1170,8 @@ pub fn run() {
             resume_agent_session,
             stop_agent_session,
             delete_agent_session,
+            restore_agent_session,
+            restore_points_available,
             list_providers,
             save_provider,
             delete_provider,
@@ -947,12 +1189,24 @@ pub fn run() {
             dismiss_download,
             security_settings,
             set_security_settings,
+            spending,
+            rag_status,
+            set_rag_settings,
+            index_documents,
+            search_documents,
+            set_spend_limits,
             language,
             set_language,
             preferences,
             set_preferences,
             runs_in_tray,
             open_external,
+            diagnostics,
+            open_logs_folder,
+            create_backup,
+            restore_backup,
+            check_update,
+            install_update,
         ])
         .build(tauri::generate_context!())
         .expect("errore durante l'avvio dell'app");
@@ -979,6 +1233,7 @@ pub fn run() {
         if let RunEvent::Exit = event
             && let Some(core) = handle.try_state::<Arc<Core>>()
         {
+            app_core::log::info("chiusura dell'app");
             // Prima si toglie il file di blocco: i client non devono trovare
             // un nucleo che sta per sparire.
             if let Some(api) = handle.try_state::<Arc<LocalApi>>()

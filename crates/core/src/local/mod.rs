@@ -14,13 +14,17 @@ use crate::models::ModelInfo;
 /// Versione di llama.cpp con cui gli argomenti qui sotto sono stati provati.
 pub const LLAMA_CPP_BUILD: &str = "b12110";
 
-/// Dove risiedono modello e cache KV. Mai in entrambe le memorie
-/// (vedi `docs/adr/0003-collocazione-memoria.md`).
+/// Dove risiedono modello e cache KV. Di base mai in entrambe le memorie
+/// (vedi `docs/adr/0003-collocazione-memoria.md`); la divisione tra GPU e CPU
+/// esiste solo come scelta esplicita e avanzata (LO-10, ADR 0016).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Placement {
     Vram,
     Ram,
+    /// I primi [`LoadParams::gpu_layers`] layer (con la loro cache KV) in
+    /// VRAM, gli altri in RAM: per modelli che non entrano nella VRAM.
+    Hybrid,
 }
 
 /// Quantizzazione della cache KV.
@@ -70,6 +74,8 @@ pub struct LoadParams {
     /// Carica anche il componente visivo (`mmproj`) se accanto al modello ce
     /// n'è uno: il modello legge le immagini, al costo di un po' di memoria.
     pub vision: bool,
+    /// Solo per [`Placement::Hybrid`]: quanti layer vanno sulla GPU.
+    pub gpu_layers: Option<u32>,
 }
 
 impl Default for LoadParams {
@@ -82,6 +88,7 @@ impl Default for LoadParams {
             batch_size: None,
             load_mode: None,
             vision: true,
+            gpu_layers: None,
         }
     }
 }
@@ -184,11 +191,20 @@ pub fn build_args(
     .map(|s| s.to_string())
     .collect();
 
-    let placement: &[&str] = match params.placement {
-        Placement::Vram => &["--gpu-layers", "all", "--kv-offload"],
-        Placement::Ram => &["--device", "none", "--gpu-layers", "0", "--no-kv-offload"],
+    let placement: Vec<String> = match params.placement {
+        Placement::Vram => vec!["--gpu-layers".into(), "all".into(), "--kv-offload".into()],
+        Placement::Ram => ["--device", "none", "--gpu-layers", "0", "--no-kv-offload"]
+            .map(String::from)
+            .to_vec(),
+        // La cache KV di ogni layer sta dove sta il layer: sulla GPU quella dei
+        // layer sulla GPU, in RAM le altre.
+        Placement::Hybrid => vec![
+            "--gpu-layers".into(),
+            params.gpu_layers.unwrap_or(0).to_string(),
+            "--kv-offload".into(),
+        ],
     };
-    args.extend(placement.iter().map(|s| s.to_string()));
+    args.extend(placement);
 
     if let Some(threads) = params.threads {
         args.extend(["--threads".to_string(), threads.to_string()]);
@@ -230,6 +246,10 @@ pub struct MemoryEstimate {
     /// Buffer di calcolo e margine di sicurezza.
     pub overhead_bytes: u64,
     pub total_bytes: u64,
+    /// Quanta parte del totale va in VRAM e quanta in RAM: tutto da una parte,
+    /// salvo con la collocazione ibrida.
+    pub vram_bytes: u64,
+    pub ram_bytes: u64,
     /// `false` se nel file mancavano dati e la cache KV non è stata calcolata.
     pub kv_cache_known: bool,
 }
@@ -237,6 +257,10 @@ pub struct MemoryEstimate {
 /// Margine fisso per i buffer di calcolo, più una quota proporzionale ai pesi.
 const OVERHEAD_FIXED: u64 = 400 * 1024 * 1024;
 const OVERHEAD_RATIO: f64 = 0.03;
+
+/// Con la collocazione ibrida il processo tiene in RAM anche le librerie CUDA
+/// e i buffer di scambio con la GPU: misurati 0,3-0,75 GB in più (ADR 0016).
+const HYBRID_HOST_BASE: u64 = 750 * 1024 * 1024;
 
 pub fn estimate_memory(model: &ModelInfo, params: &LoadParams) -> MemoryEstimate {
     // Il componente visivo si carica accanto ai pesi, nella stessa memoria.
@@ -261,11 +285,34 @@ pub fn estimate_memory(model: &ModelInfo, params: &LoadParams) -> MemoryEstimate
     let kv_cache_bytes = kv.unwrap_or(0);
 
     let overhead_bytes = OVERHEAD_FIXED + (weights_bytes as f64 * OVERHEAD_RATIO) as u64;
+    let host_base = if params.placement == Placement::Hybrid {
+        HYBRID_HOST_BASE
+    } else {
+        0
+    };
+    let total_bytes = weights_bytes + kv_cache_bytes + overhead_bytes + host_base;
+    let (vram_bytes, ram_bytes) = match params.placement {
+        Placement::Vram => (total_bytes, 0),
+        Placement::Ram => (0, total_bytes),
+        Placement::Hybrid => {
+            // Pesi e cache si dividono in proporzione ai layer; i buffer di
+            // calcolo (la parte fissa del margine) stanno sulla GPU.
+            let layers = model.block_count.unwrap_or(1).max(1);
+            let on_gpu = u64::from(params.gpu_layers.unwrap_or(0)).min(layers);
+            let share = on_gpu as f64 / layers as f64;
+            let split =
+                (weights_bytes + kv_cache_bytes) as f64 + weights_bytes as f64 * OVERHEAD_RATIO;
+            let vram = (split * share) as u64 + if on_gpu > 0 { OVERHEAD_FIXED } else { 0 };
+            (vram, total_bytes.saturating_sub(vram))
+        }
+    };
     MemoryEstimate {
         weights_bytes,
         kv_cache_bytes,
         overhead_bytes,
-        total_bytes: weights_bytes + kv_cache_bytes + overhead_bytes,
+        total_bytes,
+        vram_bytes,
+        ram_bytes,
         kv_cache_known: kv.is_some(),
     }
 }
@@ -289,6 +336,19 @@ mod tests {
         assert!(has(&args, "--kv-offload"));
         assert!(!has(&args, "--no-kv-offload"));
         assert!(has_pair(&args, "--load-mode", "dio"));
+    }
+
+    #[test]
+    fn ibrida_divide_i_layer() {
+        let params = LoadParams {
+            placement: Placement::Hybrid,
+            gpu_layers: Some(14),
+            ..Default::default()
+        };
+        let args = build_args("m.gguf", &params, 4000, None);
+        assert!(has_pair(&args, "--gpu-layers", "14"));
+        assert!(has(&args, "--kv-offload"));
+        assert!(!has(&args, "--device"));
     }
 
     #[test]
@@ -368,5 +428,20 @@ mod tests {
         assert!(q8.kv_cache_known);
         let ratio = q8.kv_cache_bytes as f64 / f16.kv_cache_bytes as f64;
         assert!((ratio - 0.53).abs() < 0.01);
+        assert_eq!((q8.vram_bytes, q8.ram_bytes), (q8.total_bytes, 0));
+
+        // Metà dei layer sulla GPU: circa metà di pesi e cache per parte,
+        // più i buffer di calcolo sulla GPU.
+        let half = estimate_memory(
+            &model,
+            &LoadParams {
+                placement: Placement::Hybrid,
+                gpu_layers: Some(14),
+                ..Default::default()
+            },
+        );
+        assert_eq!(half.vram_bytes + half.ram_bytes, half.total_bytes);
+        // Pesi e cache divisi a metà: la differenza sono le quote fisse.
+        assert!(half.vram_bytes.abs_diff(half.ram_bytes) <= HYBRID_HOST_BASE - OVERHEAD_FIXED + 1);
     }
 }

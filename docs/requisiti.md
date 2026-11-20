@@ -28,7 +28,7 @@ Priorità: **M** = indispensabile per la prima versione, **S** = importante ma s
 | LO-7 | Indicatori in tempo reale: VRAM e RAM usate, token al secondo, contesto occupato | M |
 | LO-8 | Caricare e scaricare il modello a mano; scaricamento automatico dopo un tempo di inattività configurabile | S |
 | LO-9 | Scelta della variante di llama.cpp (CUDA, Vulkan, solo CPU) e suo aggiornamento dall'app | S |
-| LO-10 | Modalità ibrida GPU + CPU per modelli che non entrano in VRAM, solo come scelta esplicita e avanzata | F |
+| LO-10 | Modalità ibrida GPU + CPU per modelli che non entrano in VRAM, solo come scelta esplicita e avanzata (fatto, ADR 0016) | F |
 
 ## 3. Parametri dei modelli
 
@@ -71,7 +71,7 @@ cartella di lavoro.
 | AG-5 | Esecuzione di comandi nel terminale, soggetta a permessi | M |
 | AG-6 | Più agenti in parallelo (con i modelli locali, nei limiti della memoria disponibile) | S |
 | AG-7 | Supporto a MCP (Model Context Protocol) per aggiungere strumenti esterni | S |
-| AG-8 | Agenti che delegano parti del lavoro ad altri agenti | F |
+| AG-8 | Agenti che delegano parti del lavoro ad altri agenti (fatto, ADR 0018) | F |
 
 ## 6. Permessi e sicurezza
 
@@ -96,7 +96,7 @@ cartella di lavoro.
 | VS-3 | L'estensione passa al modello il file aperto e la selezione | S |
 | VS-4 | Le modifiche proposte appaiono come diff da accettare o rifiutare | S |
 | VS-5 | L'estensione funziona anche con l'app chiusa, avviando il nucleo senza interfaccia | S |
-| VS-6 | Completamento del codice in linea | F |
+| VS-6 | Completamento del codice in linea (fatto, ADR 0019; serve un modello per il codice) | F |
 
 ## 8. Requisiti generali
 
@@ -105,7 +105,7 @@ cartella di lavoro.
 | GE-1 | Windows 10/11 a 64 bit come piattaforma principale | M |
 | GE-2 | Niente che dipenda da Windows nel nucleo, salvo dietro un'interfaccia sostituibile, per arrivare poi a Linux e macOS | M |
 | GE-3 | Tutti i dati restano sul PC; nessuna telemetria | M |
-| GE-4 | L'app a riposo, senza modelli caricati, usa meno di 200 MB di RAM | S |
+| GE-4 | L'app a riposo, senza modelli caricati e con la finestra chiusa nell'area di notifica, usa meno di 200 MB di RAM (misurati 47 MB; con la finestra aperta WebView2 porta il totale a circa 450 MB) | S |
 | GE-5 | Interfaccia in italiano e inglese | S |
 | GE-6 | Tema chiaro e scuro | S |
 | GE-7 | Installer e aggiornamento automatico | S |

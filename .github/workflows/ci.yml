@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Una volta a settimana anche senza modifiche: le vulnerabilità nuove delle
+  # dipendenze si scoprono dopo, non quando il codice cambia.
+  schedule:
+    - cron: "0 6 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -31,6 +35,11 @@ jobs:
       - name: Interfaccia (TypeScript + build)
         run: npm run build:ui
 
+      - name: Interfaccia (traduzioni + prove)
+        run: |
+          npm run check:i18n -w desktop
+          npm test -w desktop
+
       - name: Estensione VS Code (TypeScript + prove)
         run: npm test -w personaily-hub-vscode
 
@@ -42,3 +51,25 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # Vulnerabilità note nelle dipendenze (RustSec e npm). Non serve compilare:
+  # bastano Cargo.lock e package-lock.json, quindi gira su Linux, più veloce.
+  dipendenze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Dipendenze Rust (cargo audit)
+        run: cargo audit
+
+      # Solo quelle che finiscono nell'app: gli strumenti di sviluppo non vengono distribuiti.
+      - name: Dipendenze npm (npm audit)
+        run: npm audit --omit=dev --audit-level=high

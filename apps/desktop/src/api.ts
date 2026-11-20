@@ -3,7 +3,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { locale } from "./i18n";
 
-export type Placement = "vram" | "ram";
+/** "hybrid": i primi `gpuLayers` layer in VRAM, gli altri in RAM (scelta avanzata, LO-10). */
+export type Placement = "vram" | "ram" | "hybrid";
 
 /** Stato dell'API locale avviata dall'app. */
 export type ApiInfo = {
@@ -23,6 +24,8 @@ export type LoadParams = {
   loadMode: string | null;
   /** Carica anche il componente visivo (mmproj), se accanto al modello ce n'è uno. */
   vision: boolean;
+  /** Solo per la collocazione ibrida: quanti layer vanno sulla GPU. */
+  gpuLayers: number | null;
 };
 
 export type SamplingParams = {
@@ -51,6 +54,8 @@ export type ModelInfo = {
   sizeLabel: string | null;
   quantization: string | null;
   contextLength: number | null;
+  /** Numero di layer del modello (serve alla collocazione ibrida). */
+  blockCount: number | null;
   /** Componente visivo nella stessa cartella: il modello può leggere le immagini. */
   mmproj: string | null;
   mmprojBytes: number | null;
@@ -66,8 +71,14 @@ export type LoadCheck = {
     overheadBytes: number;
     totalBytes: number;
     kvCacheKnown: boolean;
+    /** Parte del totale in VRAM e in RAM (divise solo con la collocazione ibrida). */
+    vramBytes: number;
+    ramBytes: number;
   };
+  /** Memoria libera nella collocazione scelta; con quella ibrida, la VRAM. */
   availableBytes: number | null;
+  /** Solo con la collocazione ibrida: la RAM disponibile. */
+  ramAvailableBytes: number | null;
   fits: boolean;
 };
 
@@ -119,6 +130,10 @@ export type Message = {
   /** Per un messaggio `tool`: lo strumento è fallito o è stato negato. */
   isError: boolean;
   attachments: AttachmentInfo[];
+  /** Il messaggio a cui risponde; null per il primo. */
+  parentId: number | null;
+  /** Le versioni di questo messaggio nei vari rami (lui compreso), dalla più vecchia; vuoto se è una sola. */
+  siblings: number[];
 };
 
 export type ToolCall = { id: string; name: string; arguments: unknown };
@@ -132,6 +147,8 @@ export type ToolSettings = {
   files: boolean;
   web: boolean;
   terminal: boolean;
+  /** Ricerca nei documenti consultabili (RAG locale). */
+  documents?: boolean;
   permission: PermissionLevel;
   /** Strumenti MCP con "Consenti sempre". */
   allowedTools?: string[];
@@ -168,7 +185,14 @@ export type Agent = {
   /** Server MCP (identificatori) avviati con ogni sessione. */
   mcpServers: string[];
   maxSteps: number;
+  /** Fotografa le cartelle prima di ogni sessione, per poter annullare tutto. */
+  restorePoints: boolean;
+  /** Agenti (id) a cui questo può affidare parte del lavoro. */
+  delegates: number[];
 };
+
+/** Una cartella fotografata prima che l'agente lavorasse. */
+export type RestorePoint = { folder: string; commit: string; files: number };
 
 export type SessionStatus = "running" | "paused" | "waiting" | "done" | "stopped" | "failed" | "interrupted";
 
@@ -183,6 +207,10 @@ export type AgentSession = {
   note: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Cartelle fotografate prima che l'agente lavorasse; vuoto se non ce ne sono. */
+  restorePoints: RestorePoint[];
+  /** La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente. */
+  parentSessionId: number | null;
 };
 
 /** Ciò che una sessione al lavoro sta facendo in questo momento. */
@@ -252,9 +280,28 @@ export type Preferences = {
   keepRunning: boolean;
   /** Minuti senza richieste dopo cui il modello locale si scarica; 0 = mai. */
   idleUnloadMinutes: number;
+  /** All'avvio chiede a GitHub se c'è una versione nuova. */
+  checkUpdates: boolean;
 };
 
 /** Protezioni accese di base, che l'utente può spegnere nelle Impostazioni. */
+/** Limiti di spesa per i modelli cloud, in dollari; null = nessun limite. */
+export type SpendLimits = { monthlyUsd: number | null; conversationUsd: number | null };
+export type Spending = { monthUsd: number; limits: SpendLimits };
+
+/** Documenti consultabili (RAG locale). */
+export type RagSettings = { embeddingModel: string | null; folders: string[] };
+export type RagStatus = {
+  settings: RagSettings;
+  files: number;
+  chunks: number;
+  indexing: boolean;
+  doneFiles: number;
+  totalFiles: number;
+  error: string | null;
+  skipped: string[];
+};
+
 export type SecuritySettings = {
   /** Conferma prima che il modello apra un indirizzo inventato mentre vede i file. */
   exfiltrationGuard: boolean;
@@ -402,7 +449,7 @@ export const api = {
       onEvent: channel,
     });
   },
-  /** Modifica (con `text`) o ripete un tuo messaggio e rigenera la risposta; i messaggi successivi si cancellano. */
+  /** Modifica (con `text`) o ripete un tuo messaggio e rigenera la risposta; ciò che seguiva resta in un altro ramo. */
   resendMessage: (
     conversationId: number,
     messageId: number,
@@ -424,6 +471,10 @@ export const api = {
       onEvent: channel,
     });
   },
+  /** Mostra il ramo della conversazione che passa per `messageId`. */
+  switchBranch: (conversationId: number, messageId: number) =>
+    invoke<void>("switch_branch", { conversationId, messageId }),
+  /** In Markdown il ramo che si vede, in JSON (estensione .json) tutti i rami. */
   exportConversation: (conversationId: number, path: string, lang: string) =>
     invoke<void>("export_conversation", { conversationId, path, lang }),
   stopGeneration: (conversationId: number | null = null) => invoke<void>("stop_generation", { conversationId }),
@@ -466,6 +517,9 @@ export const api = {
   resumeAgentSession: (id: number) => invoke<void>("resume_agent_session", { id }),
   stopAgentSession: (id: number) => invoke<void>("stop_agent_session", { id }),
   deleteAgentSession: (id: number) => invoke<void>("delete_agent_session", { id }),
+  /** Riporta le cartelle dell'agente a prima della sessione (si può ripetere per annullare). */
+  restoreAgentSession: (id: number) => invoke<AgentSession>("restore_agent_session", { id }),
+  restorePointsAvailable: () => invoke<boolean>("restore_points_available"),
 
   listNamedPresets: () => invoke<NamedPreset[]>("list_named_presets"),
   saveNamedPreset: (preset: NamedPreset) => invoke<NamedPreset>("save_named_preset", { preset }),
@@ -497,9 +551,50 @@ export const api = {
   runsInTray: () => invoke<boolean>("runs_in_tray"),
   securitySettings: () => invoke<SecuritySettings>("security_settings"),
   setSecuritySettings: (settings: SecuritySettings) => invoke<void>("set_security_settings", { settings }),
+  spending: () => invoke<Spending>("spending"),
+  ragStatus: () => invoke<RagStatus>("rag_status"),
+  setRagSettings: (settings: RagSettings) => invoke<void>("set_rag_settings", { settings }),
+  /** Avvia l'indicizzazione in sottofondo; l'avanzamento si legge con `ragStatus`. */
+  indexDocuments: () => invoke<void>("index_documents"),
+  /** Brani trovati: [file, testo, somiglianza]. */
+  searchDocuments: (query: string) => invoke<[string, string, number][]>("search_documents", { query }),
+  setSpendLimits: (limits: SpendLimits) => invoke<void>("set_spend_limits", { limits }),
   /** Apre un indirizzo web nel browser di sistema. */
   openExternal: (url: string) => invoke<void>("open_external", { url }),
+  createBackup: (path: string) => invoke<BackupInfo>("create_backup", { path }),
+  restoreBackup: (path: string) => invoke<void>("restore_backup", { path }),
+  diagnostics: () => invoke<string>("diagnostics"),
+  openLogsFolder: () => invoke<void>("open_logs_folder"),
+  checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
+  installUpdate: (onProgress: (progress: UpdateProgress) => void) => {
+    const channel = new Channel<UpdateProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("install_update", { onProgress: channel });
+  },
 };
+
+/** Una versione nuova dell'app. */
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  /** Note di rilascio, in Markdown. */
+  notes: string | null;
+  date: string | null;
+  /** `false` per l'exe portatile: la versione nuova si scarica a mano. */
+  installable: boolean;
+}
+
+export interface UpdateProgress {
+  doneBytes: number;
+  totalBytes: number | null;
+}
+
+/** Che cosa contiene un backup dei dati. */
+export interface BackupInfo {
+  appVersion: string;
+  schema: number;
+  created: string;
+}
 
 
 /** Dimensione leggibile: megabyte sotto il gigabyte, gigabyte sopra. */

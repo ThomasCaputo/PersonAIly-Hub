@@ -10,5 +10,7 @@
   "command.rejectProposal": "Reject the change",
   "config.serverPath": "Path of `app-server.exe`, the headless core the extension starts when the desktop app is closed. Empty: the one installed with the app, which the extension finds by itself.",
   "config.dataDir": "The app's data folder. Empty: the default one (`%APPDATA%\\dev.personaily.hub`).",
-  "config.maxContextChars": "Maximum characters of the open file sent as context. For longer files only the selection is sent."
+  "config.maxContextChars": "Maximum characters of the open file sent as context. For longer files only the selection is sent.",
+  "config.inlineCompletion": "Code suggestions while you type, from the local model loaded in the app (shown in grey, `Tab` accepts). It needs a code model trained for \"fill-in-the-middle\", such as Qwen2.5-Coder, and keeps the GPU busy while you write.",
+  "config.inlineCompletionDelay": "Milliseconds to wait after the last key before asking for a suggestion."
 }

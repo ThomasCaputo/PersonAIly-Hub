@@ -121,6 +121,28 @@ pesi. Va confrontata con l'uso reale su più modelli, soprattutto con contesti l
 modificare un messaggio vecchio costringe a rielaborare tutta la conversazione. Da
 valutare se offrire l'opzione nel preset.
 
+**d) Memoria impegnata (commit) in VRAM.** Misura del 20-11-2026: con Qwen2.5 7B in VRAM
+`llama-server` occupa circa 780 MiB di RAM vera, ma Windows gli conta circa **5,6 GB di
+memoria impegnata** (la "memoria privata" di Gestione attività, dettagli). Non dipende
+dalla lettura del file:
+
+| Lettura file (Qwen 7B, VRAM, contesto 8192) | RAM del processo | Memoria impegnata | Velocità |
+|---|---|---|---|
+| `dio` | 779 MiB | 5621 MiB | 63 token/s |
+| `dio` con `--no-host` | 777 MiB | 5665 MiB | 63 token/s |
+| `none` | 778 MiB | 5667 MiB | 63 token/s |
+| `mmap` | 4652 MiB | 5335 MiB | 64 token/s |
+| `dio`, contesto 2048 | 772 MiB | 5476 MiB | 63 token/s |
+
+Con Gemma 3 1B la memoria impegnata è circa 1950 MiB. In entrambi i casi è **VRAM
+allocata + 0,9 GB circa** e scende con la cache KV (contesto più corto). È il modello di
+memoria di Windows (WDDM): ogni allocazione sulla GPU è coperta da memoria impegnata,
+così il sistema può spostarla in RAM se la VRAM serve ad altri. Non è una copia del
+modello e non usa RAM vera, ma consuma il *limite* della memoria impegnata (RAM + file
+di paging): con 16 GB di RAM e un file di paging piccolo, un modello grande in VRAM
+riduce lo spazio per gli altri programmi. Non si può evitare da un'app; con il file di
+paging gestito da Windows non dà problemi.
+
 ## Alternative scartate
 
 | Alternativa | Motivo |

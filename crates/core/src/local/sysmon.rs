@@ -141,10 +141,135 @@ pub fn process_gpu_memory(_pid: u32) -> Option<ProcessGpuMemory> {
     None
 }
 
-/// VRAM della prima GPU NVIDIA, letta da `nvidia-smi`.
+/// VRAM della prima GPU NVIDIA.
+///
+/// Di base dalla libreria del driver (NVML), aperta una volta sola: una
+/// lettura costa pochi microsecondi. Se non c'è, da `nvidia-smi`, che però
+/// avvia un processo a ogni lettura (circa 70 ms).
 ///
 /// Per ora solo NVIDIA; le altre GPU arriveranno con il supporto a Vulkan.
 fn gpu_memory() -> Option<GpuMemory> {
+    #[cfg(windows)]
+    if let Some(nvml) = nvml::get() {
+        return nvml.memory();
+    }
+    gpu_memory_from_smi()
+}
+
+/// Accesso diretto a `nvml.dll`, la libreria che il driver NVIDIA installa in
+/// `System32` (la stessa che usa `nvidia-smi`). Solo le quattro funzioni che
+/// servono, caricate a mano: niente dipendenze in più.
+#[cfg(windows)]
+mod nvml {
+    use std::ffi::{c_char, c_int, c_uint, c_void};
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    };
+
+    use super::GpuMemory;
+
+    type Device = *mut c_void;
+    type InitFn = unsafe extern "C" fn() -> c_int;
+    type HandleFn = unsafe extern "C" fn(c_uint, *mut Device) -> c_int;
+    type NameFn = unsafe extern "C" fn(Device, *mut c_char, c_uint) -> c_int;
+    type MemoryFn = unsafe extern "C" fn(Device, *mut Memory) -> c_int;
+    /// Come `GetProcAddress` restituisce una funzione (`FARPROC` senza `Option`).
+    type Symbol = unsafe extern "system" fn() -> isize;
+
+    /// `nvmlMemory_t`: in byte.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Memory {
+        total: u64,
+        free: u64,
+        used: u64,
+    }
+
+    pub(super) struct Nvml {
+        device: usize,
+        name: String,
+        memory_fn: MemoryFn,
+    }
+
+    impl Nvml {
+        pub(super) fn memory(&self) -> Option<GpuMemory> {
+            let mut memory = Memory::default();
+            // SAFETY: `device` viene da `nvmlDeviceGetHandleByIndex_v2` e la
+            // libreria resta caricata per tutta la vita del processo.
+            let status = unsafe { (self.memory_fn)(self.device as Device, &mut memory) };
+            (status == 0).then(|| GpuMemory {
+                name: self.name.clone(),
+                total_bytes: memory.total,
+                used_bytes: memory.used,
+                free_bytes: memory.free,
+            })
+        }
+    }
+
+    /// La libreria aperta, o `None` se non c'è una GPU NVIDIA: si prova una
+    /// volta sola.
+    pub(super) fn get() -> Option<&'static Nvml> {
+        static NVML: OnceLock<Option<Nvml>> = OnceLock::new();
+        NVML.get_or_init(|| unsafe { open() }).as_ref()
+    }
+
+    unsafe fn open() -> Option<Nvml> {
+        let file: Vec<u16> = "nvml.dll".encode_utf16().chain([0]).collect();
+        // Solo da System32: mai una nvml.dll messa accanto all'eseguibile.
+        let module = unsafe {
+            LoadLibraryExW(
+                file.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        if module.is_null() {
+            return None;
+        }
+        let symbol = |name: &[u8]| unsafe { GetProcAddress(module, name.as_ptr()) };
+        let init = symbol(b"nvmlInit_v2\0")?;
+        let handle = symbol(b"nvmlDeviceGetHandleByIndex_v2\0")?;
+        let name_fn = symbol(b"nvmlDeviceGetName\0")?;
+        let memory = symbol(b"nvmlDeviceGetMemoryInfo\0")?;
+        // SAFETY: firme dalla documentazione di NVML (nvml.h).
+        let (init, handle, name_fn, memory_fn) = unsafe {
+            (
+                std::mem::transmute::<Symbol, InitFn>(init),
+                std::mem::transmute::<Symbol, HandleFn>(handle),
+                std::mem::transmute::<Symbol, NameFn>(name_fn),
+                std::mem::transmute::<Symbol, MemoryFn>(memory),
+            )
+        };
+        if unsafe { init() } != 0 {
+            return None;
+        }
+        let mut device: Device = std::ptr::null_mut();
+        if unsafe { handle(0, &mut device) } != 0 {
+            return None;
+        }
+        let mut buffer = [0 as c_char; 96];
+        let name = if unsafe { name_fn(device, buffer.as_mut_ptr(), buffer.len() as c_uint) } == 0 {
+            let bytes: Vec<u8> = buffer
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            "NVIDIA GPU".to_string()
+        };
+        Some(Nvml {
+            device: device as usize,
+            name,
+            memory_fn,
+        })
+    }
+}
+
+/// VRAM letta da `nvidia-smi`: la riserva quando NVML non si apre.
+fn gpu_memory_from_smi() -> Option<GpuMemory> {
     let mut cmd = Command::new("nvidia-smi");
     cmd.args([
         "--query-gpu=name,memory.total,memory.used,memory.free",
@@ -194,6 +319,25 @@ mod tests {
         assert_eq!(gpu.name, "NVIDIA GeForce RTX 3060");
         assert_eq!(gpu.total_bytes, 12288 * 1024 * 1024);
         assert_eq!(gpu.used_bytes, 1051 * 1024 * 1024);
+    }
+
+    /// Su un PC con GPU NVIDIA le due letture devono dire la stessa cosa.
+    #[cfg(windows)]
+    #[test]
+    fn nvml_e_nvidia_smi_concordano() {
+        let Some(smi) = gpu_memory_from_smi() else {
+            return; // niente GPU NVIDIA: nulla da confrontare
+        };
+        // Dove funziona nvidia-smi c'è anche la sua libreria.
+        let nvml = nvml::get()
+            .and_then(|n| n.memory())
+            .expect("NVML non si apre");
+        assert_eq!(nvml.name, smi.name);
+        // nvidia-smi arrotonda ai MiB.
+        assert_eq!(
+            nvml.total_bytes / (1024 * 1024),
+            smi.total_bytes / (1024 * 1024)
+        );
     }
 
     #[test]

@@ -104,6 +104,8 @@ pub fn find_server(data_dir: &Path, preferred: Option<Variant>) -> Result<Instal
 pub struct LocalRuntime {
     data_dir: PathBuf,
     http: reqwest::Client,
+    /// Nome del registro in `logs/`: ogni istanza ha il suo.
+    log_name: &'static str,
     current: Option<(LoadedModel, Child)>,
     #[cfg(windows)]
     job: Option<win32job::Job>,
@@ -111,9 +113,16 @@ pub struct LocalRuntime {
 
 impl LocalRuntime {
     pub fn new(data_dir: PathBuf, http: reqwest::Client) -> Self {
+        Self::named(data_dir, http, "llama-server.log")
+    }
+
+    /// Un'altra istanza di `llama-server` (per esempio quella degli
+    /// embedding), con il suo registro.
+    pub fn named(data_dir: PathBuf, http: reqwest::Client, log_name: &'static str) -> Self {
         Self {
             data_dir,
             http,
+            log_name,
             current: None,
             #[cfg(windows)]
             job: None,
@@ -126,7 +135,7 @@ impl LocalRuntime {
     }
 
     pub fn log_path(&self) -> PathBuf {
-        self.data_dir.join("logs").join("llama-server.log")
+        self.data_dir.join("logs").join(self.log_name)
     }
 
     /// Il modello caricato, se il suo processo è ancora vivo.
@@ -151,10 +160,36 @@ impl LocalRuntime {
         params: &LoadParams,
         mmproj: Option<&str>,
     ) -> Result<LoadedModel> {
+        let port = free_port()?;
+        let args = build_args(model_path, params, port, mmproj);
+        self.start(
+            engine,
+            model_path,
+            model_name,
+            params,
+            port,
+            args,
+            mmproj.is_some(),
+        )
+        .await
+    }
+
+    /// Avvia `llama-server` con gli argomenti dati (che devono contenere
+    /// `port`), scaricando prima il modello eventualmente presente.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start(
+        &mut self,
+        engine: &InstalledEngine,
+        model_path: &str,
+        model_name: &str,
+        params: &LoadParams,
+        port: u16,
+        args: Vec<String>,
+        vision: bool,
+    ) -> Result<LoadedModel> {
         self.unload().await;
 
         let exe = &engine.exe;
-        let port = free_port()?;
         let api_key = crate::instance::new_token()?;
         let log_path = self.log_path();
         if let Some(dir) = log_path.parent() {
@@ -163,7 +198,7 @@ impl LocalRuntime {
         let log = File::create(&log_path)?;
 
         let mut cmd = Command::new(exe);
-        cmd.args(build_args(model_path, params, port, mmproj))
+        cmd.args(args)
             // Nell'ambiente e non tra gli argomenti: la riga di comando di un
             // processo si legge facilmente (Gestione attività, `wmic`).
             .env("LLAMA_API_KEY", &api_key)
@@ -191,7 +226,7 @@ impl LocalRuntime {
             port,
             pid,
             engine: engine.dir_name.clone(),
-            vision: mmproj.is_some(),
+            vision,
             api_key,
         };
         self.current = Some((model.clone(), child));
@@ -266,7 +301,7 @@ impl LocalRuntime {
 }
 
 /// Chiede al sistema una porta libera su 127.0.0.1.
-fn free_port() -> Result<u16> {
+pub fn free_port() -> Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }

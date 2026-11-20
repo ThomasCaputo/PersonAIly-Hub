@@ -86,6 +86,8 @@ function newAgent(): Agent {
     tools: { files: true, web: false, terminal: true, permission: "ask" },
     mcpServers: [],
     maxSteps: 50,
+    restorePoints: true,
+    delegates: [],
   };
 }
 
@@ -93,6 +95,9 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
   const [tab, setTab] = useState<Tab>("sessions");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
+  /** Chi ha affidato una sessione: il nome del suo agente, o il numero. */
+  const parentName = (id: number) =>
+    sessions.find((s) => s.id === id)?.agentName ?? t("sessione {n}", { n: id });
   const [selectedSession, setSelectedSession] = useState<number | "new" | null>(null);
   const [preselected, setPreselected] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +157,11 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
               {sessions.map((s) => (
                 <button
                   key={s.id}
+                  aria-label={
+                    s.parentSessionId != null
+                      ? t("{agent}, lavoro affidato da {parent}", { agent: s.agentName, parent: parentName(s.parentSessionId) })
+                      : undefined
+                  }
                   className={s.id === selectedSession ? "session-item active" : "session-item"}
                   onClick={() => setSelectedSession(s.id)}
                   title={s.task}
@@ -161,7 +171,10 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
                     <StatusBadge status={s.status} />
                   </span>
                   <span className="session-task">{s.task}</span>
-                  <span className="dim session-when">{when(s.updatedAt)}</span>
+                  <span className="dim session-when">
+                    {s.parentSessionId != null && `↳ ${parentName(s.parentSessionId)} · `}
+                    {when(s.updatedAt)}
+                  </span>
                 </button>
               ))}
             </div>
@@ -333,6 +346,8 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
   const [live, setLive] = useState<LiveState | null>(null);
   const [reply, setReply] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Le cartelle sono appena state riportate a prima della sessione.
+  const [restored, setRestored] = useState(false);
   const seen = useRef<{ revision: number; status: SessionStatus | null } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -394,6 +409,19 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
       await api.deleteAgentSession(id);
       onDeleted();
     });
+  const restore = () => {
+    if (!session) return;
+    const folders = session.restorePoints.map((p) => p.folder).join("\n");
+    const question = t(
+      "Riportare queste cartelle a com'erano prima della sessione?\n\n{folders}\n\nI file cambiati tornano indietro e quelli creati dopo spariscono. Prima viene salvato lo stato attuale: ripetendo il comando si annulla il ripristino.",
+      { folders },
+    );
+    if (!window.confirm(question)) return;
+    act(async () => {
+      setSession(await api.restoreAgentSession(id));
+      setRestored(true);
+    });
+  };
 
   const files = touchedFiles(messages);
   const cost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
@@ -434,6 +462,19 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
               {t("Ferma")}
             </button>
           )}
+          {!active && session.restorePoints.length > 0 && (
+            <button
+              className="btn"
+              title={
+                restored
+                  ? t("Rimette le cartelle com'erano prima del ripristino")
+                  : t("Riporta le cartelle a com'erano prima della sessione")
+              }
+              onClick={restore}
+            >
+              {restored ? t("Rifai le modifiche") : t("Annulla le modifiche")}
+            </button>
+          )}
           {!active && (
             <button className="btn" onClick={remove}>
               {t("Elimina")}
@@ -471,7 +512,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
             <div className="message-role">{session.agentName}</div>
             {live.reasoning && !live.streaming && <div className="reasoning">{live.reasoning}</div>}
             {live.streaming ? (
-              <Markdown text={live.streaming} />
+              <Markdown text={live.streaming} streaming />
             ) : (
               !live.reasoning && <div className="dim">{t("Sto lavorando…")}</div>
             )}
@@ -648,10 +689,25 @@ function AgentEditor({
 }) {
   const [agent, setAgent] = useState<Agent>(initial);
   const [error, setError] = useState<string | null>(null);
+  const [gitMissing, setGitMissing] = useState(false);
+  useEffect(() => {
+    api
+      .restorePointsAvailable()
+      .then((ok) => setGitMissing(!ok))
+      .catch(() => {});
+  }, []);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   useEffect(() => {
     api.listMcpServers().then(setMcpServers).catch(() => {});
   }, []);
+  // Gli altri agenti, che questo può scegliere come aiutanti (AG-8).
+  const [otherAgents, setOtherAgents] = useState<Agent[]>([]);
+  useEffect(() => {
+    api
+      .listAgents()
+      .then((all) => setOtherAgents(all.filter((a) => a.id !== initial.id)))
+      .catch(() => {});
+  }, [initial.id]);
   const toggleMcp = (id: string, on: boolean) =>
     set({ mcpServers: on ? [...agent.mcpServers, id] : agent.mcpServers.filter((s) => s !== id) });
   const missingMcp = agent.mcpServers.filter((id) => !mcpServers.some((s) => s.id === id));
@@ -762,6 +818,14 @@ function AgentEditor({
             <input type="checkbox" checked={agent.tools.web} onChange={(e) => setTools({ web: e.target.checked })} />
             {t("Ricerca web")}
           </label>
+          <label title={t("Cerca nei documenti resi consultabili in Impostazioni")}>
+            <input
+              type="checkbox"
+              checked={agent.tools.documents ?? false}
+              onChange={(e) => setTools({ documents: e.target.checked })}
+            />
+            {t("Documenti")}
+          </label>
           <select
             aria-label={t("Permessi")}
             value={agent.tools.permission}
@@ -819,6 +883,39 @@ function AgentEditor({
         )}
       </section>
 
+      <section className="section">
+        <h2>{t("Aiutanti")}</h2>
+        {otherAgents.length === 0 ? (
+          <p className="dim note">{t("Crea un altro agente per poterlo scegliere come aiutante.")}</p>
+        ) : (
+          <>
+            <div className="tools-bar">
+              {otherAgents.map((a) => (
+                <label key={a.id}>
+                  <input
+                    type="checkbox"
+                    checked={agent.delegates.includes(a.id)}
+                    onChange={(e) =>
+                      set({
+                        delegates: e.target.checked
+                          ? [...agent.delegates, a.id]
+                          : agent.delegates.filter((id) => id !== a.id),
+                      })
+                    }
+                  />
+                  {a.name}
+                </label>
+              ))}
+            </div>
+            <p className="dim note">
+              {t(
+                "L'agente può affidare a loro parti del compito: ognuno lavora in una sessione sua, con le sue cartelle e i suoi permessi, e gli restituisce un resoconto. Affidare lavoro chiede conferma salvo con «Consenti tutto». Al massimo due livelli di deleghe.",
+              )}
+            </p>
+          </>
+        )}
+      </section>
+
       <div className="field">
         <label htmlFor="agent-steps">{t("Passi massimi per volta")}</label>
         <input
@@ -831,6 +928,24 @@ function AgentEditor({
         />
         <p className="dim note">{t("Arrivato qui l'agente si ferma e aspetta che tu gli risponda.")}</p>
       </div>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={agent.restorePoints}
+          onChange={(e) => set({ restorePoints: e.target.checked })}
+        />
+        <span>
+          <strong>{t("Punto di ripristino prima di ogni sessione")}</strong>
+          <span className="dim note block">
+            {gitMissing
+              ? t("Serve git, che su questo computer non c'è: installalo per usare questa opzione.")
+              : t(
+                  "Fotografa le cartelle prima che l'agente lavori, così puoi annullare tutto con un clic. Il tuo repository git, se c'è, non viene toccato; i file ignorati da .gitignore e le cartelle come node_modules restano fuori.",
+                )}
+          </span>
+        </span>
+      </label>
 
       <div className="row">
         <button className="btn primary" onClick={save} disabled={!agent.name.trim()}>

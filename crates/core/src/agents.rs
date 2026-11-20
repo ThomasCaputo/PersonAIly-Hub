@@ -15,12 +15,55 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::ModelRef;
-use crate::tools::ToolSettings;
+use crate::snapshots::RestorePoint;
+use crate::tools::{Risk, ToolDef, ToolSettings};
 
 /// Passi (giri modello → strumenti) predefiniti per una sessione.
 pub const DEFAULT_MAX_STEPS: u32 = 50;
 /// Nessun agente può fare più passi di così senza che l'utente risponda.
 pub const MAX_STEPS_LIMIT: u32 = 500;
+
+/// Lo strumento con cui un agente affida un compito a un altro (AG-8).
+pub const DELEGATE_TOOL: &str = "delegate_task";
+/// Quanti livelli di deleghe: l'agente avviato dall'utente è il livello 0,
+/// quelli a cui affida lavoro il livello 1, i loro aiutanti il 2. Oltre, lo
+/// strumento non viene offerto.
+pub const MAX_DELEGATION_DEPTH: u32 = 2;
+
+/// Lo strumento di delega, con gli agenti che si possono scegliere.
+pub fn delegate_tool(agents: &[Agent]) -> ToolDef {
+    let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+    let list = agents
+        .iter()
+        .map(|a| {
+            if a.description.is_empty() {
+                format!("- {}", a.name)
+            } else {
+                format!("- {}: {}", a.name, a.description)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ToolDef {
+        name: DELEGATE_TOOL.into(),
+        description: format!(
+            "Affida una parte del lavoro a un altro agente e aspetta il suo resoconto. \
+             Descrivi il compito in modo completo: l'altro agente non vede questa \
+             conversazione. Agenti disponibili:\n{list}"
+        )
+        .into(),
+        schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "agent": { "type": "string", "enum": names, "description": "Nome dell'agente" },
+                "task": { "type": "string", "description": "Il compito, scritto per intero" }
+            },
+            "required": ["agent", "task"]
+        }),
+        // Avvia un altro agente autonomo: conta come eseguire qualcosa.
+        risk: Risk::Execute,
+    }
+}
 
 /// Istruzioni comuni a tutti gli agenti, prima di quelle scritte dall'utente.
 pub const AGENT_PREAMBLE: &str = "Sei un agente che lavora in autonomia su un compito \
@@ -48,6 +91,11 @@ pub struct Agent {
     pub mcp_servers: Vec<String>,
     /// Passi massimi prima di fermarsi e aspettare l'utente.
     pub max_steps: u32,
+    /// Prima di ogni sessione fotografa le cartelle, per poter annullare
+    /// tutto ciò che l'agente ha cambiato (vedi [`crate::snapshots`]).
+    pub restore_points: bool,
+    /// Gli agenti (id) a cui questo può affidare parte del lavoro (AG-8).
+    pub delegates: Vec<i64>,
 }
 
 impl Default for Agent {
@@ -67,6 +115,8 @@ impl Default for Agent {
             },
             mcp_servers: Vec::new(),
             max_steps: DEFAULT_MAX_STEPS,
+            restore_points: true,
+            delegates: Vec::new(),
         }
     }
 }
@@ -80,6 +130,9 @@ impl Agent {
         self.folders.retain(|f| !f.trim().is_empty());
         self.folders.dedup();
         self.mcp_servers.dedup();
+        self.delegates.sort_unstable();
+        self.delegates.dedup();
+        self.delegates.retain(|&id| id != self.id);
         self.max_steps = self.max_steps.clamp(1, MAX_STEPS_LIMIT);
         self
     }
@@ -155,6 +208,11 @@ pub struct AgentSession {
     /// l'agente non cambia una sessione già partita.
     #[serde(skip)]
     pub definition: Option<Agent>,
+    /// Le cartelle fotografate prima che l'agente lavorasse; vuoto se non ce
+    /// ne sono (opzione spenta, git mancante o foto non riuscita).
+    pub restore_points: Vec<RestorePoint>,
+    /// La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente.
+    pub parent_session_id: Option<i64>,
 }
 
 /// Uno strumento in attesa di conferma, per l'interfaccia.

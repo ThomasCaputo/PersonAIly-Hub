@@ -20,3 +20,9 @@ ADR che sostituisce il precedente.
 | [0012](0012-lingue-interfaccia.md) | Lingue dell'interfaccia: italiano e inglese, testo italiano come chiave | Accettata e realizzata nell'app e nell'estensione VS Code |
 | [0013](0013-nucleo-in-area-di-notifica.md) | Nucleo nell'area di notifica: l'interfaccia si chiude, il modello resta | Accettata e provata in sviluppo |
 | [0014](0014-modelli-locali-varianti-visione-download.md) | Modelli locali: varianti di llama.cpp, immagini (mmproj), modelli divisi, più download, scaricamento per inattività | Accettata; immagini e modelli divisi solo con test automatici |
+| [0015](0015-punti-di-ripristino-agenti.md) | Punti di ripristino degli agenti: foto git in un repository separato | Accettata e provata con un modello locale |
+| [0016](0016-collocazione-ibrida.md) | Collocazione ibrida GPU + CPU, solo come scelta esplicita (LO-10) | Accettata e misurata |
+| [0017](0017-rag-locale.md) | Documenti consultabili: embedding con un secondo llama-server sulla CPU, indice in SQLite | Accettata; provata senza un vero modello di embedding |
+| [0018](0018-deleghe-tra-agenti.md) | Agenti che delegano ad altri agenti in sessioni figlie (AG-8) | Accettata e provata con un modello locale |
+| [0019](0019-rami-e-completamento-in-linea.md) | Rami della conversazione; completamento del codice in linea in VS Code (VS-6) | Accettata; completamento in linea da provare con un modello per il codice |
+| [0020](0020-aggiornamenti-backup-registro.md) | Aggiornamento automatico firmato, backup dei dati, registro diagnostico | Accettata; aggiornamento da provare con la prima release firmata |

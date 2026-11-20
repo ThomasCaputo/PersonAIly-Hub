@@ -102,7 +102,12 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let core = Arc::new(Core::new(&data_dir).map_err(|e| e.to_string())?);
+    app_core::log::init(&data_dir, "app-server");
+    app_core::log::install_panic_hook();
+    let core = Arc::new(Core::new(&data_dir).map_err(|e| {
+        app_core::log::error(format!("avvio del nucleo non riuscito: {e}"));
+        e.to_string()
+    })?);
     let api =
         app_server::start(core.clone(), &data_dir, InstanceKind::Server, options.port).await?;
     println!("API locale su http://127.0.0.1:{}", api.port());
@@ -137,6 +142,7 @@ async fn run() -> Result<(), String> {
 
     // Prima si toglie il file di blocco, così chi arriva non trova un nucleo
     // che sta per sparire; poi si ferma il lavoro e si libera la memoria.
+    app_core::log::info("chiusura di app-server");
     api.stop().await;
     core.stop_all_sessions();
     core.stop_generation();

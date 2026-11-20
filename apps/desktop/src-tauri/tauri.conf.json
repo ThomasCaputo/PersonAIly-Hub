@@ -24,6 +24,16 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0QUVERDI3QUQ4ODNERUMKUldUc1BZaXRKOTJ1ZEoxQjg2dSt2VVVlN2FLb3VENVpPTWVjOVh3d2dmNndwQWwwZFMyKzEzeHoK",
+      "endpoints": ["https://github.com/ThomasCaputo/personaily-hub/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": [

@@ -94,9 +94,11 @@ pub fn needs_exfiltration_check(
     folders: &[PathBuf],
     known_urls: &[String],
 ) -> bool {
+    // Il modello vede i file dell'utente con gli strumenti sui file o con la
+    // ricerca nei documenti.
+    let sees_files = (settings.files && !folders.is_empty()) || settings.documents;
     if call.name != READ_WEB_PAGE
-        || !settings.files
-        || folders.is_empty()
+        || !sees_files
         || settings.permission == PermissionLevel::All
         || settings.allowed_tools.iter().any(|t| t == READ_WEB_PAGE)
     {
@@ -142,6 +144,8 @@ pub struct ToolSettings {
     pub web: bool,
     /// Comandi nel terminale. Lo usano gli agenti; in chat resta spento.
     pub terminal: bool,
+    /// Ricerca nei documenti consultabili (RAG locale, ADR 0017).
+    pub documents: bool,
     pub permission: PermissionLevel,
     /// Strumenti MCP per cui l'utente ha scelto "Consenti sempre".
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -154,6 +158,7 @@ impl Default for ToolSettings {
             files: true,
             web: false,
             terminal: false,
+            documents: false,
             permission: PermissionLevel::Ask,
             allowed_tools: Vec::new(),
         }

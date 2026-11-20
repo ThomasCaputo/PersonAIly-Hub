@@ -26,7 +26,7 @@ gravità, alcuni minori e qualche lentezza destinata a crescere con l'archivio:
    da Hugging Face senza impronta accettati in silenzio, nonce della webview VS Code
    generato con `Math.random`.
 5. Prestazioni: i comandi Tauri non `async` giravano sul thread dell'interfaccia (una
-   ricerca o un'archivio grande bloccavano la finestra); SQLite senza WAL; ricerca nei
+   ricerca o un archivio grande bloccavano la finestra); SQLite senza WAL; ricerca nei
    messaggi con `LIKE '%…%'` su tutto il testo; immagini allegate (fino a 5 MB in base64)
    rilette a ogni apertura di una conversazione anche se l'interfaccia ne mostra solo il nome.
 

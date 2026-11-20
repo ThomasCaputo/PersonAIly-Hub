@@ -163,6 +163,18 @@
           "default": 60000,
           "minimum": 1000,
           "markdownDescription": "%config.maxContextChars%"
+        },
+        "personailyHub.inlineCompletion": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%config.inlineCompletion%"
+        },
+        "personailyHub.inlineCompletionDelay": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "maximum": 3000,
+          "markdownDescription": "%config.inlineCompletionDelay%"
         }
       }
     }

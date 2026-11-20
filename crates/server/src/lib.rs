@@ -89,6 +89,14 @@ impl From<app_core::error::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Token sbagliato, pagine web e indirizzi inesistenti non dicono nulla
+        // su un guasto dell'app: nel registro andrebbero solo a riempirlo.
+        if !matches!(
+            self.status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ) {
+            app_core::log::warn(format!("API {}: {}", self.status.as_u16(), self.message));
+        }
         let kind = match self.status {
             StatusCode::UNAUTHORIZED => "authentication_error",
             StatusCode::FORBIDDEN => "permission_error",

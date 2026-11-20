@@ -34,7 +34,8 @@ chat, the same agents and the same tools whichever model you pick.
   into multiple files included), or import files you already have.
 - Image input for local vision models through their `mmproj` component.
 - A memory estimate before loading: the model and its KV cache live **either in VRAM or in
-  RAM**, never silently split, and you are warned if they don't fit.
+  RAM**, never silently split, and you are warned if they don't fit. Models too big for your
+  VRAM can be split between GPU and CPU, but only as an explicit, advanced choice.
 - Live VRAM/RAM usage, tokens per second and context fill. KV cache quantized to `q8_0`
   by default. Optionally unload the model by itself after some idle minutes.
 
@@ -42,13 +43,18 @@ chat, the same agents and the same tools whichever model you pick.
 - Anthropic, plus any OpenAI-compatible service (OpenAI, OpenRouter, Groq, Mistral,
   Google AI Studio, …) with your own API key.
 - Keys are stored in the Windows Credential Manager, never in plain files.
+- Optional spending limits, per month and per conversation.
 
 **Chat**
 - Streaming answers you can stop, Markdown with code highlighting and math formulas.
 - Attachments (text, PDF, images for vision models) and web search with sources.
 - Controlled access to the folders you choose: the model can read, create and edit files there.
-- Switch model mid-conversation; edit a message and regenerate the reply; export a
-  conversation as Markdown; full-text search through your history.
+- Switch model mid-conversation; edit a message or regenerate the reply and move between
+  the versions (branches); export a conversation as Markdown or JSON; full-text search
+  through your history; drag files into the chat; `Ctrl+K` command palette.
+- **Searchable documents:** index the folders you choose with a local embedding model and
+  let the models search them, without anything leaving your PC.
+- **Compare** two models side by side on the same message.
 - Models reply in the language you write in.
 - Per-model parameters (temperature, top-p, context length, GPU layers…) and named presets
   you can export and import.
@@ -56,6 +62,8 @@ chat, the same agents and the same tools whichever model you pick.
 **Agents**
 - Create agents, start them on a task and follow every step: messages, tools used, files touched.
 - Pause, resume or stop them; run several at once.
+- Undo everything an agent changed with one click (a snapshot is taken before each session).
+- Agents can hand parts of a task over to other agents.
 - Terminal commands and external tools through [MCP](https://modelcontextprotocol.io),
   always behind your permission rules.
 
@@ -63,7 +71,8 @@ chat, the same agents and the same tools whichever model you pick.
 - A local **OpenAI-compatible API**, so existing tools can use your models.
 - A **VS Code extension**: chat in the editor with the open file as context, proposed
   changes shown as diffs to accept or reject, and agents you can follow and approve from
-  the editor ([details](extensions/vscode/README.md)).
+  the editor, plus optional inline code completion with a local code model
+  ([details](extensions/vscode/README.md)).
 - Closing the window keeps the app running in the notification area: the loaded model,
   working agents and the VS Code extension carry on, while the interface frees its memory.
 
@@ -106,7 +115,12 @@ Get the latest version from the [Releases page](https://github.com/ThomasCaputo/
 
 - Everything stays on your PC: conversations, settings and models are stored locally
   (`%APPDATA%\dev.personaily.hub`). Nothing is sent anywhere except to the cloud
-  providers you configure and the web pages the model reads for you.
+  providers you configure, the web pages the model reads for you and, at startup, a check
+  on GitHub for a new version (it sends nothing of yours and can be turned off in
+  **Settings → Updates**). No telemetry.
+- Updates are signed: the app refuses an update whose signature does not match.
+- **Settings → Data backup** saves conversations, agents, settings and presets in one file;
+  API keys stay in the Windows Credential Manager and are not included.
 - Models can only act where you allow them: granted folders, confirmation before edits
   and commands, and a log of every action.
 - The local API listens on `127.0.0.1` only and requires a token.

@@ -39,14 +39,23 @@ Libreria Rust senza interfaccia grafica. Moduli:
 |---|---|
 | `providers` | Interfaccia unica verso i modelli: invio messaggi in streaming, elenco modelli, capacità (visione, strumenti, contesto massimo). Un'implementazione per famiglia di API |
 | `local` | Gestione di `llama-server`: avvio, arresto, controllo di salute, costruzione degli argomenti, stima della memoria, monitoraggio di VRAM e RAM |
-| `models` | Libreria dei file GGUF: scansione cartelle, lettura dei metadati, download da Hugging Face |
-| `presets` | Parametri per modello, divisi in *caricamento* e *generazione* |
-| `tools` | Strumenti offerti ai modelli: file, ricerca web, lettura pagine, terminale, client MCP |
-| `permissions` | Decide se una chiamata a uno strumento è consentita, negata o va chiesta all'utente |
+| `models` | Libreria dei file GGUF: scansione delle cartelle scelte dall'utente |
+| `gguf` | Lettura dei metadati di un file GGUF (solo l'intestazione, non i pesi) |
+| `hub` | Ricerca e download di modelli GGUF da Hugging Face (file `.part`, ripresa, impronta) |
+| `named_presets` | Preset con nome: parametri di generazione e prompt di sistema, esportabili e importabili. I preset per modello (caricamento e generazione) li gestisce il nucleo in `lib.rs` |
+| `tools` | Strumenti offerti ai modelli (file, ricerca web, lettura pagine, terminale) e permessi: decide se una chiamata è consentita, negata o va chiesta all'utente |
+| `mcp` | Client MCP: avvio dei server stdio e chiamata dei loro strumenti |
+| `attachments` | Allegati a un messaggio: testo, PDF e immagini |
 | `chat` | Ciclo di una conversazione: messaggio → modello → eventuali strumenti → risposta |
 | `agents` | Definizioni degli agenti e loro sessioni; riusa il ciclo di `chat` senza attendere l'utente a ogni passo |
+| `snapshots` | Punti di ripristino delle cartelle degli agenti, con git in un repository separato |
+| `rag` | Documenti consultabili: pezzi di testo, embedding e ricerca per somiglianza |
 | `store` | Archivio SQLite (modalità WAL): conversazioni, messaggi con indice di ricerca a trigrammi, agenti, sessioni, impostazioni |
 | `secrets` | Chiavi API nel Gestore credenziali di Windows (portachiavi di sistema sulle altre piattaforme) |
+| `instance` | Un solo nucleo attivo: file di blocco `core.lock` con porta e token |
+| `export` | Esportazione di una conversazione in Markdown o JSON |
+| `backup` | Backup e ripristino dei dati in un file `.zip` ([ADR 0020](adr/0020-aggiornamenti-backup-registro.md)) |
+| `log` | Registro diagnostico `logs/core.log`, con rotazione, e testo per le segnalazioni |
 
 ### Server — `crates/server`
 
@@ -71,11 +80,12 @@ Il nucleo vive quanto il processo, non quanto la finestra: chiudendola l'interfa
 distrugge e l'app resta nell'area di notifica con modello, agenti e API locale; un clic
 sull'icona (o riaprire l'app, che ha una sola copia) ricrea la finestra
 ([ADR 0013](adr/0013-nucleo-in-area-di-notifica.md)).
-Il lato web (React + TypeScript) ha quattro aree:
+Il lato web (React + TypeScript) ha cinque aree:
 
 - **Chat** — conversazioni, allegati, selettore del modello, pannello parametri laterale;
 - **Agenti** — elenco agenti, sessioni in corso, vista dettagliata dell'attività;
 - **Modelli** — libreria locale, download, provider cloud e chiavi, stato della memoria;
+- **Confronto** — due modelli affiancati sullo stesso messaggio;
 - **Impostazioni** — lingua, tema, chiusura della finestra, cartelle, permessi predefiniti,
   protezioni di sicurezza, server MCP, API locale. La variante di llama.cpp e lo
   scaricamento per inattività stanno in Modelli → Motore.
@@ -177,7 +187,8 @@ Tutto in `%APPDATA%\<nome app>\` (cartella equivalente sulle altre piattaforme):
 | Binari di llama.cpp scaricati | `bin\llama.cpp\<versione>-<variante>\` (anche più varianti; quella in uso è un'impostazione) |
 | File di blocco del nucleo | `core.lock` (porta, token in chiaro, pid; esiste solo mentre il nucleo è attivo; protetto dai permessi della cartella utente) |
 | Dove è installato `app-server` | `install.json` (scritto dall'app a ogni avvio, letto dall'estensione VS Code) |
-
+| Registro diagnostico e uscita di `llama-server` | `logs\core.log` (con `core.1.log`, al massimo 2 MB ciascuno), `logs\llama-server.log` |
+| Copie dell'archivio | `backups\` (prima di ogni aggiornamento dello schema e prima di un ripristino) |
 | Chiavi API, token dell'API locale, variabili d'ambiente dei server MCP | Gestore credenziali di Windows — **non** su disco |
 | Modelli GGUF | cartelle scelte dall'utente, fuori dalla cartella dati; quelli scaricati dall'app in `<autore>\<nome>` |
 

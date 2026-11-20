@@ -18,14 +18,15 @@ use app_core::local::sysmon::{GpuMemory, MemorySnapshot, ProcessGpuMemory};
 use app_core::local::{KvCacheType, LoadParams, Placement, SamplingParams};
 use app_core::models::ModelInfo;
 use app_core::providers::{CloudModel, Provider, ProviderKind};
+use app_core::snapshots::RestorePoint;
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::{PermissionLevel, ToolCall, ToolSettings};
 use app_core::{Approval, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome};
 use ts_rs::{Config, TS};
 
 use crate::api::{
-    AnswerBody, ErrorEvent, Info, LoadBody, LocalModels, Models, RenameBody, ReplyBody, SendBody,
-    TaskBody, TextEvent, ToolRequestEvent,
+    AnswerBody, BranchBody, ErrorEvent, InfillBody, InfillReply, Info, LoadBody, LocalModels,
+    Models, RenameBody, ReplyBody, SendBody, TaskBody, TextEvent, ToolRequestEvent,
 };
 
 const HEADER: &str = "\
@@ -48,6 +49,8 @@ pub fn typescript() -> String {
         Models::decl(&cfg),
         LocalModels::decl(&cfg),
         LoadBody::decl(&cfg),
+        InfillBody::decl(&cfg),
+        InfillReply::decl(&cfg),
         ModelInfo::decl(&cfg),
         LoadedModel::decl(&cfg),
         LoadParams::decl(&cfg),
@@ -71,6 +74,7 @@ pub fn typescript() -> String {
         AttachmentKind::decl(&cfg),
         ToolCall::decl(&cfg),
         SendBody::decl(&cfg),
+        BranchBody::decl(&cfg),
         TextEvent::decl(&cfg),
         ToolRequestEvent::decl(&cfg),
         ErrorEvent::decl(&cfg),
@@ -84,6 +88,7 @@ pub fn typescript() -> String {
         // Agenti
         Agent::decl(&cfg),
         AgentSession::decl(&cfg),
+        RestorePoint::decl(&cfg),
         SessionStatus::decl(&cfg),
         TaskBody::decl(&cfg),
         ReplyBody::decl(&cfg),

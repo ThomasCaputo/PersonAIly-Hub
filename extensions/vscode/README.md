@@ -18,6 +18,10 @@ Usa da VS Code i modelli di PersonAIly Hub, locali (`.gguf`) e cloud.
   notifiche (*Consenti*, *Consenti sempre in questa sessione*, *Nega*); alla fine si può
   aprire il resoconto. *Segui gli agenti al lavoro* fa lo stesso con un agente avviato
   dall'app.
+- **Completamento in linea** (spento di base): mentre scrivi, il modello locale caricato
+  nell'app propone il seguito in grigio e `Tab` lo accetta. Si accende con
+  `personailyHub.inlineCompletion` e serve un modello per il codice addestrato al
+  "fill-in-the-middle", come Qwen2.5-Coder: i modelli di chat non lo sanno fare.
 - **Lingua**: l'estensione parla la lingua di VS Code (italiano, altrimenti inglese),
   anche nei messaggi d'errore che arrivano dall'app.
 
@@ -41,6 +45,8 @@ della cartella dati dell'app (`%APPDATA%\dev.personaily.hub`).
 | `personailyHub.serverPath` | Percorso di `app-server.exe`; vuoto: quello installato con l'app |
 | `personailyHub.dataDir` | Cartella dati dell'app, se non è quella predefinita |
 | `personailyHub.maxContextChars` | Caratteri massimi del file inviati come contesto (60 000) |
+| `personailyHub.inlineCompletion` | Completamento del codice in linea (spento) |
+| `personailyHub.inlineCompletionDelay` | Millisecondi di attesa dopo l'ultimo tasto (300) |
 
 ## Sviluppo
 

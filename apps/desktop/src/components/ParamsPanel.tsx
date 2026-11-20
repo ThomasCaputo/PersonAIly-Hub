@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { LoadedModel, Preset, SamplingParams } from "../api";
 import { NamedPresets } from "./NamedPresets";
 import { msg, t } from "../i18n";
+import { placementLabel } from "../placement";
 
 type Props = {
   preset: Preset;
@@ -164,7 +165,7 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
           <h2>{t("Caricamento")}</h2>
           <dl className="facts">
             <dt>{t("Collocazione")}</dt>
-            <dd>{loaded.params.placement === "vram" ? t("Solo VRAM") : t("Solo RAM")}</dd>
+            <dd>{placementLabel(loaded.params)}</dd>
             <dt>{t("Contesto")}</dt>
             <dd>{t("{n} token", { n: loaded.params.contextLength })}</dd>
             <dt>{t("Cache KV")}</dt>

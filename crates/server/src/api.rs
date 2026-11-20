@@ -34,6 +34,7 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/models", get(models))
         .route("/api/local/load", post(load_model))
         .route("/api/local/unload", post(unload_model))
+        .route("/api/infill", post(infill))
         .route(
             "/api/conversations",
             get(list_conversations).post(create_conversation),
@@ -47,6 +48,7 @@ pub(crate) fn routes() -> Router<ApiState> {
             get(messages).post(send_message),
         )
         .route("/api/conversations/{id}/stop", post(stop_conversation))
+        .route("/api/conversations/{id}/branch", post(switch_branch))
         .route(
             "/api/conversations/{id}/tools",
             get(conversation_tools).put(set_conversation_tools),
@@ -58,6 +60,7 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/sessions", get(sessions))
         .route("/api/sessions/{id}", get(session).delete(delete_session))
         .route("/api/sessions/{id}/live", get(session_live))
+        .route("/api/sessions/{id}/restore", post(restore_session))
         .route("/api/sessions/{id}/pause", post(pause_session))
         .route("/api/sessions/{id}/resume", post(resume_session))
         .route("/api/sessions/{id}/stop", post(stop_session))
@@ -184,6 +187,38 @@ async fn load_model(
     Ok(Json(loaded))
 }
 
+#[derive(Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InfillBody {
+    /// Il testo prima del cursore.
+    prefix: String,
+    /// Il testo dopo il cursore.
+    suffix: String,
+    /// Token massimi da generare (predefinito 128, al massimo 512).
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    max_tokens: Option<u32>,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InfillReply {
+    /// Il testo da inserire al cursore.
+    text: String,
+}
+
+/// Completamento del codice in linea (VS-6) con il modello locale.
+async fn infill(
+    State(state): State<ApiState>,
+    Json(body): Json<InfillBody>,
+) -> ApiResult<Json<InfillReply>> {
+    let text = state
+        .core
+        .infill(&body.prefix, &body.suffix, body.max_tokens.unwrap_or(128))
+        .await?;
+    Ok(Json(InfillReply { text }))
+}
+
 async fn unload_model(State(state): State<ApiState>) -> StatusCode {
     state.core.unload_model().await;
     StatusCode::NO_CONTENT
@@ -244,6 +279,28 @@ async fn messages(
 ) -> ApiResult<Json<Vec<Message>>> {
     Ok(Json(
         blocking(&state.core, move |core| core.messages_for_display(id)).await?,
+    ))
+}
+
+#[derive(Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BranchBody {
+    /// Un messaggio del ramo da mostrare.
+    message_id: i64,
+}
+
+/// Mostra un altro ramo della conversazione; restituisce i messaggi da mostrare.
+async fn switch_branch(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+    Json(body): Json<BranchBody>,
+) -> ApiResult<Json<Vec<Message>>> {
+    Ok(Json(
+        blocking(&state.core, move |core| {
+            core.switch_branch(id, body.message_id)?;
+            core.messages_for_display(id)
+        })
+        .await?,
     ))
 }
 
@@ -515,6 +572,16 @@ async fn reply_session(
     let session = blocking(&state.core, move |core| core.reply_session(id, &body.text)).await?;
     spawn_session(&state.core, id);
     Ok(Json(session))
+}
+
+/// Annulla le modifiche dell'agente: cartelle come prima della sessione.
+async fn restore_session(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<AgentSession>> {
+    Ok(Json(
+        blocking(&state.core, move |core| core.restore_session(id)).await?,
+    ))
 }
 
 async fn delete_session(

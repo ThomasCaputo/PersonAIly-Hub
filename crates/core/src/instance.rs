@@ -126,7 +126,7 @@ pub fn claim_lock(data_dir: &Path, info: &LockInfo) -> Result<Option<LockInfo>> 
                         write_lock(data_dir, info)?;
                         return Ok(None);
                     }
-                    Some(other) if process_alive(other.pid) => return Ok(Some(other)),
+                    Some(other) if lock_owner_alive(data_dir, &other) => return Ok(Some(other)),
                     Some(_) => {
                         // Lasciato da un processo terminato male.
                         let _ = std::fs::remove_file(&path);
@@ -180,7 +180,38 @@ pub fn process_alive(pid: u32) -> bool {
 /// Il file di blocco di un nucleo ancora in esecuzione; quello lasciato da
 /// un processo terminato male viene ignorato.
 pub fn running_instance(data_dir: &Path) -> Option<LockInfo> {
-    read_lock(data_dir).filter(|lock| lock.pid != std::process::id() && process_alive(lock.pid))
+    read_lock(data_dir)
+        .filter(|lock| lock.pid != std::process::id() && lock_owner_alive(data_dir, lock))
+}
+
+/// Il processo che ha scritto il file di blocco è ancora vivo. Non basta che
+/// esista un processo con quel numero: Windows ricicla i numeri, e un nucleo
+/// chiuso male (o una build di sviluppo fermata) può lasciare il suo file a un
+/// programma qualsiasi nato dopo. Vale solo un processo nato prima che il file
+/// fosse scritto.
+pub fn lock_owner_alive(data_dir: &Path, lock: &LockInfo) -> bool {
+    let Some(started) = process_start(lock.pid) else {
+        return false;
+    };
+    let written = std::fs::metadata(lock_path(data_dir))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    // Un secondo di tolleranza: le due misure hanno precisioni diverse.
+    written.is_none_or(|written| started <= written + 1)
+}
+
+/// Quando è nato il processo, in secondi dal 1970; `None` se non esiste.
+fn process_start(pid: u32) -> Option<u64> {
+    let pid = Pid::from_u32(pid);
+    let mut sys = System::new().ok()?;
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    sys.process(pid).map(|p| p.start_time())
 }
 
 /// Un token nuovo: 32 byte casuali in esadecimale.
@@ -204,6 +235,38 @@ pub fn tokens_match(given: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un numero di processo riciclato da un programma nato dopo il file di
+    /// blocco non fa credere che il nucleo sia ancora aperto.
+    #[cfg(windows)]
+    #[test]
+    fn numero_di_processo_riciclato() {
+        let dir = std::env::temp_dir().join(format!("lock-riciclo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut info = LockInfo {
+            port: 1,
+            token: "t".into(),
+            pid: std::process::id(),
+            kind: InstanceKind::Server,
+            version: "0".into(),
+        };
+        write_lock(&dir, &info).unwrap();
+        // Questo processo è nato prima del file: è il proprietario.
+        assert!(lock_owner_alive(&dir, &info));
+
+        // Un processo nato dopo il file, con il numero scritto nel file.
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        let mut later = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        info.pid = later.id();
+        assert!(!lock_owner_alive(&dir, &info));
+        let _ = later.kill();
+        let _ = later.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn token_is_random_hex() {

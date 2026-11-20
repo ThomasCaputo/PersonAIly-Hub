@@ -490,6 +490,27 @@ textarea {
   padding-left: 20px;
 }
 
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+}
+
+.update-banner .update-offer {
+  flex: 1;
+}
+
+.update-offer p {
+  margin: 0 0 8px;
+}
+
+.update-offer details {
+  margin-bottom: 8px;
+}
+
 .page {
   height: 100%;
   padding: 32px 40px;
@@ -543,6 +564,19 @@ textarea {
 
 .meter-fill.high {
   background: var(--md-error);
+}
+
+.spend-meter {
+  max-width: 360px;
+  margin-bottom: 14px;
+}
+
+.spend-row {
+  align-items: flex-end;
+}
+
+.spend-row .btn {
+  margin-bottom: 14px;
 }
 
 /* ── Modelli ──────────────────────────────────────────────── */
@@ -702,8 +736,31 @@ textarea {
 /* ── Chat ─────────────────────────────────────────────────── */
 
 .chat {
+  position: relative;
   display: flex;
   height: 100%;
+}
+
+/* File trascinati sopra la chat */
+.drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--md-primary);
+  border-radius: var(--md-shape-lg);
+  background: color-mix(in srgb, var(--md-primary-container) 70%, transparent);
+  pointer-events: none;
+}
+
+.drop-hint {
+  padding: 12px 20px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-surface-container-lowest);
+  color: var(--md-on-surface);
+  font-weight: 600;
 }
 
 .conversations {
@@ -1022,6 +1079,19 @@ textarea {
 }
 
 /* Modifica e rigenera: compaiono passando sopra il messaggio. */
+.branch-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 0.85em;
+}
+
+.branch-switcher .btn-link:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .message-actions {
   margin-top: 2px;
   opacity: 0;
@@ -1174,6 +1244,11 @@ input[type="range"]:focus {
 .markdown {
   overflow-wrap: anywhere;
   line-height: 1.6;
+}
+
+/* Risposta in arrivo, divisa in blocchi (vedi Markdown.tsx). */
+.markdown-stream > .markdown + .markdown {
+  margin-top: 12px;
 }
 
 .markdown > :first-child {
@@ -1678,4 +1753,156 @@ details > summary {
   * {
     transition: none !important;
   }
+}
+
+/* ── Tavolozza dei comandi (Ctrl+K) ───────────────────────── */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: color-mix(in srgb, var(--md-on-surface) 30%, transparent);
+}
+
+.palette {
+  width: min(600px, calc(100vw - 32px));
+  overflow: hidden;
+  border-radius: var(--md-shape-lg);
+  background: var(--md-surface-container-lowest);
+  color: var(--md-on-surface);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+}
+
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 18px;
+  border: 0;
+  border-bottom: 1px solid var(--md-outline-variant);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+
+.palette-list {
+  max-height: 50vh;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.palette-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--md-shape-sm);
+  cursor: pointer;
+}
+
+.palette-item.selected {
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+}
+
+.palette-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.palette-group {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.palette-empty {
+  padding: 8px 12px;
+}
+
+/* ── Confronto tra modelli ────────────────────────────────── */
+
+.compare {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.compare-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px 8px;
+}
+
+.compare-head h1 {
+  margin: 0;
+}
+
+.compare > .notice {
+  margin: 0 24px 8px;
+}
+
+.compare-columns {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 0;
+  padding: 0 24px;
+}
+
+.compare-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-shape-lg);
+}
+
+.compare-messages {
+  flex: 1;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.compare-messages .message {
+  max-width: none;
+  margin-bottom: 14px;
+}
+
+.compare-composer {
+  max-width: none;
+}
+
+/* ── Documenti consultabili ───────────────────────────────── */
+
+.rag-search {
+  margin-top: 14px;
+}
+
+.rag-search input {
+  flex: 1;
+}
+
+.rag-hit {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--md-outline-variant);
+}
+
+.rag-hit-text {
+  white-space: pre-wrap;
+  font-size: 13px;
 }

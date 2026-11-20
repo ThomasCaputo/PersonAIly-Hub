@@ -8,22 +8,30 @@ import {
   type Preset,
   type ProviderInfo,
   type RuntimeStatus,
+  type Theme,
+  type UpdateInfo,
 } from "./api";
-import { ChatArea } from "./areas/ChatArea";
+import { ChatArea, type ChatCommand, type ChatRequest } from "./areas/ChatArea";
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
+import { applyTheme } from "./theme";
+import { placementLabel } from "./placement";
 import { msg, t } from "./i18n";
 import { useLanguage } from "./LanguageProvider";
 import { preloadMarkdown } from "./components/Markdown";
 import { SpillWarning } from "./components/SpillWarning";
+import { UpdateOffer } from "./components/UpdateSection";
 import "./App.css";
 
 // La chat è la pagina d'apertura; le altre si caricano quando si aprono.
 const AgentsArea = lazy(() => import("./areas/AgentsArea").then((m) => ({ default: m.AgentsArea })));
 const ModelsArea = lazy(() => import("./areas/ModelsArea").then((m) => ({ default: m.ModelsArea })));
+const CompareArea = lazy(() => import("./areas/CompareArea").then((m) => ({ default: m.CompareArea })));
 const SettingsArea = lazy(() => import("./areas/SettingsArea").then((m) => ({ default: m.SettingsArea })));
 
 // Icone Material (24×24) disegnate inline: nessun font di icone da caricare.
 const ICONS = {
   chat: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12zM7 9h10v2H7zm0-3h10v2H7zm0 6h7v2H7z",
+  compare: "M10 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h5v2h2V1h-2v2zm0 15H5l5-6v6zm9-15h-5v2h5v13l-5-6v9h5c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z",
   agents:
     "M11 2h2v3h-2zM7 6h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3zm0 2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1zm2.5 2.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM1 11h2v4H1zm20 0h2v4h-2zM9 15h6v1.5H9z",
   models:
@@ -34,6 +42,7 @@ const ICONS = {
 
 const AREAS = [
   { id: "chat", label: msg("Chat") },
+  { id: "compare", label: msg("Confronto") },
   { id: "agents", label: msg("Agenti") },
   { id: "models", label: msg("Modelli") },
   { id: "settings", label: msg("Impostazioni") },
@@ -50,6 +59,8 @@ function Icon({ path, size = 22 }: { path: string; size?: number }) {
 type AreaId = (typeof AREAS)[number]["id"];
 
 const STATUS_INTERVAL_MS = 2000;
+/** Il controllo degli aggiornamenti aspetta che l'app sia partita. */
+const UPDATE_CHECK_DELAY_MS = 5000;
 const PRESET_SAVE_DELAY_MS = 500;
 const ACTIVE_MODEL_KEY = "active-model";
 
@@ -73,6 +84,27 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [activeModel, setActiveModel] = useState<ModelRef>(readStoredModel);
   const [preset, setPreset] = useState<Preset | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [chatCommand, setChatCommand] = useState<ChatCommand | null>(null);
+
+  // Ctrl+K (o Cmd+K) apre e chiude la tavolozza dei comandi, da qualunque pagina.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  /** Un comando per la chat: si apre la pagina e glielo si passa. */
+  const toChat = useCallback((request: ChatRequest) => {
+    setAreaId("chat");
+    setChatCommand({ ...request, nonce: Date.now() });
+  }, []);
+
   const saveTimer = useRef<number | undefined>(undefined);
 
   const refreshStatus = useCallback(() => {
@@ -83,6 +115,39 @@ export default function App() {
     api.listProviders().then(setProviders).catch(() => {});
   }, []);
 
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const goTo = t("Vai a");
+    const setTheme = (theme: Theme) => {
+      applyTheme(theme);
+      api
+        .preferences()
+        .then((p) => api.setPreferences({ ...p, theme }))
+        .catch(() => {});
+    };
+    return [
+      ...AREAS.map((a) => ({ id: `area-${a.id}`, label: t(a.label), group: goTo, run: () => setAreaId(a.id) })),
+      { id: "chat-new", label: t("Nuova conversazione"), group: t("Chat"), run: () => toChat({ type: "new" }) },
+      {
+        id: "chat-export",
+        label: t("Esporta la conversazione"),
+        group: t("Chat"),
+        run: () => toChat({ type: "export" }),
+      },
+      {
+        id: "model-unload",
+        label: t("Scarica il modello locale"),
+        group: t("Modelli"),
+        run: () => {
+          api.unloadModel().then(refreshStatus).catch(() => {});
+        },
+      },
+      { id: "theme-system", label: t("Tema: come il sistema"), group: t("Aspetto"), run: () => setTheme("system") },
+      { id: "theme-light", label: t("Tema: chiaro"), group: t("Aspetto"), run: () => setTheme("light") },
+      { id: "theme-dark", label: t("Tema: scuro"), group: t("Aspetto"), run: () => setTheme("dark") },
+    ];
+    // Ricalcolate a ogni apertura: i testi seguono la lingua scelta.
+  }, [toChat, refreshStatus, paletteOpen]);
+
   useEffect(() => {
     api.coreInfo().then(setCore).catch(() => {});
     refreshStatus();
@@ -90,6 +155,20 @@ export default function App() {
     const timer = window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refreshStatus, refreshProviders]);
+
+  // Una volta per apertura della finestra, se l'utente non l'ha spento. Un
+  // errore (niente rete, GitHub irraggiungibile) non merita un avviso.
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(async () => {
+      try {
+        if ((await api.preferences()).checkUpdates) setUpdate(await api.checkUpdate());
+      } catch {
+        // Riprova l'utente da Impostazioni → Aggiornamenti.
+      }
+    }, UPDATE_CHECK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Il Markdown è la parte più pesante: si carica appena la finestra è pronta,
   // invece che prima di mostrarla.
@@ -171,10 +250,19 @@ export default function App() {
 
       <main className="content">
         <SpillWarning status={status} />
+        {update && (
+          <div className="update-banner" role="status">
+            <UpdateOffer update={update} />
+            <button className="btn" onClick={() => setUpdate(null)}>
+              {t("Più tardi")}
+            </button>
+          </div>
+        )}
         <div className="area">
           <Suspense fallback={<p className="dim page">{t("Caricamento…")}</p>}>
             {areaId === "chat" && (
               <ChatArea
+                command={chatCommand}
                 status={status}
                 providers={providers}
                 activeModel={activeModel}
@@ -196,10 +284,18 @@ export default function App() {
             {areaId === "agents" && (
               <AgentsArea status={status} providers={providers} onOpenModels={() => setAreaId("models")} />
             )}
+            {areaId === "compare" && <CompareArea status={status} providers={providers} />}
             {areaId === "settings" && <SettingsArea />}
           </Suspense>
         </div>
       </main>
+      {paletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          onOpenConversation={(id) => toChat({ type: "open", id })}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -217,7 +313,7 @@ function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: Cor
       </div>
       {status?.loaded && (
         <div className="dim">
-          {status.loaded.params.placement === "vram" ? t("Solo VRAM") : t("Solo RAM")}
+          {placementLabel(status.loaded.params)}
           {status.processRamBytes != null && ` · ${t("processo {gb} GB di RAM", { gb: gb(status.processRamBytes) })}`}
         </div>
       )}

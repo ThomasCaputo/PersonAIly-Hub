@@ -153,13 +153,15 @@ Rimandato (non blocca la Tappa 6):
       restino dati della macchina; `.github/workflows/release.yml` li costruisce su GitHub
       a ogni tag `v*` e li allega a una release in bozza.
 - [x] Tema chiaro e scuro (GE-6): Impostazioni → Aspetto, di base come il sistema.
-- Aggiornamento automatico (GE-7), firma degli eseguibili.
+- [x] Aggiornamento automatico (GE-7): controllo all'avvio, download firmato e installazione
+      ([ADR 0020](adr/0020-aggiornamenti-backup-registro.md)).
+- [ ] Firma degli eseguibili (Authenticode), per togliere l'avviso di SmartScreen.
 - [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
       ([ADR 0012](adr/0012-lingue-interfaccia.md)). L'estensione VS Code segue la lingua di
       VS Code; i modelli rispondono nella lingua dell'utente (o in quella scelta/di sistema).
-- Guida per l'utente.
+- [ ] Guida per l'utente.
 - [x] Nome definitivo (**PersonAIly Hub**) e licenza (**Apache-2.0**).
-- Prima versione pubblica per Windows.
+- [x] Prima versione pubblica per Windows (0.1.0).
 
 Piccole cose da aggiungere (fatte):
 
@@ -204,22 +206,71 @@ Richieste del 16-11-2026:
 - [x] Risposte dei modelli nella lingua dell'utente; se non si capisce, in quella scelta
       per l'interfaccia o del sistema.
 
+Richieste del 20-11-2026 (fatte):
+
+Prestazioni ([misure](adr/0003-collocazione-memoria.md), revisione del 16-11):
+
+- [x] VRAM letta dalla libreria del driver (NVML) invece di avviare `nvidia-smi` ogni 2
+      secondi: lo stato risponde in 6 ms invece di 99, senza processi esterni.
+- [x] Capito da dove vengono i 5,6 GB di memoria impegnata di `llama-server` in VRAM:
+      è il modello di memoria di Windows (WDDM), non una copia (ADR 0003, punto d).
+- [x] GE-4 riferito alla finestra chiusa (47 MB misurati; con la finestra aperta WebView2
+      porta il totale a circa 450 MB).
+- [x] Font di KaTeX solo in woff2: l'interfaccia passa da 2,0 a 1,3 MB.
+- [x] Durante lo streaming il Markdown si rianalizza solo nell'ultimo blocco (a 3000
+      token ogni ridisegno costava oltre 60 ms).
+- [x] Un file di blocco lasciato da un nucleo chiuso male non blocca più l'API locale se
+      Windows ha riassegnato il suo numero di processo a un altro programma.
+
+Funzioni:
+
+- [x] Rami della conversazione: modificare o rigenerare non cancella più, le frecce
+      "‹ 2 di 3 ›" passano da una versione all'altra; esportazione in JSON con tutti i rami
+      ([ADR 0019](adr/0019-rami-e-completamento-in-linea.md)).
+- [x] Limite di spesa per i modelli cloud, al mese e per conversazione (Impostazioni →
+      Spesa cloud), controllato prima di ogni richiesta anche negli agenti.
+- [x] Tavolozza dei comandi (`Ctrl+K`): pagine, nuova conversazione, esportazione,
+      scaricamento del modello, tema, ricerca nelle conversazioni. File trascinati nella
+      chat come allegati.
+- [x] Punti di ripristino per gli agenti ([ADR 0015](adr/0015-punti-di-ripristino-agenti.md)).
+- [x] Confronto tra due modelli affiancati (pagina Confronto).
+- [x] Collocazione ibrida GPU + CPU, LO-10 ([ADR 0016](adr/0016-collocazione-ibrida.md)).
+- [x] Agenti che delegano ad altri agenti, AG-8 ([ADR 0018](adr/0018-deleghe-tra-agenti.md)).
+- [x] Completamento del codice in linea in VS Code, VS-6 (ADR 0019).
+- [x] Documenti consultabili, RAG locale ([ADR 0017](adr/0017-rag-locale.md)).
+
+Da provare:
+
+- [ ] Completamento in linea in VS Code con un modello per il codice (Qwen2.5-Coder).
+- [ ] RAG con un vero modello di embedding (nomic-embed-text, multilingual-e5).
+- [ ] Trascinamento dei file nella chat con il mouse (provato solo il collegamento all'evento).
+
+## Verso la 1.0.0
+
+Indispensabile:
+
+- [x] Aggiornamento automatico firmato ([ADR 0020](adr/0020-aggiornamenti-backup-registro.md)).
+- [x] Registro diagnostico e "Copia le informazioni diagnostiche" per le segnalazioni.
+- [x] Backup e ripristino dei dati; copia automatica prima di ogni aggiornamento dello schema.
+- [x] Prova automatica dell'aggiornamento di un archivio della 0.1.0.
+- [x] Prove dell'interfaccia (vitest), con il controllo che le traduzioni del nucleo
+      corrispondano ancora ai testi Rust.
+- [x] `CHANGELOG.md` e `scripts/set-version.mjs`.
+- [ ] Chiave di firma degli aggiornamenti: generarla e salvarla nei segreti di GitHub.
+- [ ] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
+- [ ] Firma Authenticode degli eseguibili.
+- [ ] Prove dal vivo ancora mancanti (vedi le voci "Da provare" e "Rimandato" qui sopra).
+
 ## Dopo
 
-Linux e macOS (GE-2), Gemini (CL-3), modalità ibrida esplicita (LO-10), completamento del
-codice in linea (VS-6), agenti che delegano ad altri agenti (AG-8).
+Linux e macOS (GE-2), Gemini (CL-3).
 
-Idee emerse dalla revisione del 14-11-2026, da valutare:
+Idee ancora da valutare:
 
-- **Documenti personali consultabili (RAG locale):** indicizzare una cartella concessa con
-  un modello di embedding GGUF e cercare nei propri documenti.
-- **Rami della conversazione** (oggi modificare un messaggio sostituisce ciò che segue);
-  esportazione delle chat anche in JSON.
-- **Confronto tra modelli:** lo stesso messaggio a due modelli affiancati (locale e cloud).
 - **MCP via HTTP/SSE** e risorse MCP (già rimandati in Tappa 4), più un piccolo catalogo
   di server noti.
-- **Punti di ripristino per gli agenti:** un'istantanea della cartella (per esempio un
-  commit git automatico) prima di ogni sessione, per annullare tutto con un clic.
-- **Limite di spesa per i provider cloud**, per conversazione o per mese.
-- **Tavolozza dei comandi** (`Ctrl+K`) e trascinamento dei file nella chat.
+- **Percorsi relativi per gli strumenti sui file:** con percorsi molto lunghi Qwen2.5 7B
+  si incastra scrivendoli (misurato il 20-11: minuti di generazione senza risultato).
+  Accettare percorsi relativi alla prima cartella concessa e un limite di token per passo
+  renderebbe gli agenti più robusti.
 

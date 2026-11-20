@@ -52,6 +52,15 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
         />
         {t("Ricerca web")}
       </label>
+      <label title={t("Cerca nei documenti resi consultabili in Impostazioni")}>
+        <input
+          type="checkbox"
+          checked={settings.documents ?? false}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...settings, documents: e.target.checked })}
+        />
+        {t("Documenti")}
+      </label>
       <select
         aria-label={t("Permessi")}
         value={settings.permission}

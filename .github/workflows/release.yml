@@ -33,10 +33,16 @@ jobs:
 
       - name: Build installer and portable exe
         shell: pwsh
+        env:
+          # Signs the installer for the in-app updater (see CONTRIBUTING.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/release.ps1
 
+      # The notes come from the CHANGELOG section of this version, the same text
+      # the in-app updater shows (written by release.ps1, outside release/).
       - name: Create draft release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" release/* --draft --title "PersonAIly Hub ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" release/* --draft --title "PersonAIly Hub ${{ github.ref_name }}" --notes-file target/release-notes.md

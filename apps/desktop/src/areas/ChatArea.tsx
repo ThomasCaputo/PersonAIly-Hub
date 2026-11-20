@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   api,
   mcpToolLabel,
@@ -44,7 +45,12 @@ const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const safeFileName = (title: string) =>
   title.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "conversazione";
 
+/** Richiesta arrivata da fuori (la tavolozza dei comandi); `nonce` la rende nuova anche se uguale. */
+export type ChatRequest = { type: "new" } | { type: "open"; id: number } | { type: "export" };
+export type ChatCommand = ChatRequest & { nonce: number };
+
 type Props = {
+  command?: ChatCommand | null;
   status: RuntimeStatus | null;
   providers: ProviderInfo[];
   activeModel: ModelRef;
@@ -59,6 +65,7 @@ type Props = {
 type Shown = { key: string; role: string; content: string; model?: string | null; saved?: Message };
 
 export function ChatArea({
+  command,
   status,
   providers,
   activeModel,
@@ -87,7 +94,11 @@ export function ChatArea({
   // Un tuo messaggio in modifica: si rimanda e la risposta si rigenera (CH-8).
   const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
   const [exported, setExported] = useState<string | null>(null);
+  // File trascinati sopra la finestra, non ancora lasciati.
+  const [dragging, setDragging] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Si possono allegare file (letto dal gestore del trascinamento).
+  const canSendRef = useRef(false);
   // Testo e ragionamento arrivati ma non ancora mostrati (vedi STREAM_FLUSH_MS).
   const streamBuffer = useRef({ text: "", reasoning: "", timer: null as number | null });
 
@@ -131,6 +142,7 @@ export function ChatArea({
   const isCloud = activeModel.kind === "cloud";
   const modelName = isCloud ? (cloudModel?.name ?? activeModel.model) : (loaded?.modelName ?? null);
   const canSend = isCloud ? Boolean(provider?.hasKey) : loaded !== null;
+  canSendRef.current = canSend && !generating;
   const contextTotal = isCloud ? (cloudModel?.contextLength ?? null) : (loaded?.params.contextLength ?? null);
   const blockedReason = isCloud
     ? !provider
@@ -199,6 +211,33 @@ export function ChatArea({
     const paths = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
     setAttachments((current) => [...current, ...paths.filter((p) => !current.includes(p))]);
   };
+
+  // File trascinati nella finestra: diventano allegati. La finestra di Tauri
+  // riceve i percorsi veri (gli eventi HTML del browser non li danno).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") setDragging(true);
+        else if (p.type === "leave") setDragging(false);
+        else if (p.type === "drop") {
+          setDragging(false);
+          if (!canSendRef.current) return;
+          setAttachments((current) => [...current, ...p.paths.filter((path) => !current.includes(path))]);
+        }
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const answer = (approval: Approval) => {
     if (!toolRequest) return;
@@ -270,7 +309,7 @@ export function ChatArea({
 
   /**
    * Rimanda un tuo messaggio, modificato (`text`) o così com'era, e rigenera
-   * la risposta. I messaggi che lo seguono si cancellano.
+   * la risposta. Ciò che lo seguiva resta in un ramo a parte (frecce ‹ ›).
    */
   const resend = async (message: Message, text: string | null) => {
     if (activeId === null || generating || !preset || !canSend) return;
@@ -319,14 +358,30 @@ export function ChatArea({
     }
   };
 
-  /** Salva la conversazione aperta come file Markdown (CH-9). */
+  /** Mostra un'altra versione di un messaggio, con il suo ramo. */
+  const showBranch = async (messageId: number) => {
+    if (activeId === null || generating) return;
+    const id = activeId;
+    setError(null);
+    try {
+      await api.switchBranch(id, messageId);
+      setMessages(await api.getMessages(id));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  /** Salva la conversazione aperta come file Markdown (CH-9) o JSON, con tutti i rami. */
   const exportConversation = async () => {
     if (activeId === null) return;
     const title = conversations.find((c) => c.id === activeId)?.title ?? "conversazione";
     const path = await save({
       title: t("Esporta la conversazione"),
       defaultPath: `${safeFileName(tc(title))}.md`,
-      filters: [{ name: "Markdown", extensions: ["md"] }],
+      filters: [
+        { name: "Markdown", extensions: ["md"] },
+        { name: t("JSON (tutti i rami)"), extensions: ["json"] },
+      ],
     });
     if (!path) return;
     setError(null);
@@ -337,6 +392,18 @@ export function ChatArea({
       setError(String(e));
     }
   };
+
+  // Comandi dalla tavolozza (Ctrl+K): ognuno vale una volta sola.
+  const handledCommand = useRef<number | null>(null);
+  useEffect(() => {
+    if (!command || handledCommand.current === command.nonce) return;
+    handledCommand.current = command.nonce;
+    if (command.type === "new") newConversation().catch((e) => setError(String(e)));
+    else if (command.type === "open") setActiveId(command.id);
+    else if (command.type === "export") exportConversation().catch(() => {});
+    // Le funzioni cambiano a ogni disegno: conta solo il comando nuovo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command]);
 
   // Consumo, ricavato dai messaggi salvati: sopravvive al riavvio dell'app.
   // Il contesto occupato è quello dell'ultima risposta: token letti + generati.
@@ -368,6 +435,15 @@ export function ChatArea({
 
   return (
     <div className="chat">
+      {dragging && (
+        <div className="drop-overlay" aria-hidden>
+          <div className="drop-hint">
+            {canSendRef.current
+              ? t("Lascia i file per allegarli al messaggio")
+              : t("Scegli prima un modello pronto per allegare file")}
+          </div>
+        </div>
+      )}
       <aside className="conversations">
         <button className="btn primary wide" onClick={newConversation}>
           {t("Nuova conversazione")}
@@ -507,14 +583,22 @@ export function ChatArea({
                         {t("Invia")}
                       </button>
                     </div>
-                    <span className="dim note">{t("La risposta e i messaggi che seguono verranno sostituiti.")}</span>
+                    <span className="dim note">{t("La risposta e i messaggi che seguono restano in un ramo a parte: li ritrovi con le frecce ‹ ›.")}</span>
                   </div>
                 ) : m.role === "user" ? (
                   <div className="message-text">{m.content}</div>
                 ) : m.content ? (
-                  <Markdown text={m.content} />
+                  <Markdown text={m.content} streaming={m.key === "streaming"} />
                 ) : m.saved && m.saved.toolCalls.length > 0 ? null : (
                   !reasoning && !toolRequest && <div className="dim">{t("Sto elaborando…")}</div>
+                )}
+                {m.saved && m.saved.siblings.length > 1 && !editing && (
+                  <BranchSwitcher
+                    siblings={m.saved.siblings}
+                    current={m.saved.id}
+                    disabled={generating}
+                    onShow={showBranch}
+                  />
                 )}
                 {m.saved && !generating && !editing && m.role === "user" && canSend && (
                   <div className="message-actions">
@@ -618,6 +702,8 @@ export function ChatArea({
 }
 
 type PickerProps = {
+  /** Serve quando nella pagina ce n'è più di uno. */
+  id?: string;
   providers: ProviderInfo[];
   loadedName: string | null;
   value: ModelRef;
@@ -626,7 +712,7 @@ type PickerProps = {
 };
 
 /** Scelta del modello a cui inviare i messaggi; si può cambiare a metà conversazione. */
-export function ModelPicker({ providers, loadedName, value, disabled, onChange }: PickerProps) {
+export function ModelPicker({ id = "model-picker", providers, loadedName, value, disabled, onChange }: PickerProps) {
   const encode = (model: ModelRef) => JSON.stringify(model.kind === "local" ? ["local"] : [model.providerId, model.model]);
   const decode = (text: string): ModelRef => {
     const parts = JSON.parse(text) as string[];
@@ -640,8 +726,8 @@ export function ModelPicker({ providers, loadedName, value, disabled, onChange }
 
   return (
     <div className="model-picker">
-      <label htmlFor="model-picker">{t("Modello")}</label>
-      <select id="model-picker" value={current} disabled={disabled} onChange={(e) => onChange(decode(e.target.value))}>
+      <label htmlFor={id}>{t("Modello")}</label>
+      <select id={id} value={current} disabled={disabled} onChange={(e) => onChange(decode(e.target.value))}>
         <optgroup label={t("Su questo computer")}>
           <option value={encode({ kind: "local" })}>{loadedName ?? t("Nessun modello locale caricato")}</option>
         </optgroup>
@@ -672,6 +758,9 @@ export const TOOL_LABELS: Record<string, string> = {
   web_search: msg("Ricerca web"),
   read_web_page: msg("Lettura della pagina"),
   run_command: msg("Comando nel terminale"),
+  restore_point: msg("Ripristino delle cartelle"),
+  delegate_task: msg("Lavoro affidato a un agente"),
+  search_documents: msg("Ricerca nei documenti"),
 };
 
 /** Nome leggibile di uno strumento dell'app o di un server MCP. */
@@ -733,6 +822,39 @@ function UsageBar({ contextUsed, contextTotal, cost }: UsageProps) {
           {t("Costo stimato della conversazione: {cost}", { cost: usd(cost) })}
         </span>
       )}
+    </div>
+  );
+}
+
+type BranchProps = {
+  siblings: number[];
+  current: number;
+  disabled: boolean;
+  onShow: (messageId: number) => void;
+};
+
+/** "‹ 2/3 ›": le versioni di un messaggio, una per ramo. */
+function BranchSwitcher({ siblings, current, disabled, onShow }: BranchProps) {
+  const index = siblings.indexOf(current);
+  return (
+    <div className="branch-switcher dim">
+      <button
+        className="btn-link"
+        disabled={disabled || index <= 0}
+        aria-label={t("Versione precedente")}
+        onClick={() => onShow(siblings[index - 1])}
+      >
+        ‹
+      </button>
+      <span>{t("{n} di {total}", { n: index + 1, total: siblings.length })}</span>
+      <button
+        className="btn-link"
+        disabled={disabled || index >= siblings.length - 1}
+        aria-label={t("Versione successiva")}
+        onClick={() => onShow(siblings[index + 1])}
+      >
+        ›
+      </button>
     </div>
   );
 }

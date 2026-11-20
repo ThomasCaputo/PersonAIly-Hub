@@ -7,6 +7,7 @@ import {
   type LoadCheck,
   type LoadParams,
   type ModelInfo,
+  type Placement,
   type Preset,
   type ProviderInfo,
   type RuntimeStatus,
@@ -182,6 +183,7 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
     .filter(Boolean)
     .join(" · ");
   const maxContext = model.contextLength ?? 131072;
+  const layers = model.blockCount && model.blockCount > 1 ? model.blockCount : null;
 
   return (
     <div className={isLoaded ? "card loaded" : "card"}>
@@ -203,17 +205,46 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
           <div className="field">
             <label>{t("Collocazione")}</label>
             <div className="segmented">
-              {(["vram", "ram"] as const).map((p) => (
+              {(["vram", "ram", "hybrid"] as const).map((p) => (
                 <button
                   key={p}
                   className={preset.load.placement === p ? "active" : ""}
-                  onClick={() => setLoad({ placement: p })}
+                  disabled={p === "hybrid" && !layers}
+                  title={p === "hybrid" && !layers ? t("Il file non dice quanti layer ha il modello.") : undefined}
+                  onClick={() =>
+                    setLoad(
+                      p === "hybrid"
+                        ? { placement: p, gpuLayers: preset.load.gpuLayers ?? Math.max(1, Math.floor((layers ?? 2) / 2)) }
+                        : { placement: p },
+                    )
+                  }
                 >
-                  {p === "vram" ? t("Solo VRAM") : t("Solo RAM")}
+                  {p === "vram" ? t("Solo VRAM") : p === "ram" ? t("Solo RAM") : t("Ibrida (avanzata)")}
                 </button>
               ))}
             </div>
           </div>
+
+          {preset.load.placement === "hybrid" && layers && (
+            <div className="field">
+              <label htmlFor={`layers-${model.path}`}>
+                {t("Layer sulla GPU: {n} di {total}", { n: preset.load.gpuLayers ?? 0, total: layers })}
+              </label>
+              <input
+                id={`layers-${model.path}`}
+                type="range"
+                min={1}
+                max={layers - 1}
+                value={preset.load.gpuLayers ?? 1}
+                onChange={(e) => setLoad({ gpuLayers: clamp(Number(e.target.value), 1, layers - 1) })}
+              />
+              <p className="dim note">
+                {t(
+                  "Per i modelli che non entrano nella VRAM: una parte dei layer sulla GPU, il resto in RAM. È molto più lento della sola VRAM, perché a ogni token lavora anche il processore. Più layer sulla GPU, più è veloce.",
+                )}
+              </p>
+            </div>
+          )}
 
           <div className="field">
             <label htmlFor={`ctx-${model.path}`}>{t("Contesto (token)")}</label>
@@ -328,8 +359,27 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
   );
 }
 
-function Estimate({ check, placement }: { check: LoadCheck; placement: "vram" | "ram" }) {
-  const { estimate, availableBytes, fits } = check;
+function Estimate({ check, placement }: { check: LoadCheck; placement: Placement }) {
+  const { estimate, availableBytes, ramAvailableBytes, fits } = check;
+  if (placement === "hybrid") {
+    return (
+      <div className={fits ? "estimate" : "estimate bad"}>
+        <div>
+          {t("VRAM: circa {need} GB, libera {free} GB", {
+            need: gb(estimate.vramBytes),
+            free: availableBytes != null ? gb(availableBytes) : "?",
+          })}
+        </div>
+        <div>
+          {t("RAM: circa {need} GB, disponibile {free} GB", {
+            need: gb(estimate.ramBytes),
+            free: ramAvailableBytes != null ? gb(ramAvailableBytes) : "?",
+          })}
+        </div>
+        {!fits && <div>{t("Non entra: sposta qualche layer o riduci il contesto.")}</div>}
+      </div>
+    );
+  }
   const place = placement === "vram" ? "VRAM" : "RAM";
   return (
     <div className={fits ? "estimate" : "estimate bad"}>

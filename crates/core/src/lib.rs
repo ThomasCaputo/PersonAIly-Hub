@@ -6,6 +6,7 @@
 
 pub mod agents;
 pub mod attachments;
+pub mod backup;
 pub mod chat;
 pub mod error;
 mod export;
@@ -13,11 +14,14 @@ pub mod gguf;
 pub mod hub;
 pub mod instance;
 pub mod local;
+pub mod log;
 pub mod mcp;
 pub mod models;
 pub mod named_presets;
 pub mod providers;
+pub mod rag;
 pub mod secrets;
+pub mod snapshots;
 pub mod store;
 pub mod tools;
 
@@ -54,6 +58,10 @@ const SETTING_TOOL_DEFAULTS: &str = "tool_defaults";
 const SETTING_MCP_SERVERS: &str = "mcp_servers";
 const SETTING_ACTION_LOG_DAYS: &str = "action_log_days";
 const SETTING_SECURITY: &str = "security";
+const SETTING_SPEND_LIMITS: &str = "spend_limits";
+const SETTING_RAG: &str = "rag";
+/// Il modello di embedding si chiude dopo questo tempo senza ricerche.
+const EMBEDDER_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const SETTING_LANGUAGE: &str = "language";
 const SETTING_PREFERENCES: &str = "preferences";
 const SETTING_ENGINE_VARIANT: &str = "engine_variant";
@@ -92,8 +100,42 @@ pub fn system_language_is_italian() -> bool {
 pub struct LoadCheck {
     pub estimate: MemoryEstimate,
     /// Memoria libera nella collocazione scelta; `None` se non misurabile.
+    /// Con la collocazione ibrida è la VRAM libera.
     pub available_bytes: Option<u64>,
+    /// Solo con la collocazione ibrida: la RAM disponibile.
+    pub ram_available_bytes: Option<u64>,
     pub fits: bool,
+}
+
+impl LoadCheck {
+    /// Confronta la stima con la memoria libera, nella collocazione scelta.
+    fn new(estimate: MemoryEstimate, placement: Placement, memory: &MemorySnapshot) -> Self {
+        let vram_free = memory.gpu.as_ref().map(|gpu| gpu.free_bytes);
+        let ram_free = Some(memory.ram_available_bytes);
+        // Senza una misura non possiamo garantire nulla: non blocchiamo.
+        let fits_in = |need: u64, free: Option<u64>| free.is_none_or(|free| need <= free);
+        match placement {
+            Placement::Vram => Self {
+                estimate,
+                available_bytes: vram_free,
+                ram_available_bytes: None,
+                fits: fits_in(estimate.total_bytes, vram_free),
+            },
+            Placement::Ram => Self {
+                estimate,
+                available_bytes: ram_free,
+                ram_available_bytes: None,
+                fits: fits_in(estimate.total_bytes, ram_free),
+            },
+            Placement::Hybrid => Self {
+                estimate,
+                available_bytes: vram_free,
+                ram_available_bytes: ram_free,
+                fits: fits_in(estimate.vram_bytes, vram_free)
+                    && fits_in(estimate.ram_bytes, ram_free),
+            },
+        }
+    }
 }
 
 /// Stato dei modelli locali e della memoria, per gli indicatori dell'interfaccia.
@@ -174,6 +216,9 @@ pub struct Preferences {
     /// Dopo quanti minuti senza richieste il modello locale si scarica da
     /// solo e libera la memoria (LO-8); `0` = mai.
     pub idle_unload_minutes: u32,
+    /// All'avvio l'app chiede a GitHub se c'è una versione nuova. È l'unica
+    /// richiesta che fa da sola; si può spegnere.
+    pub check_updates: bool,
 }
 
 impl Default for Preferences {
@@ -182,8 +227,30 @@ impl Default for Preferences {
             theme: Theme::System,
             keep_running: true,
             idle_unload_minutes: 0,
+            check_updates: true,
         }
     }
+}
+
+/// Limiti di spesa per i modelli cloud, in dollari: `None` = nessun limite.
+/// Contano i costi stimati delle risposte (CL-6), quindi solo i modelli di
+/// cui si conosce il prezzo.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpendLimits {
+    /// Nel mese in corso (dal primo del mese, ora UTC), in tutte le
+    /// conversazioni e negli agenti.
+    pub monthly_usd: Option<f64>,
+    /// In una singola conversazione o sessione di un agente, rami compresi.
+    pub conversation_usd: Option<f64>,
+}
+
+/// Quanto si è speso e con quali limiti.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Spending {
+    pub month_usd: f64,
+    pub limits: SpendLimits,
 }
 
 /// Protezioni che rendono l'app più sicura ma chiedono qualche conferma in
@@ -262,6 +329,15 @@ pub struct Core {
     last_action_prune: Mutex<std::time::Instant>,
     /// Dove stanno i valori delle variabili d'ambiente dei server MCP.
     env_vault: Arc<dyn mcp::EnvVault + Send + Sync>,
+    /// Il secondo `llama-server`, quello del modello di embedding (RAG).
+    embedder: tokio::sync::Mutex<LocalRuntime>,
+    /// Ultimo uso del modello di embedding: si chiude dopo un po' di riposo.
+    last_embed_use: Mutex<std::time::Instant>,
+    /// Avanzamento dell'indicizzazione dei documenti.
+    rag_progress: Mutex<rag::RagStatus>,
+    /// Il modello di embedding che non dichiara il "pooling" e va avviato con
+    /// `--pooling mean` (un modello di chat usato per gli embedding).
+    mean_pooling_model: Mutex<Option<String>>,
 }
 
 /// Dove gira un ciclo modello → strumenti: una risposta in chat o una sessione.
@@ -278,6 +354,13 @@ struct RunScope<'a> {
     limit_notice: String,
     /// I server MCP avviati per questo ciclo (solo nelle sessioni degli agenti).
     mcp: Option<&'a mcp::McpSet>,
+    /// Gli agenti a cui si può affidare lavoro (solo nelle sessioni degli agenti).
+    delegation: Option<&'a Delegation>,
+}
+
+/// Chi può ricevere lavoro da una sessione (AG-8).
+struct Delegation {
+    agents: Vec<Agent>,
 }
 
 /// Gli indirizzi che il modello può aprire senza conferma anche mentre vede i
@@ -303,6 +386,23 @@ fn known_urls(chat: &[ChatMessage]) -> Vec<String> {
 
 /// Descrizione breve di una chiamata, per la conferma e il registro.
 fn summary_of(run: &RunScope<'_>, call: &ToolCall) -> String {
+    if call.name == rag::DOCUMENTS_TOOL {
+        let query = call
+            .arguments
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?");
+        return format!("Cercare nei documenti: {query}");
+    }
+    if call.name == agents::DELEGATE_TOOL {
+        let get = |key: &str| {
+            call.arguments
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+        };
+        return format!("Affidare a {}: {}", get("agent"), get("task"));
+    }
     run.mcp
         .and_then(|set| set.summary(&call.name))
         .unwrap_or_else(|| tools::summary(call))
@@ -417,12 +517,21 @@ impl Core {
     pub fn new(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let http = reqwest::Client::builder().no_proxy().build()?;
+        // Un ripristino scelto dall'utente si applica qui, ad archivio chiuso.
+        if let Err(e) = backup::apply_pending(data_dir) {
+            log::error(format!("ripristino del backup non riuscito: {e}"));
+        }
         let store = Store::open(&data_dir.join("data.sqlite"))?;
         // Nessuna sessione lavora più dopo un riavvio.
         store.mark_sessions_interrupted()?;
         // Il registro non deve crescere senza limite: si ripulisce a ogni avvio
         // (e poi di tanto in tanto, vedi `log_action`).
         let _ = store.prune_actions_by_setting();
+        log::info(format!(
+            "archivio allo schema {} in {}",
+            store.schema_version().unwrap_or(0),
+            data_dir.display()
+        ));
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             store: Mutex::new(store),
@@ -442,6 +551,14 @@ impl Core {
             approvals: Mutex::new(HashMap::new()),
             last_action_prune: Mutex::new(std::time::Instant::now()),
             env_vault: Arc::new(secrets::KeyringVault),
+            embedder: tokio::sync::Mutex::new(LocalRuntime::named(
+                data_dir.to_path_buf(),
+                reqwest::Client::builder().no_proxy().build()?,
+                "embedding-server.log",
+            )),
+            last_embed_use: Mutex::new(std::time::Instant::now()),
+            rag_progress: Mutex::new(rag::RagStatus::default()),
+            mean_pooling_model: Mutex::new(None),
         })
     }
 
@@ -630,17 +747,7 @@ impl Core {
     pub fn check_load(&self, model_path: &str, params: &LoadParams) -> LoadCheck {
         let model = models::inspect(Path::new(model_path));
         let estimate = local::estimate_memory(&model, params);
-        let memory = sysmon::snapshot();
-        let available_bytes = match params.placement {
-            Placement::Vram => memory.gpu.map(|gpu| gpu.free_bytes),
-            Placement::Ram => Some(memory.ram_available_bytes),
-        };
-        LoadCheck {
-            estimate,
-            available_bytes,
-            // Senza una misura non possiamo garantire nulla: non blocchiamo.
-            fits: available_bytes.is_none_or(|free| estimate.total_bytes <= free),
-        }
+        LoadCheck::new(estimate, params.placement, &sysmon::snapshot())
     }
 
     /// Carica un modello. Se la stima dice che non entra, rifiuta, a meno che
@@ -661,6 +768,17 @@ impl Core {
                 "file del modello non leggibile: {error}"
             )));
         }
+        if params.placement == Placement::Hybrid {
+            let layers = model.block_count.unwrap_or(0);
+            match params.gpu_layers {
+                Some(n) if n > 0 && (layers == 0 || u64::from(n) < layers) => {}
+                _ => {
+                    return Err(Error::msg(
+                        "Collocazione ibrida: scegli quanti layer mettere sulla GPU (almeno uno, non tutti).",
+                    ));
+                }
+            }
+        }
         let engine = self.engine()?;
         let mmproj = model.mmproj.as_deref().filter(|_| params.vision);
 
@@ -669,21 +787,50 @@ impl Core {
             let params_for_check = params.clone();
             let check = self.check_load_blocking(path, params_for_check).await?;
             if !check.fits {
-                let place = match params.placement {
-                    Placement::Vram => "VRAM",
-                    Placement::Ram => "RAM",
+                let message = match params.placement {
+                    Placement::Hybrid => format!(
+                        "Il modello non entra: servono circa {} GB di VRAM e {} GB di RAM, liberi {} GB e {} GB.",
+                        gib(check.estimate.vram_bytes),
+                        gib(check.estimate.ram_bytes),
+                        gib(check.available_bytes.unwrap_or(0)),
+                        gib(check.ram_available_bytes.unwrap_or(0)),
+                    ),
+                    placement => format!(
+                        "Il modello non entra nella {}: servono circa {} GB, liberi {} GB.",
+                        if placement == Placement::Vram {
+                            "VRAM"
+                        } else {
+                            "RAM"
+                        },
+                        gib(check.estimate.total_bytes),
+                        gib(check.available_bytes.unwrap_or(0)),
+                    ),
                 };
-                return Err(Error::msg(format!(
-                    "Il modello non entra nella {place}: servono circa {} GB, liberi {} GB.",
-                    gib(check.estimate.total_bytes),
-                    gib(check.available_bytes.unwrap_or(0)),
-                )));
+                return Err(Error::msg(message));
             }
         }
 
-        let loaded = runtime
+        log::info(format!(
+            "caricamento di {} con {} ({:?}, contesto {}, cache {:?}, layer GPU {:?}, immagini {})",
+            model.name,
+            engine.dir_name,
+            params.placement,
+            params.context_length,
+            params.kv_cache_type,
+            params.gpu_layers,
+            mmproj.is_some()
+        ));
+        let loaded = match runtime
             .load(&engine, model_path, &model.name, params, mmproj)
-            .await?;
+            .await
+        {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                log::error(format!("caricamento non riuscito: {e}"));
+                return Err(e);
+            }
+        };
+        log::info(format!("modello caricato (processo {})", loaded.pid));
         self.touch_local();
         Ok(loaded)
     }
@@ -695,15 +842,7 @@ impl Core {
         let memory = tokio::task::spawn_blocking(sysmon::snapshot)
             .await
             .map_err(|e| Error::msg(e.to_string()))?;
-        let available_bytes = match params.placement {
-            Placement::Vram => memory.gpu.map(|gpu| gpu.free_bytes),
-            Placement::Ram => Some(memory.ram_available_bytes),
-        };
-        Ok(LoadCheck {
-            estimate,
-            available_bytes,
-            fits: available_bytes.is_none_or(|free| estimate.total_bytes <= free),
-        })
+        Ok(LoadCheck::new(estimate, params.placement, &memory))
     }
 
     pub async fn unload_model(&self) {
@@ -728,7 +867,10 @@ impl Core {
         .await
         .unwrap_or_default();
 
-        // Solo in VRAM ha senso parlare di sconfinamento: in RAM è tutto lì per scelta.
+        // Solo in VRAM ha senso parlare di sconfinamento: in RAM è tutto lì per
+        // scelta. Con la collocazione ibrida i pesi dei layer in RAM compaiono
+        // come memoria condivisa della GPU (misurati 1,2-3 GB, ADR 0016): il
+        // contatore non distingue uno sconfinamento, quindi non si usa.
         let in_vram = loaded
             .as_ref()
             .is_some_and(|m| m.params.placement == Placement::Vram);
@@ -744,6 +886,148 @@ impl Core {
             process_gpu,
             vram_spill_bytes,
         }
+    }
+
+    // ── Backup ──────────────────────────────────────────────────────────
+
+    /// Salva conversazioni, agenti, impostazioni e preset in un file `.zip`.
+    pub fn create_backup(&self, dest: &Path) -> Result<backup::BackupInfo> {
+        backup::create(&self.store(), &self.data_dir, dest)
+    }
+
+    /// Prepara il ripristino di un backup, che si applica al prossimo avvio:
+    /// l'app va riavviata subito dopo.
+    pub fn stage_restore(&self, source: &Path) -> Result<backup::BackupInfo> {
+        backup::stage(&self.data_dir, source)
+    }
+
+    // ── Diagnostica ─────────────────────────────────────────────────────
+
+    /// Cartella dei registri, da aprire dall'interfaccia.
+    pub fn logs_dir(&self) -> PathBuf {
+        log::dir(&self.data_dir)
+    }
+
+    /// Testo da allegare a una segnalazione: versioni, hardware, motore,
+    /// modello caricato, quante cose sono configurate e le ultime righe dei
+    /// registri. Niente chiavi, token, indirizzi dei provider, nomi di
+    /// cartelle né conversazioni; la cartella utente e il nome utente sono
+    /// sostituiti. Va eseguito fuori dal ciclo asincrono (misura la GPU).
+    pub fn diagnostics(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let mut line = |label: &str, value: String| {
+            let _ = writeln!(out, "{label}: {value}");
+        };
+        line("PersonAIly Hub", version().to_string());
+        line(
+            "Archivio",
+            format!("schema {}", self.schema_version().unwrap_or(0)),
+        );
+        line(
+            "Sistema",
+            format!(
+                "{} ({})",
+                sysinfo::System::long_os_version().unwrap_or_else(|_| std::env::consts::OS.into()),
+                std::env::consts::ARCH
+            ),
+        );
+        if let Ok(mut sys) = sysinfo::System::new() {
+            sys.refresh_cpu_all();
+            if let Some(cpu) = sys.cpus().first() {
+                line(
+                    "Processore",
+                    format!("{} ({} thread)", cpu.brand().trim(), sys.cpus().len()),
+                );
+            }
+        }
+        let memory = sysmon::snapshot();
+        line(
+            "RAM",
+            format!(
+                "{} GB, liberi {} GB",
+                gib(memory.ram_total_bytes),
+                gib(memory.ram_available_bytes)
+            ),
+        );
+        line(
+            "GPU",
+            match &memory.gpu {
+                Some(gpu) => format!(
+                    "{}, {} GB, liberi {} GB",
+                    gpu.name,
+                    gib(gpu.total_bytes),
+                    gib(gpu.free_bytes)
+                ),
+                None => "nessuna GPU NVIDIA rilevata".to_string(),
+            },
+        );
+        let engines: Vec<String> = local::runtime::installed_engines(&self.data_dir)
+            .into_iter()
+            .map(|e| e.dir_name)
+            .collect();
+        line(
+            "llama.cpp",
+            format!(
+                "installate [{}], scelta {:?}, prevista {}",
+                engines.join(", "),
+                self.engine_variant(),
+                local::LLAMA_CPP_BUILD
+            ),
+        );
+        let loaded = match self.runtime.try_lock() {
+            Ok(mut runtime) => match runtime.loaded() {
+                Some(m) => format!(
+                    "{} con {} ({:?}, contesto {}, cache {:?}, immagini {})",
+                    m.model_name,
+                    m.engine,
+                    m.params.placement,
+                    m.params.context_length,
+                    m.params.kv_cache_type,
+                    m.vision
+                ),
+                None => "nessuno".to_string(),
+            },
+            Err(_) => "caricamento in corso".to_string(),
+        };
+        line("Modello locale", loaded);
+        let providers: Vec<String> = self
+            .providers()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:?}{}",
+                    p.provider.kind,
+                    if p.has_key { "" } else { " senza chiave" }
+                )
+            })
+            .collect();
+        line("Provider cloud", format!("[{}]", providers.join(", ")));
+        line("Agenti", self.agents().map_or(0, |a| a.len()).to_string());
+        line(
+            "Server MCP",
+            self.mcp_servers().map_or(0, |s| s.len()).to_string(),
+        );
+        let prefs = self.preferences();
+        line(
+            "Preferenze",
+            format!(
+                "area di notifica {}, scaricamento dopo {} min",
+                prefs.keep_running, prefs.idle_unload_minutes
+            ),
+        );
+        let _ = writeln!(out, "\n--- core.log (ultime righe) ---");
+        let _ = writeln!(out, "{}", log::tail(&self.data_dir, 150));
+        let server_log = log::dir(&self.data_dir).join("llama-server.log");
+        if let Ok(bytes) = std::fs::read(&server_log) {
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines.len().saturating_sub(40);
+            let _ = writeln!(out, "\n--- llama-server.log (ultime righe) ---");
+            let _ = writeln!(out, "{}", lines[start..].join("\n"));
+        }
+        log::redact(&out)
     }
 
     // ── Preset con nome ─────────────────────────────────────────────────
@@ -1032,6 +1316,63 @@ impl Core {
             .set_setting(SETTING_SECURITY, &serde_json::to_string(settings)?)
     }
 
+    pub fn spend_limits(&self) -> SpendLimits {
+        self.store()
+            .setting(SETTING_SPEND_LIMITS)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_spend_limits(&self, limits: &SpendLimits) -> Result<()> {
+        let valid = |v: Option<f64>| v.is_none_or(|v| v.is_finite() && v >= 0.0);
+        if !valid(limits.monthly_usd) || !valid(limits.conversation_usd) {
+            return Err(Error::msg(
+                "Il limite di spesa deve essere un numero positivo.",
+            ));
+        }
+        self.store()
+            .set_setting(SETTING_SPEND_LIMITS, &serde_json::to_string(limits)?)
+    }
+
+    pub fn spending(&self) -> Result<Spending> {
+        // Prima si legge e si rilascia l'archivio: anche `spend_limits` lo usa.
+        let month_usd = self.store().spent_this_month()?;
+        Ok(Spending {
+            month_usd,
+            limits: self.spend_limits(),
+        })
+    }
+
+    /// Ferma una richiesta a un modello cloud se un limite di spesa è già
+    /// stato raggiunto. Si controlla prima di ogni richiesta, anche a metà di
+    /// un giro di strumenti o del lavoro di un agente.
+    fn check_spend(&self, conversation_id: i64) -> Result<()> {
+        let limits = self.spend_limits();
+        let store = self.store();
+        if let Some(limit) = limits.monthly_usd {
+            let spent = store.spent_this_month()?;
+            if spent >= limit {
+                return Err(Error::msg(format!(
+                    "Limite di spesa mensile raggiunto: spesi circa {spent:.2} $ su {limit:.2} $. \
+                     Puoi alzarlo in Impostazioni → Spesa cloud, o usare un modello locale."
+                )));
+            }
+        }
+        if let Some(limit) = limits.conversation_usd {
+            let spent = store.spent_in_conversation(conversation_id)?;
+            if spent >= limit {
+                return Err(Error::msg(format!(
+                    "Limite di spesa per conversazione raggiunto: spesi circa {spent:.2} $ su \
+                     {limit:.2} $. Puoi alzarlo in Impostazioni → Spesa cloud, o continuare in \
+                     una conversazione nuova."
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn exfiltration_guard(&self) -> bool {
         self.security_settings().exfiltration_guard
     }
@@ -1070,7 +1411,17 @@ impl Core {
     ) -> CallResult {
         // Uno strumento di un server MCP della sessione.
         let external = run.mcp.filter(|set| set.has(&call.name));
-        let risk = if external.is_some() {
+        // Il lavoro affidato a un altro agente.
+        let delegation = run
+            .delegation
+            .filter(|_| call.name == agents::DELEGATE_TOOL);
+        // La ricerca nei documenti consultabili.
+        let documents = call.name == rag::DOCUMENTS_TOOL && settings.documents;
+        let risk = if documents {
+            Risk::Read
+        } else if delegation.is_some() {
+            Risk::Execute
+        } else if external.is_some() {
             if !call.arguments.is_object() {
                 return CallResult {
                     output: Some(ToolOutput::error(
@@ -1162,6 +1513,32 @@ impl Core {
             folders,
             web_http: &self.web_http,
         };
+        if let Some(delegation) = delegation {
+            let output = self.delegate(run, delegation, call).await;
+            return CallResult { output, approval };
+        }
+        if documents {
+            let query = call
+                .arguments
+                .get("query")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let output = if query.trim().is_empty() {
+                ToolOutput::error("Manca il parametro \"query\".")
+            } else {
+                tokio::select! {
+                    hits = self.search_documents(query) => match hits {
+                        Ok(hits) => ToolOutput::ok(rag::format_hits(&hits)),
+                        Err(e) => ToolOutput::error(e.to_string()),
+                    },
+                    _ = cancel.notified() => return CallResult { output: None, approval },
+                }
+            };
+            return CallResult {
+                output: Some(output),
+                approval,
+            };
+        }
         let output = match external {
             Some(set) => tokio::select! {
                 output = set.call(&call.name, &call.arguments) => Some(output),
@@ -1176,6 +1553,56 @@ impl Core {
     }
 
     // ── Invio dei messaggi ──────────────────────────────────────────────
+
+    /// Completamento del codice in linea (VS-6): il modello locale scrive ciò
+    /// che va tra `prefix` (il testo prima del cursore) e `suffix` (quello
+    /// dopo), con l'endpoint `/infill` di `llama-server`. Serve un modello
+    /// addestrato al "fill-in-the-middle", come Qwen2.5-Coder. Nulla si salva:
+    /// se il client chiude la richiesta, la generazione si ferma.
+    pub async fn infill(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String> {
+        let loaded = match self.runtime.try_lock() {
+            Ok(mut runtime) => runtime.loaded(),
+            Err(_) => return Err(Error::msg("Il modello locale si sta caricando: aspetta.")),
+        }
+        .ok_or_else(|| Error::msg("Nessun modello locale caricato."))?;
+        let body = serde_json::json!({
+            "input_prefix": prefix,
+            "input_suffix": suffix,
+            "n_predict": max_tokens.clamp(1, 512),
+            // Poca fantasia: un completamento deve essere prevedibile.
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "cache_prompt": true,
+            "stream": false,
+        });
+        let url = format!("http://127.0.0.1:{}/infill", loaded.port);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&loaded.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::msg(format!("rete: {e}")))?;
+        self.touch_local();
+        let status = response.status();
+        let reply: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| Error::msg(format!("rete: {e}")))?;
+        if !status.is_success() {
+            let message = reply["error"]["message"].as_str().unwrap_or_default();
+            // llama-server rifiuta /infill se il modello non ha i token FIM.
+            if message.to_lowercase().contains("infill") || message.to_lowercase().contains("fim") {
+                return Err(Error::msg(
+                    "Il modello caricato non sa completare il codice in linea (gli manca il \
+                     \"fill-in-the-middle\"): carica un modello per il codice, come Qwen2.5-Coder.",
+                ));
+            }
+            return Err(Error::msg(format!("llama-server: {message}")));
+        }
+        Ok(reply["content"].as_str().unwrap_or_default().to_string())
+    }
 
     /// Il preset salvato per un modello (per quello locale, il modello caricato).
     pub fn preset_for(&self, model: &ModelRef) -> Result<Preset> {
@@ -1303,7 +1730,7 @@ impl Core {
             conversation_id,
             text,
             Attachments::Paths(paths),
-            None,
+            Replace::None,
             sampling,
             system_prompt,
             model,
@@ -1312,10 +1739,11 @@ impl Core {
         .await
     }
 
-    /// Modifica un messaggio dell'utente e rigenera la risposta (CH-8). I
-    /// messaggi da quello in poi si cancellano e il messaggio si rimanda con
-    /// i suoi allegati; con `text` assente si rimanda così com'era, cioè si
-    /// rigenera la risposta che lo segue.
+    /// Modifica un messaggio dell'utente e rigenera la risposta (CH-8). Il
+    /// messaggio nuovo diventa un'altra versione di quello vecchio, che resta
+    /// con le sue risposte in un ramo a parte. Con `text` assente (o uguale)
+    /// il messaggio resta quello: si rigenera solo la risposta che lo segue, e
+    /// la vecchia diventa a sua volta un ramo.
     #[allow(clippy::too_many_arguments)]
     pub async fn resend_message(
         &self,
@@ -1335,11 +1763,16 @@ impl Core {
         if text.is_empty() && original.attachment_data.is_empty() {
             return Err(Error::msg("Il messaggio è vuoto."));
         }
+        let replace = if text == original.content {
+            Replace::Answer(message_id)
+        } else {
+            Replace::Message(message_id)
+        };
         self.send_with(
             conversation_id,
             &text,
             Attachments::Loaded(original.attachment_data),
-            Some(message_id),
+            replace,
             sampling,
             system_prompt,
             model,
@@ -1349,15 +1782,14 @@ impl Core {
     }
 
     /// Il lavoro comune di [`Core::send_message`] e [`Core::resend_message`].
-    /// Con `replace_from` i messaggi da quello in poi si cancellano prima di
-    /// salvare il nuovo.
+    /// `replace` dice se il messaggio sostituisce, in un altro ramo, uno già mandato.
     #[allow(clippy::too_many_arguments)]
     async fn send_with(
         &self,
         conversation_id: i64,
         text: &str,
         attachments: Attachments,
-        replace_from: Option<i64>,
+        replace: Replace,
         sampling: &SamplingParams,
         system_prompt: &str,
         model: &ModelRef,
@@ -1365,6 +1797,10 @@ impl Core {
     ) -> Result<SendOutcome> {
         // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
         let target = self.target(model)?;
+        // Anche il limite di spesa, prima di salvare: niente messaggi senza risposta.
+        if matches!(target, Target::Cloud(..)) {
+            self.check_spend(conversation_id)?;
+        }
 
         let control = Arc::new(RunControl::new());
         {
@@ -1411,7 +1847,10 @@ impl Core {
             .into_iter()
             .map(PathBuf::from)
             .collect();
-        let defs = tools::available(&settings, &folders);
+        let mut defs = tools::available(&settings, &folders);
+        if settings.documents && self.rag_ready() {
+            defs.push(rag::tool_def());
+        }
         let system = join_prompt(&[
             system_prompt,
             &self.language_instruction(),
@@ -1420,12 +1859,22 @@ impl Core {
 
         let (chat, title) = {
             let store = self.store();
-            if let Some(from) = replace_from {
-                store.delete_messages_from(conversation_id, from)?;
+            match replace {
+                Replace::None => {}
+                Replace::Message(id) => {
+                    store.branch_from(conversation_id, id)?;
+                }
+                // Il messaggio resta: da parte va solo ciò che lo segue.
+                Replace::Answer(id) => {
+                    store.branch_from(conversation_id, id + 1)?;
+                }
             }
             // Modificando il primo messaggio il titolo resta: forse l'ha scelto l'utente.
-            let is_first = replace_from.is_none() && store.has_no_messages(conversation_id)?;
-            store.add_message_with(conversation_id, "user", text, None, None, &attachments)?;
+            let is_first =
+                matches!(replace, Replace::None) && store.has_no_messages(conversation_id)?;
+            if !matches!(replace, Replace::Answer(_)) {
+                store.add_message_with(conversation_id, "user", text, None, None, &attachments)?;
+            }
             if is_first {
                 store.rename_conversation(conversation_id, &title_from(text))?;
             }
@@ -1444,6 +1893,7 @@ impl Core {
             max_rounds: MAX_TOOL_ROUNDS,
             limit_notice: NOTICE_TOO_MANY_TOOLS.to_string(),
             mcp: None,
+            delegation: None,
         };
         let result = self
             .run_rounds(
@@ -1521,6 +1971,7 @@ impl Core {
                     (result, loaded.model_name.clone())
                 }
                 Target::Cloud(provider, key, id) => {
+                    self.check_spend(conversation_id)?;
                     let result = providers::stream(
                         &self.cloud_http,
                         provider,
@@ -1963,11 +2414,444 @@ impl Core {
         }
     }
 
+    /// Gli agenti delle sessioni che hanno affidato lavoro a questa, dalla più
+    /// vicina: la catena delle deleghe (AG-8).
+    fn session_ancestors(&self, id: i64) -> Result<Vec<i64>> {
+        let store = self.store();
+        let mut agents = Vec::new();
+        let mut current = store.session(id)?.parent_session_id;
+        // Il limite protegge da catene rovinate nell'archivio.
+        while let Some(parent) = current.filter(|_| agents.len() < 16) {
+            let session = store.session(parent)?;
+            agents.extend(session.agent_id);
+            current = session.parent_session_id;
+        }
+        Ok(agents)
+    }
+
+    /// Esegue `delegate_task`: avvia una sessione dell'altro agente, la segue
+    /// fino alla fine e ne restituisce il resoconto. Fermare questa sessione
+    /// ferma anche quella. `None` se l'utente ha interrotto.
+    ///
+    /// Il futuro è dichiarato `Send` in una Box: la ricorsione (un aiutante può
+    /// avere aiutanti) altrimenti impedirebbe al compilatore di verificarlo.
+    fn delegate<'a>(
+        &'a self,
+        run: &'a RunScope<'a>,
+        delegation: &'a Delegation,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ToolOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            let get = |key: &str| call.arguments.get(key).and_then(serde_json::Value::as_str);
+            let (Some(name), Some(task)) = (get("agent"), get("task")) else {
+                return Some(ToolOutput::error(
+                    "Servono i parametri \"agent\" e \"task\".",
+                ));
+            };
+            let Some(agent) = delegation
+                .agents
+                .iter()
+                .find(|a| a.name.eq_ignore_ascii_case(name.trim()))
+            else {
+                let names: Vec<&str> = delegation.agents.iter().map(|a| a.name.as_str()).collect();
+                return Some(ToolOutput::error(format!(
+                    "Agente sconosciuto: \"{name}\". Puoi scegliere tra: {}.",
+                    names.join(", ")
+                )));
+            };
+            let child = match self.create_session(agent.id, task) {
+                Ok(child) => child,
+                Err(e) => return Some(ToolOutput::error(e.to_string())),
+            };
+            if let Some(parent) = run.session_id {
+                let _ = self.store().set_session_parent(child.id, parent);
+            }
+            let result = tokio::select! {
+                result = self.run_session(child.id) => result,
+                _ = run.control.cancel.notified() => {
+                    self.stop_session(child.id);
+                    return None;
+                }
+            };
+            let session = self.store().session(child.id).ok();
+            let reply = self
+                .store()
+                .messages(child.conversation_id)
+                .ok()
+                .and_then(|m| {
+                    m.into_iter()
+                        .rev()
+                        .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
+                })
+                .map(|m| m.content)
+                .unwrap_or_default();
+            let status = session
+                .as_ref()
+                .map(|s| s.status.as_str())
+                .unwrap_or("failed");
+            let note = session.and_then(|s| s.note).unwrap_or_default();
+            let header = format!("Sessione {} di {}, stato: {status}.", child.id, agent.name);
+            Some(match result {
+                Ok(()) if status == "done" => ToolOutput::ok(format!(
+                    "{header}
+
+Resoconto:
+{reply}"
+                )),
+                Ok(()) => ToolOutput::error(format!(
+                    "{header} {note}
+
+Ultima risposta:
+{reply}"
+                )),
+                Err(e) => ToolOutput::error(format!("{header} {e}")),
+            })
+        })
+    }
+
+    // ── Documenti consultabili (RAG, ADR 0017) ─────────────────────────
+
+    pub fn rag_settings(&self) -> rag::RagSettings {
+        self.store()
+            .setting(SETTING_RAG)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    /// Cambia modello di embedding o cartelle. Le cartelle devono essere tra
+    /// quelle concesse; cambiando modello l'indice si svuota (i vettori di
+    /// modelli diversi non si confrontano) e va rifatto.
+    pub fn set_rag_settings(&self, settings: &rag::RagSettings) -> Result<()> {
+        let granted = self.granted_folders()?;
+        if let Some(folder) = settings.folders.iter().find(|f| !granted.contains(f)) {
+            return Err(Error::msg(format!(
+                "La cartella {folder} non è tra quelle concesse ai modelli: concedila prima nelle Impostazioni."
+            )));
+        }
+        if let Some(model) = &settings.embedding_model
+            && !self.list_models()?.iter().any(|m| &m.path == model)
+        {
+            return Err(Error::msg("Il modello di embedding non è nella libreria."));
+        }
+        let previous = self.rag_settings();
+        let store = self.store();
+        if previous.embedding_model != settings.embedding_model {
+            store.rag_clear()?;
+        }
+        store.set_setting(SETTING_RAG, &serde_json::to_string(settings)?)
+    }
+
+    pub fn rag_status(&self) -> Result<rag::RagStatus> {
+        let (files, chunks) = self.store().rag_counts()?;
+        let mut status = self
+            .rag_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        status.settings = self.rag_settings();
+        status.files = files;
+        status.chunks = chunks;
+        Ok(status)
+    }
+
+    /// Si può cercare: c'è un modello di embedding e qualcosa nell'indice.
+    fn rag_ready(&self) -> bool {
+        self.rag_settings().embedding_model.is_some()
+            && self
+                .store()
+                .rag_counts()
+                .is_ok_and(|(_, chunks)| chunks > 0)
+    }
+
+    /// Prefissi che alcuni modelli di embedding vogliono davanti a domande e
+    /// documenti (e5: `query: ` e `passage: `; nomic: `search_query: `…).
+    fn embedding_prefixes(model_path: &str) -> (&'static str, &'static str) {
+        let name = model_path.to_lowercase();
+        if name.contains("nomic") {
+            ("search_query: ", "search_document: ")
+        } else if name.contains("e5") {
+            ("query: ", "passage: ")
+        } else {
+            ("", "")
+        }
+    }
+
+    /// Il `llama-server` degli embedding, avviato se serve.
+    async fn embedder(&self) -> Result<(LoadedModel, String)> {
+        let model_path = self.rag_settings().embedding_model.ok_or_else(|| {
+            Error::msg("Scegli un modello di embedding in Impostazioni → Documenti consultabili.")
+        })?;
+        self.touch_embedder();
+        let mut runtime = self.embedder.lock().await;
+        if let Some(loaded) = runtime.loaded()
+            && loaded.model_path == model_path
+        {
+            return Ok((loaded, model_path));
+        }
+        let engine = self.engine()?;
+        let port = local::runtime::free_port()?;
+        let name = models::inspect(Path::new(&model_path)).name;
+        let params = LoadParams {
+            placement: Placement::Ram,
+            ..Default::default()
+        };
+        let mean = self
+            .mean_pooling_model
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            == Some(model_path.as_str());
+        let args = rag::embedding_args(&model_path, port, mean);
+        let loaded = runtime
+            .start(&engine, &model_path, &name, &params, port, args, false)
+            .await?;
+        Ok((loaded, model_path))
+    }
+
+    /// I vettori di alcuni testi. Se il modello non dichiara il "pooling"
+    /// (succede con i modelli di chat) lo si riavvia con la media e si riprova.
+    async fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let (embedder, model_path) = self.embedder().await?;
+        match rag::embed(&self.http, embedder.port, &embedder.api_key, texts).await {
+            Err(e) if e.to_string().contains("Pooling type 'none'") => {
+                *self
+                    .mean_pooling_model
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(model_path);
+                self.embedder.lock().await.unload().await;
+                let (embedder, _) = self.embedder().await?;
+                rag::embed(&self.http, embedder.port, &embedder.api_key, texts).await
+            }
+            other => other,
+        }
+    }
+
+    fn touch_embedder(&self) {
+        *self
+            .last_embed_use
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// Chiude il modello di embedding se non serve da un po'.
+    async fn stop_embedder_if_idle(&self) {
+        let idle = self
+            .last_embed_use
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed();
+        let indexing = self
+            .rag_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .indexing;
+        if idle >= EMBEDDER_IDLE
+            && !indexing
+            && let Ok(mut runtime) = self.embedder.try_lock()
+        {
+            runtime.unload().await;
+        }
+    }
+
+    /// Aggiorna l'indice: rielabora solo i file nuovi o cambiati e toglie
+    /// quelli spariti. È lungo: chi lo chiama di solito lo avvia in sottofondo
+    /// e ne segue l'avanzamento con [`Core::rag_status`].
+    pub async fn index_documents(&self) -> Result<()> {
+        {
+            let mut progress = self.rag_progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.indexing {
+                return Err(Error::msg("L'indicizzazione è già in corso."));
+            }
+            *progress = rag::RagStatus {
+                indexing: true,
+                ..Default::default()
+            };
+        }
+        let result = self.index_all().await;
+        let mut progress = self.rag_progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.indexing = false;
+        if let Err(e) = &result {
+            progress.error = Some(e.to_string());
+        }
+        result
+    }
+
+    async fn index_all(&self) -> Result<()> {
+        let settings = self.rag_settings();
+        let (_, model_path) = self.embedder().await?;
+        let (_, passage) = Self::embedding_prefixes(&model_path);
+        let granted = self.granted_folders()?;
+        let folders: Vec<String> = settings
+            .folders
+            .iter()
+            .filter(|f| granted.contains(f))
+            .cloned()
+            .collect();
+        let scans: Vec<(String, Vec<rag::FileStamp>)> = {
+            let folders = folders.clone();
+            tokio::task::spawn_blocking(move || {
+                folders
+                    .into_iter()
+                    .map(|f| {
+                        let files = rag::scan(Path::new(&f));
+                        (f, files)
+                    })
+                    .collect()
+            })
+            .await
+            .map_err(|e| Error::msg(e.to_string()))?
+        };
+        let total: usize = scans.iter().map(|(_, files)| files.len()).sum();
+        self.rag_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .total_files = total as u32;
+        let mut existing = HashSet::new();
+        for (folder, files) in scans {
+            for file in files {
+                let path = file.path.to_string_lossy().into_owned();
+                existing.insert(path.clone());
+                let stamp = self.store().rag_stamp(&path)?;
+                if stamp != Some((file.modified, file.size)) {
+                    let source = file.path.clone();
+                    let text =
+                        tokio::task::spawn_blocking(move || tools::files::read_text(&source))
+                            .await
+                            .map_err(|e| Error::msg(e.to_string()))?;
+                    match text {
+                        Ok(text) => {
+                            let chunks = rag::chunk_text(&text);
+                            let mut vectors = Vec::with_capacity(chunks.len());
+                            for batch in chunks.chunks(rag::EMBED_BATCH) {
+                                let inputs: Vec<String> =
+                                    batch.iter().map(|c| format!("{passage}{c}")).collect();
+                                vectors.extend(self.embed_texts(&inputs).await?);
+                                self.touch_embedder();
+                            }
+                            let pairs: Vec<(String, Vec<f32>)> =
+                                chunks.into_iter().zip(vectors).collect();
+                            self.store().rag_replace_file(
+                                &folder,
+                                &path,
+                                file.modified,
+                                file.size,
+                                &pairs,
+                            )?;
+                        }
+                        Err(_) => {
+                            self.rag_progress
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .skipped
+                                .push(path.clone());
+                        }
+                    }
+                }
+                self.rag_progress
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .done_files += 1;
+            }
+        }
+        self.store().rag_prune(&folders, &existing)?;
+        Ok(())
+    }
+
+    /// I brani dei documenti più vicini alla domanda.
+    pub async fn search_documents(&self, query: &str) -> Result<Vec<rag::Hit>> {
+        let (_, model_path) = self.embedder().await?;
+        let (prefix, _) = Self::embedding_prefixes(&model_path);
+        let input = [format!("{prefix}{query}")];
+        let question = self.embed_texts(&input).await?.pop().unwrap_or_default();
+        let chunks = self.store().rag_chunks()?;
+        let mut hits: Vec<rag::Hit> = chunks
+            .into_iter()
+            .map(|(path, text, vector)| rag::Hit {
+                score: rag::cosine(&question, &vector),
+                path,
+                text,
+            })
+            .collect();
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        hits.truncate(rag::RESULTS);
+        Ok(hits)
+    }
+
+    /// `git` c'è: senza, gli agenti lavorano senza punti di ripristino.
+    pub fn restore_points_available(&self) -> bool {
+        snapshots::git_available()
+    }
+
+    /// Annulla ciò che l'agente ha cambiato nelle sue cartelle: le riporta
+    /// com'erano prima della sessione. Prima scatta un'altra foto, che
+    /// diventa il nuovo punto di ripristino della sessione: ripristinare di
+    /// nuovo rimette le cose come prima dell'annullamento.
+    pub fn restore_session(&self, id: i64) -> Result<AgentSession> {
+        if self.live_session(id).is_some() {
+            return Err(Error::msg(
+                "Ferma l'agente prima di annullare le sue modifiche.",
+            ));
+        }
+        let session = self.store().session(id)?;
+        if session.restore_points.is_empty() {
+            return Err(Error::msg("Questa sessione non ha un punto di ripristino."));
+        }
+        let mut safety = Vec::new();
+        let mut errors = Vec::new();
+        for (n, point) in session.restore_points.iter().enumerate() {
+            let reference = format!("refs/sessions/{id}-ripristino-{}-{n}", unix_seconds());
+            match snapshots::restore(&self.data_dir, point, &reference) {
+                Ok(saved) => safety.push(saved),
+                Err(e) => errors.push(format!("{}: {e}", point.folder)),
+            }
+        }
+        let store = self.store();
+        let folders: Vec<&str> = safety.iter().map(|p| p.folder.as_str()).collect();
+        let _ = store.add_action(&NewAction {
+            conversation_id: session.conversation_id,
+            session_id: Some(id),
+            source: &session.agent_name,
+            tool: "restore_point",
+            summary: &format!("Ripristinare le cartelle: {}", folders.join(", ")),
+            approval: "user",
+            is_error: !errors.is_empty(),
+            result: &if errors.is_empty() {
+                "Cartelle riportate a prima della sessione.".to_string()
+            } else {
+                errors.join("\n")
+            },
+        });
+        if !safety.is_empty() {
+            store.set_session_restore_points(id, &safety)?;
+        }
+        if !errors.is_empty() {
+            return Err(Error::msg(format!(
+                "Ripristino non riuscito per:\n{}",
+                errors.join("\n")
+            )));
+        }
+        store.session(id)
+    }
+
     pub fn delete_session(&self, id: i64) -> Result<()> {
         if self.live_session(id).is_some() {
             return Err(Error::msg("Ferma l'agente prima di eliminare la sessione."));
         }
-        self.store().delete_session(id)
+        let session = self.store().session(id)?;
+        self.store().delete_session(id)?;
+        // Le sue foto non servono più: si lasciano cancellare a git.
+        for point in &session.restore_points {
+            let exact = format!("refs/sessions/{id}");
+            let derived = format!("refs/sessions/{id}-*");
+            let _ = snapshots::forget(
+                &self.data_dir,
+                Path::new(&point.folder),
+                &[&exact, &derived],
+            );
+        }
+        Ok(())
     }
 
     /// Fa lavorare l'agente della sessione finché non ha finito, non viene
@@ -1995,7 +2879,10 @@ impl Core {
             },
             // Fermata mentre partivano i server MCP: non è un guasto.
             Err(_) if live.control.is_stopped() => (SessionStatus::Stopped, None),
-            Err(error) => (SessionStatus::Failed, Some(error.to_string())),
+            Err(error) => {
+                log::error(format!("sessione {id} non riuscita: {error}"));
+                (SessionStatus::Failed, Some(error.to_string()))
+            }
         };
         let saved = self.store().set_session_status(id, status, note.as_deref());
 
@@ -2017,9 +2904,43 @@ impl Core {
         let sampling = self.preset(&target.preset_key())?.sampling;
         let reads_images = target.reads_images();
 
+        // Punto di ripristino: la prima volta che la sessione lavora, prima di
+        // qualunque strumento. Riprendendo la sessione resta quello iniziale.
+        if agent.restore_points && session.restore_points.is_empty() && !agent.folders.is_empty() {
+            let data_dir = self.data_dir.clone();
+            let folders = agent.folders.clone();
+            let points = tokio::task::spawn_blocking(move || {
+                if !snapshots::git_available() {
+                    return Vec::new();
+                }
+                // Una cartella che non si riesce a fotografare non ferma l'agente:
+                // per lei semplicemente non ci sarà un punto di ripristino.
+                folders
+                    .iter()
+                    .filter_map(|f| {
+                        snapshots::create(
+                            &data_dir,
+                            Path::new(f),
+                            &format!("Prima della sessione {id}"),
+                            &format!("refs/sessions/{id}"),
+                        )
+                        .ok()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !points.is_empty() {
+                self.store().set_session_restore_points(id, &points)?;
+            }
+        }
+
         let mut settings = self.conversation_tools(session.conversation_id)?;
         let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
         let mut defs = tools::available(&settings, &folders);
+        if settings.documents && self.rag_ready() {
+            defs.push(rag::tool_def());
+        }
 
         // I server MCP dell'agente partono con la sessione e si chiudono con lei.
         let servers = self.mcp_servers_for(&agent.mcp_servers)?;
@@ -2036,6 +2957,27 @@ impl Core {
             defs.extend(set.defs().iter().cloned());
             Some(set)
         };
+
+        // Deleghe: agli agenti scelti, entro la profondità massima e mai a chi
+        // ha già lavoro in questa catena (niente giri a vuoto).
+        let delegation = if agent.delegates.is_empty() {
+            None
+        } else {
+            let ancestors = self.session_ancestors(id)?;
+            let depth = ancestors.len() as u32;
+            let store = self.store();
+            let agents: Vec<Agent> = agent
+                .delegates
+                .iter()
+                .filter_map(|&d| store.agent(d).ok())
+                .filter(|a| !ancestors.contains(&a.id) && Some(a.id) != session.agent_id)
+                .collect();
+            (depth < agents::MAX_DELEGATION_DEPTH && !agents.is_empty())
+                .then_some(Delegation { agents })
+        };
+        if let Some(delegation) = &delegation {
+            defs.push(agents::delegate_tool(&delegation.agents));
+        }
 
         let system = join_prompt(&[
             agents::AGENT_PREAMBLE,
@@ -2061,6 +3003,7 @@ impl Core {
                 agent.max_steps
             ),
             mcp: mcp_set.as_ref(),
+            delegation: delegation.as_ref(),
         };
         let mut on_event = |event| {
             let mut state = live.state();
@@ -2245,10 +3188,42 @@ impl Core {
         Ok(export::markdown(&conversation, &messages, lang == "en"))
     }
 
+    /// La conversazione in JSON, con tutti i rami.
+    pub fn conversation_json(&self, conversation_id: i64) -> Result<String> {
+        let store = self.store();
+        let conversation = store.conversation(conversation_id)?;
+        let tree = store.message_tree(conversation_id)?;
+        export::json(&conversation, &tree)
+    }
+
+    /// Mostra il ramo della conversazione che passa per `message_id`.
+    pub fn switch_branch(&self, conversation_id: i64, message_id: i64) -> Result<()> {
+        let generating = self
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&conversation_id);
+        if generating {
+            return Err(Error::msg(
+                "Questa conversazione sta già rispondendo: aspetta o interrompi la risposta.",
+            ));
+        }
+        self.store().switch_branch(conversation_id, message_id)
+    }
+
     /// Salva la conversazione in Markdown. `path` arriva dalla finestra
     /// "Salva con nome" del sistema.
     pub fn export_conversation(&self, conversation_id: i64, path: &Path, lang: &str) -> Result<()> {
-        let text = self.conversation_markdown(conversation_id, lang)?;
+        // Il formato lo sceglie l'estensione del file: `.json` con tutti i rami,
+        // altrimenti Markdown con il ramo che si vede.
+        let is_json = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        let text = if is_json {
+            self.conversation_json(conversation_id)?
+        } else {
+            self.conversation_markdown(conversation_id, lang)?
+        };
         std::fs::write(path, text)?;
         Ok(())
     }
@@ -2296,8 +3271,28 @@ impl Core {
         loop {
             tick.tick().await;
             self.unload_if_idle().await;
+            self.stop_embedder_if_idle().await;
         }
     }
+}
+
+/// Secondi dal 1970: rende unici i nomi delle foto di sicurezza.
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Che cosa sostituisce un messaggio mandato di nuovo.
+#[derive(Clone, Copy)]
+enum Replace {
+    /// Niente: è un messaggio nuovo.
+    None,
+    /// Una versione nuova (modificata) di questo messaggio.
+    Message(i64),
+    /// Lo stesso messaggio: si rifà solo la risposta che lo segue.
+    Answer(i64),
 }
 
 /// Gli allegati di un messaggio: da leggere dal disco, o già letti (quando
@@ -2683,6 +3678,7 @@ mod tests {
                     files: true,
                     web: false,
                     terminal: true,
+                    documents: false,
                     permission,
                     allowed_tools: Vec::new(),
                 },
@@ -2722,6 +3718,7 @@ mod tests {
             max_rounds: 10,
             limit_notice: "limite".into(),
             mcp: None,
+            delegation: None,
         };
         core.run_rounds(
             &scope,
@@ -2736,6 +3733,180 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[test]
+    fn la_catena_delle_deleghe() {
+        let (core, dir, session) = agent_fixture("deleghe", PermissionLevel::Ask);
+        let helper = core
+            .save_agent(Agent {
+                name: "Aiutante".into(),
+                description: "Scrive i file".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let child = core.create_session(helper.id, "sotto-compito").unwrap();
+        core.store()
+            .set_session_parent(child.id, session.id)
+            .unwrap();
+        let grandchild = core.create_session(helper.id, "sotto-sotto").unwrap();
+        core.store()
+            .set_session_parent(grandchild.id, child.id)
+            .unwrap();
+
+        assert!(core.session_ancestors(session.id).unwrap().is_empty());
+        assert_eq!(
+            core.session_ancestors(child.id).unwrap(),
+            [session.agent_id.unwrap()]
+        );
+        assert_eq!(
+            core.session_ancestors(grandchild.id).unwrap(),
+            [helper.id, session.agent_id.unwrap()]
+        );
+        assert_eq!(
+            core.session(child.id).unwrap().parent_session_id,
+            Some(session.id)
+        );
+
+        // Un agente non delega a sé stesso; lo strumento elenca gli agenti scelti.
+        let me = Agent {
+            id: 7,
+            delegates: vec![7, helper.id, helper.id],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(me.delegates, [helper.id]);
+        let tool = agents::delegate_tool(&[helper]);
+        assert!(tool.description.contains("- Aiutante: Scrive i file"));
+        assert_eq!(tool.schema["properties"]["agent"]["enum"][0], "Aiutante");
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn annullare_le_modifiche_di_una_sessione() {
+        if !snapshots::git_available() {
+            return;
+        }
+        let (core, dir, session) = agent_fixture("ripristino", PermissionLevel::Ask);
+        let work = PathBuf::from(&session.definition.as_ref().unwrap().folders[0]);
+        std::fs::write(work.join("a.txt"), "prima").unwrap();
+        assert!(core.restore_session(session.id).is_err()); // nessuna foto
+
+        let point = snapshots::create(&dir.join("dati"), &work, "foto", "refs/sessions/x").unwrap();
+        core.store()
+            .set_session_restore_points(session.id, std::slice::from_ref(&point))
+            .unwrap();
+        std::fs::write(work.join("a.txt"), "dopo").unwrap();
+        std::fs::write(work.join("b.txt"), "nuovo").unwrap();
+
+        let restored = core.restore_session(session.id).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "prima"
+        );
+        assert!(!work.join("b.txt").exists());
+        // Il nuovo punto è la foto di sicurezza: ripristinare di nuovo annulla.
+        assert_ne!(restored.restore_points[0].commit, point.commit);
+        core.restore_session(session.id).unwrap();
+        assert_eq!(std::fs::read_to_string(work.join("a.txt")).unwrap(), "dopo");
+        assert!(work.join("b.txt").exists());
+
+        let actions = core.store().actions(10, Some(session.id)).unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].tool, "restore_point");
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn il_limite_di_spesa_ferma_i_modelli_cloud() {
+        let (core, dir, session) = agent_fixture("spesa", PermissionLevel::Ask);
+        let conv = session.conversation_id;
+        // Una risposta già costata 0,30 $.
+        {
+            let store = core.store();
+            let m = store
+                .add_message(conv, "assistant", "costosa", Some("m"))
+                .unwrap();
+            store
+                .set_message_usage(m.id, Some(1), Some(1), Some(0.30))
+                .unwrap();
+        }
+        assert!((core.spending().unwrap().month_usd - 0.30).abs() < 1e-9);
+        assert!(core.check_spend(conv).is_ok());
+
+        assert!(
+            core.set_spend_limits(&SpendLimits {
+                monthly_usd: Some(-1.0),
+                conversation_usd: None
+            })
+            .is_err()
+        );
+        core.set_spend_limits(&SpendLimits {
+            monthly_usd: None,
+            conversation_usd: Some(0.25),
+        })
+        .unwrap();
+        let err = core.check_spend(conv).unwrap_err().to_string();
+        assert!(err.contains("per conversazione"), "{err}");
+        // Un'altra conversazione è sotto il limite.
+        let other = core.store().create_conversation("altra").unwrap().id;
+        assert!(core.check_spend(other).is_ok());
+
+        core.set_spend_limits(&SpendLimits {
+            monthly_usd: Some(0.20),
+            conversation_usd: None,
+        })
+        .unwrap();
+        assert!(
+            core.check_spend(other)
+                .unwrap_err()
+                .to_string()
+                .contains("mensile")
+        );
+
+        // Un agente con un modello cloud si ferma prima di chiamarlo: il
+        // servizio finto non ha risposte pronte.
+        let agent = session.definition.clone().unwrap();
+        let folders: Vec<PathBuf> = agent.folders.iter().map(PathBuf::from).collect();
+        let mut settings = core.conversation_tools(conv).unwrap();
+        let provider = Provider {
+            id: "finto".into(),
+            name: "Finto".into(),
+            kind: providers::ProviderKind::OpenaiCompatible,
+            base_url: fake_service(Vec::new()),
+            models: Vec::new(),
+        };
+        let target = Target::Cloud(provider, "chiave".into(), "modello".into());
+        let control = RunControl::new();
+        let scope = RunScope {
+            conversation_id: conv,
+            session_id: Some(session.id),
+            source: agent.name.clone(),
+            key_prefix: format!("s{}", session.id),
+            control: &control,
+            max_rounds: 10,
+            limit_notice: "limite".into(),
+            mcp: None,
+            delegation: None,
+        };
+        let result = core
+            .run_rounds(
+                &scope,
+                &target,
+                Vec::new(),
+                &[],
+                &mut settings,
+                &folders,
+                "",
+                &SamplingParams::default(),
+                &mut |_| {},
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("Limite di spesa"));
+        drop(core);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2845,6 +4016,7 @@ mod tests {
             max_rounds: 10,
             limit_notice: "limite".into(),
             mcp: Some(&set),
+            delegation: None,
         };
         let mut asked = Vec::new();
         let outcome = core

@@ -3,6 +3,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Preferences, type SecuritySettings, type Theme, type ToolSettings } from "../api";
 import { ApiSection } from "../components/ApiSection";
 import { McpSection } from "../components/McpSection";
+import { SpendSection } from "../components/SpendSection";
+import { DocumentsSection } from "../components/DocumentsSection";
+import { DataSection } from "../components/DataSection";
+import { UpdateSection } from "../components/UpdateSection";
 import { ToolsBar } from "../components/ToolsBar";
 import { LANGUAGES, msg, t, tc, type Lang } from "../i18n";
 import { useLanguage } from "../LanguageProvider";
@@ -14,7 +18,7 @@ const THEMES: { id: Theme; label: string }[] = [
   { id: "dark", label: msg("Scuro") },
 ];
 
-/** Lingua, aspetto, cartelle concesse, strumenti predefiniti, protezioni, MCP e API locale. */
+/** Lingua, aspetto, cartelle concesse, strumenti predefiniti, protezioni, spesa cloud, MCP e API locale. */
 export function SettingsArea() {
   const { language, chooseLanguage } = useLanguage();
   const [folders, setFolders] = useState<string[]>([]);
@@ -209,9 +213,17 @@ export function SettingsArea() {
         )}
       </section>
 
+      <DocumentsSection grantedFolders={folders} />
+
+      <SpendSection />
+
       <McpSection />
 
       <ApiSection />
+
+      {preferences && <UpdateSection preferences={preferences} onPreferences={savePreferences} />}
+
+      <DataSection />
 
       {error && <p className="error pre">{tc(error)}</p>}
     </div>

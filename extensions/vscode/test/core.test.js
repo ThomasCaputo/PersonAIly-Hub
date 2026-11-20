@@ -177,3 +177,21 @@ test("lingua di VS Code, testi tradotti e messaggi del nucleo in inglese", () =>
   assert.equal(i18n.t("Invia"), "Invia");
   assert.equal(i18n.tc("Nessun modello locale caricato."), "Nessun modello locale caricato.");
 });
+
+test("completamento in linea: contesto tagliato alle righe intere", () => {
+  const { contextAround } = require("../out/infill.js");
+  const text = "riga uno\nriga due\nriga tre\nriga quattro";
+  const offset = text.indexOf("tre");
+  const { prefix, suffix } = contextAround(text, offset, 12, 8);
+  assert.equal(prefix, "riga ");
+  assert.equal(suffix, "tre");
+  const all = contextAround(text, offset);
+  assert.equal(all.prefix + all.suffix, text);
+});
+
+test("completamento in linea: niente doppioni del testo dopo il cursore", () => {
+  const { cleanCompletion } = require("../out/infill.js");
+  assert.equal(cleanCompletion("a + b;\n}\n", ";\n}\n"), "a + b");
+  assert.equal(cleanCompletion("return x;  \n", "\n}"), "return x;");
+  assert.equal(cleanCompletion("   \n", ""), "");
+});

@@ -10,5 +10,7 @@
   "command.rejectProposal": "Rifiuta la modifica",
   "config.serverPath": "Percorso di `app-server.exe`, il nucleo senza interfaccia, che l'estensione avvia quando l'app desktop è chiusa. Vuoto: quello installato con l'app, che l'estensione trova da sola.",
   "config.dataDir": "Cartella dati dell'app. Vuota: quella predefinita (`%APPDATA%\\dev.personaily.hub`).",
-  "config.maxContextChars": "Caratteri massimi del file aperto inviati come contesto. Per i file più lunghi si invia solo la selezione."
+  "config.maxContextChars": "Caratteri massimi del file aperto inviati come contesto. Per i file più lunghi si invia solo la selezione.",
+  "config.inlineCompletion": "Suggerimenti di codice mentre scrivi, dal modello locale caricato nell'app (in grigio, `Tab` accetta). Serve un modello per il codice addestrato al \"fill-in-the-middle\", come Qwen2.5-Coder, e tiene occupata la GPU mentre scrivi.",
+  "config.inlineCompletionDelay": "Millisecondi di attesa dopo l'ultimo tasto prima di chiedere un suggerimento."
 }

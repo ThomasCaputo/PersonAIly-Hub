@@ -20,6 +20,26 @@ export type LoadBody = { path: string,
  */
 force?: boolean, };
 
+export type InfillBody = { 
+/**
+ * Il testo prima del cursore.
+ */
+prefix: string, 
+/**
+ * Il testo dopo il cursore.
+ */
+suffix: string, 
+/**
+ * Token massimi da generare (predefinito 128, al massimo 512).
+ */
+maxTokens?: number, };
+
+export type InfillReply = { 
+/**
+ * Il testo da inserire al cursore.
+ */
+text: string, };
+
 export type ModelInfo = { path: string, fileName: string, 
 /**
  * Nome leggibile: quello scritto nel file, altrimenti il nome del file.
@@ -64,9 +84,13 @@ loadMode: string | null,
  * Carica anche il componente visivo (`mmproj`) se accanto al modello ce
  * n'è uno: il modello legge le immagini, al costo di un po' di memoria.
  */
-vision: boolean, };
+vision: boolean, 
+/**
+ * Solo per [`Placement::Hybrid`]: quanti layer vanno sulla GPU.
+ */
+gpuLayers: number | null, };
 
-export type Placement = "vram" | "ram";
+export type Placement = "vram" | "ram" | "hybrid";
 
 export type KvCacheType = "f16" | "q8_0" | "q4_0";
 
@@ -195,7 +219,16 @@ isError: boolean,
 /**
  * Nome e tipo degli allegati, per l'interfaccia.
  */
-attachments: Array<AttachmentInfo>, };
+attachments: Array<AttachmentInfo>, 
+/**
+ * Il messaggio a cui risponde; `None` per il primo.
+ */
+parentId: number | null, 
+/**
+ * Le versioni di questo messaggio nei vari rami (lui compreso), dalla più
+ * vecchia. Vuoto se ce n'è una sola. Solo nei messaggi da mostrare.
+ */
+siblings: Array<number>, };
 
 export type AttachmentInfo = { name: string, kind: AttachmentKind, };
 
@@ -217,6 +250,12 @@ attachments?: Array<string>, model: ModelRef,
  * Assenti: si usano quelli del preset del modello.
  */
 sampling?: SamplingParams, systemPrompt?: string, };
+
+export type BranchBody = { 
+/**
+ * Un messaggio del ramo da mostrare.
+ */
+messageId: number, };
 
 export type TextEvent = { text: string, };
 
@@ -252,7 +291,11 @@ web: boolean,
 /**
  * Comandi nel terminale. Lo usano gli agenti; in chat resta spento.
  */
-terminal: boolean, permission: PermissionLevel, 
+terminal: boolean, 
+/**
+ * Ricerca nei documenti consultabili (RAG locale, ADR 0017).
+ */
+documents: boolean, permission: PermissionLevel, 
 /**
  * Strumenti MCP per cui l'utente ha scelto "Consenti sempre".
  */
@@ -299,7 +342,16 @@ mcpServers: Array<string>,
 /**
  * Passi massimi prima di fermarsi e aspettare l'utente.
  */
-maxSteps: number, };
+maxSteps: number, 
+/**
+ * Prima di ogni sessione fotografa le cartelle, per poter annullare
+ * tutto ciò che l'agente ha cambiato (vedi [`crate::snapshots`]).
+ */
+restorePoints: boolean, 
+/**
+ * Gli agenti (id) a cui questo può affidare parte del lavoro (AG-8).
+ */
+delegates: Array<number>, };
 
 export type AgentSession = { id: number, 
 /**
@@ -309,7 +361,26 @@ agentId: number | null, agentName: string, conversationId: number, task: string,
 /**
  * Errore o avviso con cui la sessione si è fermata.
  */
-note: string | null, createdAt: string, updatedAt: string, };
+note: string | null, createdAt: string, updatedAt: string, 
+/**
+ * Le cartelle fotografate prima che l'agente lavorasse; vuoto se non ce
+ * ne sono (opzione spenta, git mancante o foto non riuscita).
+ */
+restorePoints: Array<RestorePoint>, 
+/**
+ * La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente.
+ */
+parentSessionId: number | null, };
+
+export type RestorePoint = { folder: string, 
+/**
+ * Il commit dell'istantanea nel repository separato.
+ */
+commit: string, 
+/**
+ * File fotografati.
+ */
+files: number, };
 
 export type SessionStatus = "running" | "paused" | "waiting" | "done" | "stopped" | "failed" | "interrupted";
 

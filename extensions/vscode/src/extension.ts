@@ -10,6 +10,7 @@ import { CoreClient, defaultDataDir } from "./core";
 import { editPrompt, editSystemPrompt, extractCode, openAiModelName } from "./edits";
 import { currentEditor, editorContext } from "./editor";
 import { languageFor, setLanguage, t } from "./i18n";
+import { InlineCompletion } from "./inline";
 import { type ModelChoice, pickModel } from "./models";
 import { PROPOSAL_SCHEME, Proposals } from "./proposals";
 
@@ -77,6 +78,11 @@ export function activate(context: vscode.ExtensionContext): void {
     proposals,
     sessions,
     vscode.workspace.registerTextDocumentContentProvider(PROPOSAL_SCHEME, proposals),
+    // Completamento in linea (VS-6): il provider tace se l'impostazione è spenta.
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: "**" },
+      new InlineCompletion(core, config, (line) => output.appendLine(line)),
+    ),
     vscode.window.registerWebviewViewProvider("personailyHub.chat", chat, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

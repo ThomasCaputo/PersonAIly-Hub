@@ -99,4 +99,5 @@ export const EN: Record<string, string> = {
   "fermato": "stopped",
   "non riuscito": "failed",
   "interrotto": "interrupted",
+  "Completamento in linea: {error}": "Inline completion: {error}",
 };

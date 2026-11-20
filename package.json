@@ -27,6 +27,6 @@
     "dev": "npm run tauri -w desktop -- dev",
     "build": "node scripts/build-server.mjs && npm run tauri -w desktop -- build --config src-tauri/tauri.bundle.conf.json",
     "build:ui": "npm run build -w desktop",
-    "check": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm run check:i18n -w desktop"
+    "check": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm run check:i18n -w desktop && npm test -w desktop"
   }
 }

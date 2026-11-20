@@ -31,7 +31,8 @@ const CALL = /\b(?:t|tn|msg)\(\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
 
 const used = new Map();
 for (const file of files(root)) {
-  if (file.endsWith("i18n.ts")) continue;
+  // Le prove usano apposta testi senza traduzione.
+  if (file.endsWith("i18n.ts") || /\.test\.tsx?$/.test(file)) continue;
   const text = readFileSync(file, "utf8");
   for (const match of text.matchAll(CALL)) {
     const key = unquote(match[1]);
