@@ -57,9 +57,16 @@ impl ChatMessage {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationStats {
+    /// Tutti i token letti, compresi quelli serviti dalla cache del servizio.
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     pub tokens_per_second: Option<f64>,
+    /// Dei token letti, quanti sono arrivati dalla cache del servizio
+    /// (costano circa un decimo). Solo con Anthropic.
+    pub cache_read_tokens: Option<u64>,
+    /// Dei token letti, quanti sono stati scritti nella cache (costano un
+    /// quarto in più). Solo con Anthropic.
+    pub cache_write_tokens: Option<u64>,
 }
 
 /// Ciò che arriva durante la generazione.

@@ -58,7 +58,7 @@ export function UpdateOffer({ update }: { update: UpdateInfo }) {
         </>
       )}
       {progress && <p className="dim note">{progress}</p>}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </div>
   );
 }
@@ -118,7 +118,7 @@ export function UpdateSection({
       </div>
       {state === "current" && <p className="dim note">{t("Hai già l'ultima versione.")}</p>}
       {update && <UpdateOffer update={update} />}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </section>
   );
 }

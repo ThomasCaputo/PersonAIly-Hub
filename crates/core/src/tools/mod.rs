@@ -221,7 +221,9 @@ const RUN_COMMAND: &str = "run_command";
 fn file_tools() -> Vec<ToolDef> {
     let path = json!({
         "type": "string",
-        "description": "Percorso assoluto, oppure relativo alla prima cartella concessa."
+        "description": "Percorso relativo alla cartella di lavoro (la prima concessa), per \
+                        esempio src\\main.rs, oppure . per la cartella stessa. Il percorso \
+                        assoluto serve solo per le altre cartelle concesse."
     });
     vec![
         ToolDef {
@@ -392,9 +394,17 @@ pub fn system_preamble(tools: &[ToolDef], folders: &[PathBuf]) -> String {
         .any(|t| t.name == READ_FILE || t.name == RUN_COMMAND)
     {
         text.push_str("\nCartelle a cui l'utente ti ha dato accesso:");
-        for folder in folders {
-            text.push_str(&format!("\n- {}", folder.display()));
+        for (n, folder) in folders.iter().enumerate() {
+            let label = if n == 0 { " (cartella di lavoro)" } else { "" };
+            text.push_str(&format!("\n- {}{label}", folder.display()));
         }
+        // Con percorsi lunghi i modelli piccoli si incastrano a scriverli
+        // (misurato con Qwen2.5 7B): meglio quelli relativi.
+        text.push_str(
+            "\nPer i file della cartella di lavoro usa percorsi relativi e brevi (per esempio \
+             src\\main.rs, o . per la cartella stessa), non il percorso completo. Usa il \
+             percorso assoluto solo per le altre cartelle.",
+        );
     }
     if tools.iter().any(|t| t.name == WEB_SEARCH) {
         text.push_str(
@@ -777,7 +787,8 @@ mod tests {
         let folders = vec![PathBuf::from("C:\\dati")];
         assert_eq!(system_preamble(&[], &folders), "");
         let text = system_preamble(&file_tools(), &folders);
-        assert!(text.contains("C:\\dati"));
+        assert!(text.contains("C:\\dati (cartella di lavoro)"));
+        assert!(text.contains("percorsi relativi"));
         assert!(!text.contains("cita le fonti"));
         assert!(system_preamble(&web_tools(), &[]).contains("cita le fonti"));
     }

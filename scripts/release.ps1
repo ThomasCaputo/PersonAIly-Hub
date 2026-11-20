@@ -13,6 +13,11 @@
 # installed apps read to find updates, is written next to the installer with
 # the release notes taken from CHANGELOG.md.
 #
+# Authenticode (the publisher name Windows shows, so SmartScreen does not warn)
+# is optional: with SIGNPATH_* or WINDOWS_CERT_THUMBPRINT set (see
+# scripts/sign.ps1) app-server.exe, the app and the installer are signed and
+# checked; without, the build goes on with a warning.
+#
 # Usage, from the repository root:  powershell -File scripts/release.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -52,9 +57,34 @@ $section = [regex]::Match($changelog, $pattern)
 if (-not $section.Success) { throw "CHANGELOG.md has no section for $version" }
 $notes = $section.Groups[1].Value.Trim()
 
+$authenticode = [bool]($env:SIGNPATH_API_TOKEN -or $env:WINDOWS_CERT_THUMBPRINT)
+$signScript = Join-Path $root 'scripts/sign.ps1'
+$buildConfigs = @('--config', 'src-tauri/tauri.bundle.conf.json', '--config', 'src-tauri/tauri.release.conf.json')
+if ($authenticode) {
+    # Tauri signs the app and the installer with this command, before the
+    # updater signature is computed. An argument list, not a string: the
+    # repository path may contain spaces.
+    $signConf = Join-Path $root 'target/tauri.sign.conf.json'
+    New-Item -ItemType Directory -Force (Split-Path $signConf) | Out-Null
+    $signCommand = @{ bundle = @{ windows = @{ signCommand = @{
+        cmd  = 'powershell'
+        args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $signScript, '%1')
+    } } } }
+    [IO.File]::WriteAllText($signConf, ($signCommand | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+    $buildConfigs += @('--config', $signConf)
+}
+else {
+    Write-Warning "Authenticode signing not configured: Windows SmartScreen will warn about the executables (see scripts/sign.ps1)"
+}
+
 node scripts/build-server.mjs
 if ($LASTEXITCODE -ne 0) { throw "app-server build failed" }
-npm run tauri -w desktop -- build --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.release.conf.json
+if ($authenticode) {
+    # The copy that the installer bundles next to the app.
+    & $signScript (Join-Path $root 'apps/desktop/src-tauri/binaries/app-server-x86_64-pc-windows-msvc.exe')
+    & $signScript (Join-Path $root 'target/release/app-server.exe')
+}
+npm run tauri -w desktop -- build @buildConfigs
 if ($LASTEXITCODE -ne 0) { throw "app build failed" }
 
 npm run package -w personaily-hub-vscode
@@ -75,6 +105,13 @@ $setup = Get-ChildItem (Join-Path $root 'target/release/bundle/nsis') -Filter "*
 if (-not $setup) { throw "setup.exe not found in target/release/bundle/nsis" }
 $signature = "$($setup.FullName).sig"
 if (-not (Test-Path $signature)) { throw "updater signature $signature not found" }
+if ($authenticode) {
+    foreach ($file in @($exe, $server, $setup.FullName)) {
+        $status = (Get-AuthenticodeSignature $file).Status
+        if ($status -ne 'Valid') { throw "Authenticode signature of $file is $status" }
+    }
+    Write-Host "Authenticode: app, app-server and installer are signed."
+}
 
 # Look for anything that identifies this machine, in ASCII/UTF-8 and UTF-16.
 $needles = @($env:USERNAME, $userProfile, $env:COMPUTERNAME) | Where-Object { $_ -and $_.Length -ge 3 } | Sort-Object -Unique

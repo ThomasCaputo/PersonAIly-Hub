@@ -158,10 +158,15 @@ export type ToolSettings = {
 export type McpServer = {
   id: string;
   name: string;
+  /** "stdio": programma avviato dall'app; "http": server raggiunto a un indirizzo. */
+  transport: "stdio" | "http";
   command: string;
   args: string[];
   /** Coppie [nome, valore]. */
   env: [string, string][];
+  url: string;
+  /** Intestazioni HTTP, coppie [nome, valore] (di solito Authorization). */
+  headers: [string, string][];
 };
 
 export type McpToolInfo = { name: string; description: string };
@@ -185,6 +190,8 @@ export type Agent = {
   /** Server MCP (identificatori) avviati con ogni sessione. */
   mcpServers: string[];
   maxSteps: number;
+  /** Token massimi che il modello scrive in un passo. */
+  maxStepTokens: number;
   /** Fotografa le cartelle prima di ogni sessione, per poter annullare tutto. */
   restorePoints: boolean;
   /** Agenti (id) a cui questo può affidare parte del lavoro. */
@@ -282,6 +289,8 @@ export type Preferences = {
   idleUnloadMinutes: number;
   /** All'avvio chiede a GitHub se c'è una versione nuova. */
   checkUpdates: boolean;
+  /** Il primo avvio guidato è concluso (o saltato). */
+  onboarded: boolean;
 };
 
 /** Protezioni accese di base, che l'utente può spegnere nelle Impostazioni. */

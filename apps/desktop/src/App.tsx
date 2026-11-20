@@ -20,6 +20,9 @@ import { useLanguage } from "./LanguageProvider";
 import { preloadMarkdown } from "./components/Markdown";
 import { SpillWarning } from "./components/SpillWarning";
 import { UpdateOffer } from "./components/UpdateSection";
+
+// Il primo avvio guidato si carica solo se serve.
+const Welcome = lazy(() => import("./components/Welcome").then((m) => ({ default: m.Welcome })));
 import "./App.css";
 
 // La chat è la pagina d'apertura; le altre si caricano quando si aprono.
@@ -86,6 +89,54 @@ export default function App() {
   const [preset, setPreset] = useState<Preset | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [chatCommand, setChatCommand] = useState<ChatCommand | null>(null);
+  const [welcome, setWelcome] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
+  const firstArea = useRef(true);
+
+  // Cambiando pagina il titolo della finestra la nomina e il fuoco va al
+  // contenuto: chi usa la tastiera o un lettore di schermo non deve ripartire
+  // dalla barra laterale.
+  useEffect(() => {
+    const area = AREAS.find((a) => a.id === areaId);
+    document.title = area ? `${t(area.label)} · PersonAIly Hub` : "PersonAIly Hub";
+    if (firstArea.current) {
+      firstArea.current = false;
+      return;
+    }
+    mainRef.current?.focus({ preventScroll: true });
+  }, [areaId]);
+
+  // Primo avvio guidato: solo se l'utente non l'ha già concluso e l'app è
+  // davvero vuota (chi arriva dalla 0.1.0 ha già motore, modelli o provider).
+  useEffect(() => {
+    (async () => {
+      try {
+        const prefs = await api.preferences();
+        if (prefs.onboarded) return;
+        const [engine, models, configured] = await Promise.all([
+          api.engineStatus(),
+          api.listModels(),
+          api.listProviders(),
+        ]);
+        if (engine.engines.length > 0 || models.length > 0 || configured.length > 0) {
+          await api.setPreferences({ ...prefs, onboarded: true });
+        } else {
+          setWelcome(true);
+        }
+      } catch {
+        // Senza risposta dal nucleo non si disturba l'utente.
+      }
+    })();
+  }, []);
+
+  const finishWelcome = useCallback(() => {
+    setWelcome(false);
+    api.listProviders().then(setProviders).catch(() => {});
+    api
+      .preferences()
+      .then((p) => api.setPreferences({ ...p, onboarded: true }))
+      .catch(() => {});
+  }, []);
 
   // Ctrl+K (o Cmd+K) apre e chiude la tavolozza dei comandi, da qualunque pagina.
   useEffect(() => {
@@ -140,6 +191,12 @@ export default function App() {
         run: () => {
           api.unloadModel().then(refreshStatus).catch(() => {});
         },
+      },
+      {
+        id: "welcome",
+        label: t("Configurazione guidata del primo avvio"),
+        group: t("Modelli"),
+        run: () => setWelcome(true),
       },
       { id: "theme-system", label: t("Tema: come il sistema"), group: t("Aspetto"), run: () => setTheme("system") },
       { id: "theme-light", label: t("Tema: chiaro"), group: t("Aspetto"), run: () => setTheme("light") },
@@ -227,7 +284,10 @@ export default function App() {
 
   return (
     <div className="shell">
-      <nav className="sidebar">
+      <a className="skip-link" href="#main">
+        {t("Vai al contenuto")}
+      </a>
+      <nav className="sidebar" aria-label={t("Pagine")}>
         <div className="brand">
           <span className="brand-mark">
             <Icon path="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z" size={18} />
@@ -248,7 +308,7 @@ export default function App() {
         <StatusPanel status={status} core={core} />
       </nav>
 
-      <main className="content">
+      <main className="content" id="main" tabIndex={-1} ref={mainRef}>
         <SpillWarning status={status} />
         {update && (
           <div className="update-banner" role="status">
@@ -289,6 +349,16 @@ export default function App() {
           </Suspense>
         </div>
       </main>
+      {welcome && (
+        <Suspense fallback={null}>
+          <Welcome
+            status={status}
+            providers={providers}
+            onProvidersChange={refreshProviders}
+            onFinish={finishWelcome}
+          />
+        </Suspense>
+      )}
       {paletteOpen && (
         <CommandPalette
           commands={paletteCommands}
@@ -306,7 +376,7 @@ function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: Cor
 
   return (
     <div className="status">
-      <div className="status-model">
+      <div className="status-model" role="status">
         {status?.loading
           ? t("Caricamento del modello…")
           : (status?.loaded?.modelName ?? t("Nessun modello locale caricato"))}
@@ -334,7 +404,14 @@ function Meter({ label, used, total }: { label: string; used: number; total: num
           {gb(used)} / {gb(total)} GB
         </span>
       </div>
-      <div className="meter-track">
+      <div
+        className="meter-track"
+        role="meter"
+        aria-label={t("{label} occupata", { label })}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(percent)}
+      >
         <div className={percent > 90 ? "meter-fill high" : "meter-fill"} style={{ width: `${percent}%` }} />
       </div>
     </div>

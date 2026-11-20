@@ -86,6 +86,7 @@ function newAgent(): Agent {
     tools: { files: true, web: false, terminal: true, permission: "ask" },
     mcpServers: [],
     maxSteps: 50,
+    maxStepTokens: 8192,
     restorePoints: true,
     delegates: [],
   };
@@ -142,7 +143,7 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
           {t("Registro azioni")}
         </button>
       </div>
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
 
       {tab === "sessions" && (
         <div className="agents-split">
@@ -318,7 +319,7 @@ function NewTask({
       <button className="btn primary" disabled={busy || !task.trim() || agentId === null} onClick={start}>
         {t("Avvia")}
       </button>
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </div>
   );
 }
@@ -383,7 +384,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, live?.streaming, live?.request]);
 
-  if (!session) return error ? <p className="error pre">{tc(error)}</p> : null;
+  if (!session) return error ? <p className="error pre" role="alert">{tc(error)}</p> : null;
 
   const active = isActive(session.status);
   const act = (action: () => Promise<unknown>) => {
@@ -494,7 +495,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
         </div>
       )}
 
-      <div className="messages">
+      <div className="messages" role="log" aria-label={t("Passi dell'agente")} aria-live="polite">
         {shown.map((m, index) =>
           m.role === "tool" ? (
             <ToolResult key={m.id} message={m} />
@@ -528,13 +529,14 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
         {session.status === "interrupted" && (
           <p className="notice">{t("L'app è stata chiusa mentre l'agente lavorava. Scrivigli per farlo continuare.")}</p>
         )}
-        {error && <p className="error pre">{tc(error)}</p>}
+        {error && <p className="error pre" role="alert">{tc(error)}</p>}
         <div ref={bottomRef} />
       </div>
 
       <div className="composer">
         <textarea
           value={reply}
+          aria-label={t("Messaggio all'agente")}
           rows={2}
           disabled={active}
           placeholder={
@@ -660,7 +662,7 @@ function AgentsTab({
           </div>
         </div>
       ))}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </div>
   );
 }
@@ -929,6 +931,24 @@ function AgentEditor({
         <p className="dim note">{t("Arrivato qui l'agente si ferma e aspetta che tu gli risponda.")}</p>
       </div>
 
+      <div className="field">
+        <label htmlFor="agent-step-tokens">{t("Token massimi per passo")}</label>
+        <input
+          id="agent-step-tokens"
+          type="number"
+          min={256}
+          max={131072}
+          step={256}
+          value={agent.maxStepTokens}
+          onChange={(e) => set({ maxStepTokens: Number(e.target.value) || 8192 })}
+        />
+        <p className="dim note">
+          {t(
+            "Un passo più lungo viene interrotto e l'agente riprova in breve: evita che un modello locale resti incastrato per minuti.",
+          )}
+        </p>
+      </div>
+
       <label className="check">
         <input
           type="checkbox"
@@ -955,7 +975,7 @@ function AgentEditor({
           {t("Annulla")}
         </button>
       </div>
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </div>
   );
 }
@@ -1093,7 +1113,7 @@ function ActionsTab() {
           </tbody>
         </table>
       )}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
 
     </div>
   );

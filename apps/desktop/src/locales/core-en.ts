@@ -127,6 +127,11 @@ export const CORE_EN: Record<string, string> = {
   "Indirizzo sconosciuto.": "Unknown address.",
   "non riceve più messaggi.": "no longer receives messages.",
   "ha chiuso il collegamento.": "closed the connection.",
+  "Indica l'indirizzo completo del server MCP (https://…).": "Enter the full address of the MCP server (https://…).",
+  "L'indirizzo del server MCP deve iniziare con https:// (http:// solo per un server su questo computer).":
+    "The MCP server address must start with https:// (http:// only for a server on this computer).",
+  "Ogni intestazione HTTP ha bisogno di un nome valido (lettere, cifre e trattini).":
+    "Every HTTP header needs a valid name (letters, digits and hyphens).",
 };
 
 /** Testi con parti variabili: espressione → sostituzione, provate in ordine. */
@@ -150,6 +155,8 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Eseguire nel terminale \(in (.*?)\): (.*)$/s, "Run in the terminal (in $1): $2"],
   [/^Eseguire nel terminale: (.*)$/s, "Run in the terminal: $1"],
   [/^Usare «(.*)» del server MCP «(.*)»$/s, "Use “$1” from the MCP server “$2”"],
+  [/^Elencare le risorse del server MCP «(.*)»$/s, "List the resources of the MCP server “$1”"],
+  [/^Leggere una risorsa del server MCP «(.*)»$/s, "Read a resource of the MCP server “$1”"],
   [/^Usare lo strumento (.*)$/s, "Use the tool $1"],
   // Avvisi ed errori
   [
@@ -190,6 +197,17 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Il servizio ha risposto con un errore \((.*?)\): (.*)\.$/s, "The service replied with an error ($1): $2."],
   [/^Il servizio ha interrotto la risposta: (.*)$/s, "The service interrupted the reply: $1"],
   [/^nessuna risposta a «(.*?)» entro (\d+) secondi\.$/s, "no reply to “$1” within $2 seconds."],
+  [/^nessuna risposta a «(.*?)»\.$/s, "no reply to “$1”."],
+  [/^ha chiuso il flusso senza rispondere a «(.*?)»\.$/s, "closed the stream without replying to “$1”."],
+  [/^non raggiungibile \((.*)\)\.$/s, "not reachable ($1)."],
+  [/^risposta illeggibile \((.*)\)\.$/s, "unreadable reply ($1)."],
+  [/^collegamento interrotto \((.*)\)\.$/s, "connection interrupted ($1)."],
+  [
+    /^ha risposto (.*?)\. Controlla le intestazioni \(per esempio il token in Authorization\)\.(.*)$/s,
+    "replied $1. Check the headers (for example the token in Authorization).$2",
+  ],
+  [/^ha risposto (.*?)\. Controlla l'indirizzo\.(.*)$/s, "replied $1. Check the address.$2"],
+  [/^ha risposto (.*?)\.(.*)$/s, "replied $1.$2"],
   [/^dati non validi: (.*)$/s, "invalid data: $1"],
   [/^versione GGUF (.*) non supportata$/s, "GGUF version $1 not supported"],
   [/^(.*) è già presente nella cartella dei modelli\.$/s, "$1 is already in the models folder."],

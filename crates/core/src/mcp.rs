@@ -1,13 +1,20 @@
 //! Client MCP (Model Context Protocol) per gli strumenti esterni (AG-7).
 //!
 //! Un server MCP è un programma che l'utente installa e configura nelle
-//! Impostazioni. L'app lo avvia come processo figlio e gli parla in JSON-RPC
-//! sulle sue entrata e uscita standard, una riga per messaggio (trasporto
-//! "stdio"). Gli strumenti che il server dichiara vengono offerti al modello
-//! accanto a quelli dell'app, passando per gli stessi permessi: tutti in
-//! classe "esecuzione", perché un server può fare qualunque cosa e le sue
-//! indicazioni ("questo strumento legge soltanto") sono sue, non dell'utente
-//! (vedi ADR 0009).
+//! Impostazioni. Due trasporti (ADR 0009):
+//!
+//! - **stdio**: l'app avvia il server come processo figlio e gli parla in
+//!   JSON-RPC sulle sue entrata e uscita standard, una riga per messaggio;
+//! - **HTTP** ("streamable HTTP"): il server gira altrove (su questo computer
+//!   o su internet) e riceve ogni messaggio con un `POST`; risponde in JSON o
+//!   con un flusso di eventi (SSE).
+//!
+//! Gli strumenti che il server dichiara vengono offerti al modello accanto a
+//! quelli dell'app, passando per gli stessi permessi: tutti in classe
+//! "esecuzione", perché un server può fare qualunque cosa e le sue indicazioni
+//! ("questo strumento legge soltanto") sono sue, non dell'utente. Se il server
+//! offre delle **risorse** (documenti, file, schemi…), il modello le vede con
+//! due strumenti in più: elencarle e leggerne una.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -20,6 +27,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
+use crate::chat::SseParser;
 use crate::error::{Error, Result};
 use crate::tools::{Risk, ToolDef, ToolOutput};
 
@@ -38,6 +46,25 @@ const STDERR_LINES: usize = 20;
 pub const PREFIX: &str = "mcp__";
 /// Lunghezza massima dei nomi degli strumenti accettata dai servizi.
 const NAME_MAX: usize = 64;
+/// Gli strumenti dell'app che danno accesso alle risorse di un server.
+const LIST_RESOURCES: &str = "list_resources";
+const READ_RESOURCE: &str = "read_resource";
+/// Risorse elencate al massimo, per non riempire il contesto del modello.
+const MAX_RESOURCES: usize = 200;
+/// Nel portachiavi le intestazioni HTTP stanno accanto alle variabili
+/// d'ambiente, con questo prefisso nel nome.
+const HEADER_KEY: &str = "header:";
+
+/// Come l'app parla con il server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// Un programma avviato dall'app.
+    #[default]
+    Stdio,
+    /// Un server già in esecuzione, raggiunto a un indirizzo.
+    Http,
+}
 
 /// Un server MCP configurato dall'utente.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -46,11 +73,17 @@ pub struct McpServerConfig {
     /// Vuoto per un server non ancora salvato.
     pub id: String,
     pub name: String,
-    /// Il programma da avviare, per esempio `npx` o `C:\strumenti\server.exe`.
+    pub transport: Transport,
+    /// Solo stdio: il programma da avviare, per esempio `npx` o `C:\strumenti\server.exe`.
     pub command: String,
     pub args: Vec<String>,
-    /// Variabili d'ambiente aggiuntive (`NOME`, `valore`).
+    /// Solo stdio: variabili d'ambiente aggiuntive (`NOME`, `valore`).
     pub env: Vec<(String, String)>,
+    /// Solo HTTP: l'indirizzo del server, per esempio `https://esempio.it/mcp`.
+    pub url: String,
+    /// Solo HTTP: intestazioni aggiunte a ogni richiesta, di solito
+    /// `Authorization`. I valori stanno nel portachiavi, come le variabili.
+    pub headers: Vec<(String, String)>,
 }
 
 impl McpServerConfig {
@@ -58,8 +91,13 @@ impl McpServerConfig {
         if self.name.trim().is_empty() {
             return Err(Error::msg("Dai un nome al server MCP."));
         }
-        if self.command.trim().is_empty() {
-            return Err(Error::msg("Indica il comando che avvia il server MCP."));
+        match self.transport {
+            Transport::Stdio => {
+                if self.command.trim().is_empty() {
+                    return Err(Error::msg("Indica il comando che avvia il server MCP."));
+                }
+            }
+            Transport::Http => check_url(self.url.trim())?,
         }
         if self
             .env
@@ -70,7 +108,62 @@ impl McpServerConfig {
                 "Ogni variabile d'ambiente ha bisogno di un nome valido.",
             ));
         }
+        let header_name = |name: &str| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
+        };
+        if self
+            .headers
+            .iter()
+            .any(|(name, _)| !header_name(name.trim()))
+        {
+            return Err(Error::msg(
+                "Ogni intestazione HTTP ha bisogno di un nome valido (lettere, cifre e trattini).",
+            ));
+        }
         Ok(())
+    }
+
+    /// Le coppie nome/valore da tenere nel portachiavi, con il nome usato là.
+    fn secrets_mut(&mut self) -> impl Iterator<Item = (String, &mut String)> {
+        let env = self
+            .env
+            .iter_mut()
+            .map(|(name, value)| (name.trim().to_string(), value));
+        let headers = self
+            .headers
+            .iter_mut()
+            .map(|(name, value)| (format!("{HEADER_KEY}{}", name.trim()), value));
+        env.chain(headers)
+    }
+
+    fn secret_names(&self) -> Vec<String> {
+        self.env
+            .iter()
+            .map(|(name, _)| name.trim().to_string())
+            .chain(
+                self.headers
+                    .iter()
+                    .map(|(name, _)| format!("{HEADER_KEY}{}", name.trim())),
+            )
+            .collect()
+    }
+}
+
+/// Un indirizzo accettabile per un server MCP: cifrato, oppure su questo
+/// computer (dove la cifratura non serve).
+fn check_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| Error::msg("Indica l'indirizzo completo del server MCP (https://…)."))?;
+    let local = matches!(
+        parsed.host_str(),
+        Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+    );
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if local => Ok(()),
+        _ => Err(Error::msg(
+            "L'indirizzo del server MCP deve iniziare con https:// (http:// solo per un server su questo computer).",
+        )),
     }
 }
 
@@ -82,29 +175,29 @@ pub trait EnvVault {
     fn delete(&self, server_id: &str, name: &str) -> Result<()>;
 }
 
-/// Toglie i valori delle variabili da `config` e li mette nella cassaforte;
-/// in archivio restano solo i nomi. `previous` è la configurazione salvata
-/// prima: le variabili che non ci sono più vengono tolte anche dalla cassaforte.
+/// Toglie i valori delle variabili e delle intestazioni da `config` e li
+/// mette nella cassaforte; in archivio restano solo i nomi. `previous` è la
+/// configurazione salvata prima: i valori che non ci sono più vengono tolti
+/// anche dalla cassaforte.
 pub fn seal_env(
     vault: &dyn EnvVault,
     config: &McpServerConfig,
     previous: Option<&McpServerConfig>,
 ) -> Result<McpServerConfig> {
     let mut sealed = config.clone();
-    for (name, value) in &mut sealed.env {
-        let name = name.trim();
+    for (name, value) in sealed.secrets_mut() {
         if value.is_empty() {
-            vault.delete(&config.id, name)?;
+            vault.delete(&config.id, &name)?;
         } else {
-            vault.set(&config.id, name, value)?;
+            vault.set(&config.id, &name, value)?;
         }
         value.clear();
     }
     if let Some(previous) = previous {
-        for (old, _) in &previous.env {
-            let old = old.trim();
-            if !config.env.iter().any(|(name, _)| name.trim() == old) {
-                vault.delete(&config.id, old)?;
+        let current = config.secret_names();
+        for old in previous.secret_names() {
+            if !current.contains(&old) {
+                vault.delete(&config.id, &old)?;
             }
         }
     }
@@ -115,18 +208,19 @@ pub fn seal_env(
 /// che non si trova resta vuoto: il server parte lo stesso e, se gli serviva,
 /// lo dice nei suoi errori.
 pub fn open_env(vault: &dyn EnvVault, config: &mut McpServerConfig) -> Result<()> {
-    for (name, value) in &mut config.env {
+    let id = config.id.clone();
+    for (name, value) in config.secrets_mut() {
         if value.is_empty() {
-            *value = vault.get(&config.id, name.trim())?.unwrap_or_default();
+            *value = vault.get(&id, &name)?.unwrap_or_default();
         }
     }
     Ok(())
 }
 
-/// Toglie dalla cassaforte tutte le variabili di un server eliminato.
+/// Toglie dalla cassaforte tutti i valori di un server eliminato.
 pub fn forget_env(vault: &dyn EnvVault, config: &McpServerConfig) -> Result<()> {
-    for (name, _) in &config.env {
-        vault.delete(&config.id, name.trim())?;
+    for name in config.secret_names() {
+        vault.delete(&config.id, &name)?;
     }
     Ok(())
 }
@@ -147,74 +241,71 @@ struct ServerTool {
     schema: Value,
 }
 
-/// Il collegamento con un server in esecuzione.
-pub struct McpClient {
-    name: String,
+/// Il processo di un server stdio.
+struct StdioLink {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
-    next_id: u64,
     /// Ultime righe scritte dal server sugli errori.
     stderr: Arc<Mutex<Vec<String>>>,
     #[cfg(windows)]
     _job: Option<win32job::Job>,
 }
 
+/// Il collegamento con un server HTTP.
+struct HttpLink {
+    http: reqwest::Client,
+    url: String,
+    headers: Vec<(String, String)>,
+    /// Assegnato dal server alla presentazione, se ne tiene traccia.
+    session: Option<String>,
+    /// La versione del protocollo concordata, da ripetere a ogni richiesta.
+    protocol: Option<String>,
+}
+
+enum Link {
+    Stdio(Box<StdioLink>),
+    Http(HttpLink),
+}
+
+/// Il collegamento con un server in esecuzione.
+pub struct McpClient {
+    name: String,
+    link: Link,
+    next_id: u64,
+    /// Il server offre delle risorse (`resources/list`, `resources/read`).
+    resources: bool,
+}
+
 impl McpClient {
-    /// Avvia il server e completa la presentazione (`initialize`).
+    /// Avvia il server (o lo raggiunge) e completa la presentazione (`initialize`).
     pub async fn start(config: &McpServerConfig, cwd: Option<&Path>) -> Result<Self> {
-        let program = resolve_program(config.command.trim());
-        let mut cmd = Command::new(&program);
-        cmd.args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for (name, value) in &config.env {
-            cmd.env(name.trim(), value);
-        }
-        if let Some(dir) = cwd.filter(|d| d.is_dir()) {
-            cmd.current_dir(dir);
-        }
-        #[cfg(windows)]
-        cmd.creation_flags(crate::local::runtime::CREATE_NO_WINDOW);
-
-        let mut child = cmd.spawn().map_err(|e| {
-            Error::msg(format!(
-                "Impossibile avviare il server MCP «{}» ({}): {e}",
-                config.name,
-                program.display()
-            ))
-        })?;
-        #[cfg(windows)]
-        let job = job_for(&child);
-
-        let stdin = child.stdin.take().expect("entrata collegata");
-        let stdout = BufReader::new(child.stdout.take().expect("uscita collegata")).lines();
-        let stderr = Arc::new(Mutex::new(Vec::new()));
-        let sink = stderr.clone();
-        let mut err_lines = BufReader::new(child.stderr.take().expect("errori collegati")).lines();
-        tokio::spawn(async move {
-            while let Ok(Some(line)) = err_lines.next_line().await {
-                let mut lines = sink.lock().unwrap_or_else(|e| e.into_inner());
-                lines.push(line);
-                if lines.len() > STDERR_LINES {
-                    lines.remove(0);
-                }
+        let link = match config.transport {
+            Transport::Stdio => Link::Stdio(Box::new(spawn(config, cwd)?)),
+            Transport::Http => {
+                check_url(config.url.trim())?;
+                Link::Http(HttpLink {
+                    http: reqwest::Client::builder()
+                        .connect_timeout(Duration::from_secs(20))
+                        .build()?,
+                    url: config.url.trim().to_string(),
+                    headers: config
+                        .headers
+                        .iter()
+                        .map(|(name, value)| (name.trim().to_string(), value.clone()))
+                        .collect(),
+                    session: None,
+                    protocol: None,
+                })
             }
-        });
-
+        };
         let mut client = Self {
             name: config.name.trim().to_string(),
-            child,
-            stdin,
-            stdout,
+            link,
             next_id: 1,
-            stderr,
-            #[cfg(windows)]
-            _job: job,
+            resources: false,
         };
-        client
+        let result = client
             .request(
                 "initialize",
                 json!({
@@ -225,6 +316,16 @@ impl McpClient {
                 START_TIMEOUT,
             )
             .await?;
+        client.resources = result.pointer("/capabilities/resources").is_some();
+        if let Link::Http(http) = &mut client.link {
+            http.protocol = Some(
+                result
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(PROTOCOL_VERSION)
+                    .to_string(),
+            );
+        }
         client
             .notify("notifications/initialized", json!({}))
             .await?;
@@ -235,32 +336,35 @@ impl McpClient {
         &self.name
     }
 
-    fn stderr_tail(&self) -> String {
-        self.stderr
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .join("\n")
-    }
-
     /// Spiega un guasto: il messaggio e, se c'è, ciò che il server ha scritto sugli errori.
     fn failure(&mut self, message: &str) -> Error {
-        let exited = matches!(self.child.try_wait(), Ok(Some(_)));
         let mut text = format!("Server MCP «{}»: {message}", self.name);
-        if exited {
-            text.push_str(" Il server si è chiuso.");
-        }
-        let tail = self.stderr_tail();
-        if !tail.trim().is_empty() {
-            text.push('\n');
-            text.push_str(tail.trim());
+        if let Link::Stdio(stdio) = &mut self.link {
+            if matches!(stdio.child.try_wait(), Ok(Some(_))) {
+                text.push_str(" Il server si è chiuso.");
+            }
+            let tail = stdio
+                .stderr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .join("\n");
+            if !tail.trim().is_empty() {
+                text.push('\n');
+                text.push_str(tail.trim());
+            }
         }
         Error::msg(text)
     }
 
-    async fn send(&mut self, message: &Value) -> Result<()> {
+    /// Solo stdio: scrive un messaggio sull'entrata del server.
+    async fn send_line(&mut self, message: &Value) -> Result<()> {
         let mut line = serde_json::to_string(message)?;
         line.push('\n');
-        if self.stdin.write_all(line.as_bytes()).await.is_err() || self.stdin.flush().await.is_err()
+        let Link::Stdio(stdio) = &mut self.link else {
+            return Ok(());
+        };
+        if stdio.stdin.write_all(line.as_bytes()).await.is_err()
+            || stdio.stdin.flush().await.is_err()
         {
             return Err(self.failure("non riceve più messaggi."));
         }
@@ -268,8 +372,18 @@ impl McpClient {
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
-        self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
-            .await
+        let message = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        match &self.link {
+            Link::Stdio(_) => self.send_line(&message).await,
+            Link::Http(_) => {
+                // Il server risponde 202 senza contenuto: basta che accetti.
+                let response = self.post(&message, LIST_TIMEOUT).await?;
+                if !response.status().is_success() {
+                    return Err(self.http_failure(response).await);
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Manda una richiesta e aspetta la sua risposta. Intanto risponde alle
@@ -277,12 +391,27 @@ impl McpClient {
     async fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
-            .await?;
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        match &self.link {
+            Link::Stdio(_) => self.request_stdio(id, method, &message, timeout).await,
+            Link::Http(_) => self.request_http(id, method, &message, timeout).await,
+        }
+    }
 
+    async fn request_stdio(
+        &mut self,
+        id: u64,
+        method: &str,
+        message: &Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        self.send_line(message).await?;
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let line = match tokio::time::timeout_at(deadline, self.stdout.next_line()).await {
+            let Link::Stdio(stdio) = &mut self.link else {
+                unreachable!("collegamento stdio");
+            };
+            let line = match tokio::time::timeout_at(deadline, stdio.stdout.next_line()).await {
                 Err(_) => {
                     return Err(self.failure(&format!(
                         "nessuna risposta a «{method}» entro {} secondi.",
@@ -296,30 +425,149 @@ impl McpClient {
             let Ok(message) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
-            let has_method = message.get("method").is_some();
-            match (message.get("id"), has_method) {
-                // Una richiesta del server: si risponde subito.
-                (Some(request_id), true) => {
-                    let reply = if message["method"] == "ping" {
-                        json!({ "jsonrpc": "2.0", "id": request_id, "result": {} })
-                    } else {
-                        json!({ "jsonrpc": "2.0", "id": request_id,
-                                "error": { "code": -32601, "message": "Metodo non supportato" } })
-                    };
-                    self.send(&reply).await?;
+            if let Some(reply) = reply_to_server(&message) {
+                self.send_line(&reply).await?;
+                continue;
+            }
+            if let Some(result) = self.response_for(id, &message) {
+                return result;
+            }
+        }
+    }
+
+    /// Se il messaggio è la risposta alla richiesta `id`, il suo risultato.
+    fn response_for(&self, id: u64, message: &Value) -> Option<Result<Value>> {
+        if message.get("method").is_some() || message.get("id").and_then(Value::as_u64) != Some(id)
+        {
+            return None;
+        }
+        if let Some(error) = message.get("error") {
+            let text = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("errore sconosciuto");
+            return Some(Err(Error::msg(format!(
+                "Server MCP «{}»: {text}",
+                self.name
+            ))));
+        }
+        Some(Ok(message.get("result").cloned().unwrap_or(Value::Null)))
+    }
+
+    /// Solo HTTP: manda un messaggio con un `POST`.
+    async fn post(&mut self, message: &Value, timeout: Duration) -> Result<reqwest::Response> {
+        let Link::Http(http) = &self.link else {
+            unreachable!("collegamento HTTP");
+        };
+        let mut request = http
+            .http
+            .post(&http.url)
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
+            .timeout(timeout)
+            .json(message);
+        for (name, value) in &http.headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        if let Some(session) = &http.session {
+            request = request.header("Mcp-Session-Id", session);
+        }
+        if let Some(protocol) = &http.protocol {
+            request = request.header("MCP-Protocol-Version", protocol);
+        }
+        match request.send().await {
+            Ok(response) => Ok(response),
+            Err(e) => Err(self.failure(&format!("non raggiungibile ({e})."))),
+        }
+    }
+
+    async fn http_failure(&mut self, response: reqwest::Response) -> Error {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let detail: String = body.trim().chars().take(300).collect();
+        let hint = match status.as_u16() {
+            401 | 403 => " Controlla le intestazioni (per esempio il token in Authorization).",
+            404 => " Controlla l'indirizzo.",
+            _ => "",
+        };
+        self.failure(&format!("ha risposto {status}.{hint} {detail}"))
+    }
+
+    async fn request_http(
+        &mut self,
+        id: u64,
+        method: &str,
+        message: &Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let mut response = self.post(message, timeout).await?;
+        if !response.status().is_success() {
+            return Err(self.http_failure(response).await);
+        }
+        if let Some(session) = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            && let Link::Http(http) = &mut self.link
+        {
+            http.session = Some(session.to_string());
+        }
+        let is_stream = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/event-stream"));
+        if !is_stream {
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|e| self.failure(&format!("risposta illeggibile ({e}).")))?;
+            // Una risposta sola, o un gruppo di messaggi.
+            let messages = match body {
+                Value::Array(items) => items,
+                other => vec![other],
+            };
+            for message in &messages {
+                if let Some(result) = self.response_for(id, message) {
+                    return result;
                 }
-                (Some(response_id), false) if response_id.as_u64() == Some(id) => {
-                    if let Some(error) = message.get("error") {
-                        let text = error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("errore sconosciuto");
-                        return Err(Error::msg(format!("Server MCP «{}»: {text}", self.name)));
-                    }
-                    return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+            }
+            return Err(self.failure(&format!("nessuna risposta a «{method}».")));
+        }
+
+        // Flusso di eventi: arrivano notifiche, richieste del server e, alla
+        // fine, la risposta.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut parser = SseParser::default();
+        loop {
+            let chunk = match tokio::time::timeout_at(deadline, response.chunk()).await {
+                Err(_) => {
+                    return Err(self.failure(&format!(
+                        "nessuna risposta a «{method}» entro {} secondi.",
+                        timeout.as_secs()
+                    )));
                 }
-                // Notifiche e risposte vecchie.
-                _ => {}
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => {
+                    return Err(self.failure(&format!(
+                        "ha chiuso il flusso senza rispondere a «{method}»."
+                    )));
+                }
+                Ok(Err(e)) => return Err(self.failure(&format!("collegamento interrotto ({e})."))),
+            };
+            for data in parser.push(&chunk) {
+                let Ok(message) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                if let Some(reply) = reply_to_server(&message) {
+                    let _ = self.post(&reply, LIST_TIMEOUT).await;
+                    continue;
+                }
+                if let Some(result) = self.response_for(id, &message) {
+                    return result;
+                }
             }
         }
     }
@@ -353,10 +601,7 @@ impl McpClient {
                     schema: object_schema(tool.get("inputSchema")),
                 });
             }
-            cursor = result
-                .get("nextCursor")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            cursor = next_cursor(&result);
             if cursor.is_none() {
                 break;
             }
@@ -364,9 +609,10 @@ impl McpClient {
         Ok(tools)
     }
 
-    /// Gli strumenti del server, per l'interfaccia.
+    /// Gli strumenti del server, per l'interfaccia; con le risorse, anche i
+    /// due strumenti dell'app che le leggono.
     pub async fn tool_infos(&mut self) -> Result<Vec<McpToolInfo>> {
-        Ok(self
+        let mut infos: Vec<McpToolInfo> = self
             .list_tools()
             .await?
             .into_iter()
@@ -374,7 +620,16 @@ impl McpClient {
                 name: t.name,
                 description: t.description,
             })
-            .collect())
+            .collect();
+        if self.resources {
+            for def in resource_tools() {
+                infos.push(McpToolInfo {
+                    name: def.name.into_owned(),
+                    description: def.description.into_owned(),
+                });
+            }
+        }
+        Ok(infos)
     }
 
     async fn call(&mut self, tool: &str, arguments: &Value) -> Result<ToolOutput> {
@@ -387,6 +642,182 @@ impl McpClient {
             .await?;
         Ok(tool_output(&result))
     }
+
+    /// Le risorse del server, una per riga: indirizzo, nome e descrizione.
+    async fn list_resources(&mut self) -> Result<ToolOutput> {
+        let mut lines = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let params = match &cursor {
+                Some(cursor) => json!({ "cursor": cursor }),
+                None => json!({}),
+            };
+            let result = self.request("resources/list", params, LIST_TIMEOUT).await?;
+            for resource in result
+                .get("resources")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let get = |key: &str| resource.get(key).and_then(Value::as_str).unwrap_or("");
+                let mut line = format!("- {}", get("uri"));
+                for (label, key) in [("", "name"), ("", "description"), ("tipo ", "mimeType")] {
+                    if !get(key).is_empty() {
+                        line.push_str(&format!(" — {label}{}", get(key)));
+                    }
+                }
+                lines.push(line);
+            }
+            cursor = next_cursor(&result);
+            if cursor.is_none() || lines.len() >= MAX_RESOURCES {
+                break;
+            }
+        }
+        if lines.is_empty() {
+            return Ok(ToolOutput::ok("Il server non offre risorse."));
+        }
+        let more = lines.len() > MAX_RESOURCES;
+        lines.truncate(MAX_RESOURCES);
+        let mut text = lines.join("\n");
+        if more {
+            text.push_str("\n… e altre non mostrate.");
+        }
+        Ok(ToolOutput::ok(text))
+    }
+
+    async fn read_resource(&mut self, uri: &str) -> Result<ToolOutput> {
+        let result = self
+            .request("resources/read", json!({ "uri": uri }), CALL_TIMEOUT)
+            .await?;
+        let mut parts = Vec::new();
+        for item in result
+            .get("contents")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match item.get("text").and_then(Value::as_str) {
+                Some(text) => parts.push(text.to_string()),
+                None => parts.push(format!(
+                    "[Contenuto binario di {} ({}): non mostrato al modello]",
+                    item.get("uri").and_then(Value::as_str).unwrap_or(uri),
+                    item.get("mimeType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tipo sconosciuto")
+                )),
+            }
+        }
+        let mut content = parts.join("\n\n");
+        if content.chars().count() > RESULT_CHARS {
+            content = content.chars().take(RESULT_CHARS).collect();
+            content.push_str("\n\n[… risorsa troncata …]");
+        }
+        if content.is_empty() {
+            content = "(risorsa vuota)".to_string();
+        }
+        Ok(ToolOutput::ok(content))
+    }
+}
+
+/// Avvia il processo di un server stdio.
+fn spawn(config: &McpServerConfig, cwd: Option<&Path>) -> Result<StdioLink> {
+    let program = resolve_program(config.command.trim());
+    let mut cmd = Command::new(&program);
+    cmd.args(&config.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (name, value) in &config.env {
+        cmd.env(name.trim(), value);
+    }
+    if let Some(dir) = cwd.filter(|d| d.is_dir()) {
+        cmd.current_dir(dir);
+    }
+    #[cfg(windows)]
+    cmd.creation_flags(crate::local::runtime::CREATE_NO_WINDOW);
+
+    let mut child = cmd.spawn().map_err(|e| {
+        Error::msg(format!(
+            "Impossibile avviare il server MCP «{}» ({}): {e}",
+            config.name,
+            program.display()
+        ))
+    })?;
+    #[cfg(windows)]
+    let job = job_for(&child);
+
+    let stdin = child.stdin.take().expect("entrata collegata");
+    let stdout = BufReader::new(child.stdout.take().expect("uscita collegata")).lines();
+    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let sink = stderr.clone();
+    let mut err_lines = BufReader::new(child.stderr.take().expect("errori collegati")).lines();
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = err_lines.next_line().await {
+            let mut lines = sink.lock().unwrap_or_else(|e| e.into_inner());
+            lines.push(line);
+            if lines.len() > STDERR_LINES {
+                lines.remove(0);
+            }
+        }
+    });
+    Ok(StdioLink {
+        child,
+        stdin,
+        stdout,
+        stderr,
+        #[cfg(windows)]
+        _job: job,
+    })
+}
+
+/// La risposta a una richiesta del server (`ping`); `None` se il messaggio
+/// non è una richiesta.
+fn reply_to_server(message: &Value) -> Option<Value> {
+    let request_id = message.get("id")?;
+    let method = message.get("method")?;
+    Some(if method == "ping" {
+        json!({ "jsonrpc": "2.0", "id": request_id, "result": {} })
+    } else {
+        json!({ "jsonrpc": "2.0", "id": request_id,
+                "error": { "code": -32601, "message": "Metodo non supportato" } })
+    })
+}
+
+fn next_cursor(result: &Value) -> Option<String> {
+    result
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+}
+
+/// I due strumenti con cui il modello usa le risorse di un server.
+fn resource_tools() -> [ToolDef; 2] {
+    [
+        ToolDef {
+            name: LIST_RESOURCES.into(),
+            description: "Elenca le risorse (documenti, file, dati) che il server mette a \
+                          disposizione, con il loro indirizzo."
+                .into(),
+            schema: json!({ "type": "object", "properties": {} }),
+            risk: Risk::Execute,
+        },
+        ToolDef {
+            name: READ_RESOURCE.into(),
+            description: "Legge una risorsa del server dato il suo indirizzo (uri), preso da \
+                          list_resources."
+                .into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "uri": { "type": "string", "description": "L'indirizzo della risorsa." }
+                },
+                "required": ["uri"]
+            }),
+            risk: Risk::Execute,
+        },
+    ]
 }
 
 /// Lo schema dei parametri, sempre come oggetto: i servizi non ne accettano altri.
@@ -513,12 +944,20 @@ fn exposed_name(server: &str, tool: &str) -> String {
     name
 }
 
+/// Che cosa fa uno strumento offerto al modello.
+enum Action {
+    /// Uno strumento del server, con il suo nome.
+    Tool(String),
+    ListResources,
+    ReadResource,
+}
+
 /// Uno strumento offerto al modello, con il server che lo esegue.
 struct Entry {
     exposed: String,
     client: usize,
     server: String,
-    tool: String,
+    action: Action,
 }
 
 /// I server MCP di una sessione, avviati insieme e chiusi insieme.
@@ -536,9 +975,30 @@ impl McpSet {
         let mut set = Self::default();
         for config in configs {
             let mut client = McpClient::start(config, cwd).await?;
-            let tools = client.list_tools().await?;
             let index = set.clients.len();
-            for tool in tools {
+            let mut offered: Vec<(ServerTool, Action)> = client
+                .list_tools()
+                .await?
+                .into_iter()
+                .map(|tool| {
+                    let action = Action::Tool(tool.name.clone());
+                    (tool, action)
+                })
+                .collect();
+            if client.resources {
+                let [list, read] = resource_tools();
+                for (def, action) in [(list, Action::ListResources), (read, Action::ReadResource)] {
+                    offered.push((
+                        ServerTool {
+                            name: def.name.into_owned(),
+                            description: def.description.into_owned(),
+                            schema: def.schema,
+                        },
+                        action,
+                    ));
+                }
+            }
+            for (tool, action) in offered {
                 let mut exposed = exposed_name(&config.name, &tool.name);
                 // Due strumenti con lo stesso nome ripulito: il secondo prende un numero.
                 let mut n = 2;
@@ -561,7 +1021,7 @@ impl McpSet {
                     exposed,
                     client: index,
                     server: client.name().to_string(),
-                    tool: tool.name,
+                    action,
                 });
             }
             set.clients.push(tokio::sync::Mutex::new(client));
@@ -580,10 +1040,15 @@ impl McpSet {
     /// Descrizione breve della chiamata, per la conferma e il registro.
     pub fn summary(&self, name: &str) -> Option<String> {
         let entry = self.entries.iter().find(|e| e.exposed == name)?;
-        Some(format!(
-            "Usare «{}» del server MCP «{}»",
-            entry.tool, entry.server
-        ))
+        Some(match &entry.action {
+            Action::Tool(tool) => format!("Usare «{tool}» del server MCP «{}»", entry.server),
+            Action::ListResources => {
+                format!("Elencare le risorse del server MCP «{}»", entry.server)
+            }
+            Action::ReadResource => {
+                format!("Leggere una risorsa del server MCP «{}»", entry.server)
+            }
+        })
     }
 
     pub async fn call(&self, name: &str, arguments: &Value) -> ToolOutput {
@@ -591,7 +1056,15 @@ impl McpSet {
             return ToolOutput::error(format!("Lo strumento \"{name}\" non è disponibile."));
         };
         let mut client = self.clients[entry.client].lock().await;
-        match client.call(&entry.tool, arguments).await {
+        let result = match &entry.action {
+            Action::Tool(tool) => client.call(tool, arguments).await,
+            Action::ListResources => client.list_resources().await,
+            Action::ReadResource => match arguments.get("uri").and_then(Value::as_str) {
+                Some(uri) if !uri.trim().is_empty() => client.read_resource(uri.trim()).await,
+                _ => Ok(ToolOutput::error("Manca il parametro \"uri\".")),
+            },
+        };
+        match result {
             Ok(output) => output,
             Err(error) => ToolOutput::error(error.to_string()),
         }
@@ -824,5 +1297,222 @@ while ($true) {
         };
         let error = probe(&config).await.err().unwrap().to_string();
         assert!(error.contains("Fantasma"), "{error}");
+    }
+
+    #[test]
+    fn le_intestazioni_http_stanno_nella_cassaforte() {
+        let vault = MemoryVault::default();
+        let config = McpServerConfig {
+            id: "web".into(),
+            name: "Remoto".into(),
+            transport: Transport::Http,
+            url: "https://esempio.it/mcp".into(),
+            headers: vec![("Authorization".into(), "Bearer segreto".into())],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        let sealed = seal_env(&vault, &config, None).unwrap();
+        assert!(!serde_json::to_string(&sealed).unwrap().contains("segreto"));
+        assert_eq!(
+            vault.get("web", "header:Authorization").unwrap().as_deref(),
+            Some("Bearer segreto")
+        );
+        let mut opened = sealed.clone();
+        open_env(&vault, &mut opened).unwrap();
+        assert_eq!(opened.headers, config.headers);
+        forget_env(&vault, &sealed).unwrap();
+        assert!(vault.0.lock().unwrap().is_empty());
+
+        // Indirizzi non cifrati solo su questo computer.
+        let with_url = |url: &str| McpServerConfig {
+            url: url.into(),
+            ..config.clone()
+        };
+        assert!(with_url("http://esempio.it/mcp").validate().is_err());
+        assert!(with_url("http://127.0.0.1:8080/mcp").validate().is_ok());
+        assert!(with_url("esempio.it").validate().is_err());
+        let bad_header = McpServerConfig {
+            headers: vec![("Nome: strano".into(), "x".into())],
+            ..config.clone()
+        };
+        assert!(bad_header.validate().is_err());
+    }
+
+    /// Un server MCP HTTP finto: risponde in JSON alla presentazione, con un
+    /// flusso di eventi a `tools/list` (con un `ping` in mezzo) e offre una
+    /// risorsa. Restituisce l'indirizzo e le intestazioni ricevute.
+    fn fake_http_server() -> (String, Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().to_string())
+                            })
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length || n == 0 {
+                            break (text[..end].to_string(), text[end + 4..].to_string());
+                        }
+                    }
+                    if n == 0 {
+                        break (text, String::new());
+                    }
+                };
+                log.lock().unwrap().push(head.to_lowercase());
+                let message: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let id = message.get("id").cloned().unwrap_or(Value::Null);
+                let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+                let json_reply = |result: Value| {
+                    let body = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: sessione-1\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let reply = match (method, message.get("result").is_some()) {
+                    // La risposta dell'app al ping del server.
+                    (_, true) => {
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    }
+                    ("initialize", _) => json_reply(json!({
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {"tools": {}, "resources": {}},
+                        "serverInfo": {"name": "finto", "version": "1"}
+                    })),
+                    ("notifications/initialized", _) => {
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    }
+                    ("tools/list", _) => {
+                        let ping = json!({"jsonrpc": "2.0", "id": "p1", "method": "ping"});
+                        let result = json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [
+                            {"name": "somma", "description": "Somma", "inputSchema": {"type": "object"}}
+                        ]}});
+                        let body = format!(
+                            "event: message\ndata: {ping}\n\nevent: message\ndata: {result}\n\n"
+                        );
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    ("tools/call", _) => {
+                        json_reply(json!({"content": [{"type": "text", "text": "3"}]}))
+                    }
+                    ("resources/list", _) => json_reply(json!({"resources": [
+                        {"uri": "doc://guida", "name": "Guida", "mimeType": "text/markdown"}
+                    ]})),
+                    ("resources/read", _) => json_reply(json!({"contents": [
+                        {"uri": "doc://guida", "text": "Contenuto della guida"}
+                    ]})),
+                    _ => json_reply(json!({})),
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (format!("http://127.0.0.1:{port}/mcp"), seen)
+    }
+
+    #[tokio::test]
+    async fn parla_con_un_server_http_e_ne_legge_le_risorse() {
+        let (url, seen) = fake_http_server();
+        let config = McpServerConfig {
+            name: "Remoto".into(),
+            transport: Transport::Http,
+            url,
+            headers: vec![("Authorization".into(), "Bearer abc".into())],
+            ..Default::default()
+        };
+        let tools = probe(&config).await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["somma", LIST_RESOURCES, READ_RESOURCE]);
+
+        let set = McpSet::start(std::slice::from_ref(&config), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            set.call("mcp__Remoto__somma", &json!({"a": 1})).await,
+            ToolOutput::ok("3")
+        );
+        let listed = set.call("mcp__Remoto__list_resources", &json!({})).await;
+        assert!(
+            listed
+                .content
+                .contains("doc://guida — Guida — tipo text/markdown"),
+            "{}",
+            listed.content
+        );
+        let read = set
+            .call("mcp__Remoto__read_resource", &json!({"uri": "doc://guida"}))
+            .await;
+        assert_eq!(read, ToolOutput::ok("Contenuto della guida"));
+        assert!(
+            set.call("mcp__Remoto__read_resource", &json!({}))
+                .await
+                .is_error
+        );
+        assert!(
+            set.summary("mcp__Remoto__read_resource")
+                .unwrap()
+                .contains("risorsa")
+        );
+
+        // Intestazione dell'utente, sessione e versione del protocollo.
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().all(|h| h.contains("authorization: bearer abc")));
+        assert!(
+            seen.iter()
+                .any(|h| h.contains("mcp-session-id: sessione-1"))
+        );
+        assert!(
+            seen.iter()
+                .any(|h| h.contains("mcp-protocol-version: 2025-06-18"))
+        );
+    }
+
+    #[tokio::test]
+    async fn un_server_http_che_rifiuta_spiega_perche() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope",
+                );
+            }
+        });
+        let config = McpServerConfig {
+            name: "Chiuso".into(),
+            transport: Transport::Http,
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            ..Default::default()
+        };
+        let error = probe(&config).await.err().unwrap().to_string();
+        assert!(
+            error.contains("401") && error.contains("Authorization"),
+            "{error}"
+        );
     }
 }

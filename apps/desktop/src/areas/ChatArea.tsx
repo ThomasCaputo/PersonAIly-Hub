@@ -476,9 +476,16 @@ export function ChatArea({
               ) : (
                 <button
                   className="conversation-title"
+                  aria-current={c.id === activeId ? "true" : undefined}
                   onClick={() => setActiveId(c.id)}
                   onDoubleClick={() => setRenaming({ id: c.id, title: c.title })}
-                  title={t("{title} — doppio clic per rinominare", { title: tc(c.title) })}
+                  onKeyDown={(e) => {
+                    if (e.key === "F2") {
+                      e.preventDefault();
+                      setRenaming({ id: c.id, title: c.title });
+                    }
+                  }}
+                  title={t("{title} — doppio clic o F2 per rinominare", { title: tc(c.title) })}
                 >
                   {tc(c.title)}
                 </button>
@@ -524,7 +531,7 @@ export function ChatArea({
           />
         )}
 
-        <div className="messages">
+        <div className="messages" role="log" aria-label={t("Messaggi")} aria-live="polite" aria-busy={generating}>
           {shown.length === 0 && (
             <div className="empty">
               {canSend ? (
@@ -543,14 +550,19 @@ export function ChatArea({
             m.role === "tool" ? (
               <ToolResult key={m.key} message={m.saved!} />
             ) : (
-              <div key={m.key} className={`message ${m.role}`}>
+              <div
+                key={m.key}
+                className={`message ${m.role}`}
+                role="article"
+                aria-label={m.role === "user" ? t("Tu") : (m.model ?? t("Modello"))}
+              >
                 <div className="message-role">{m.role === "user" ? t("Tu") : (m.model ?? t("Modello"))}</div>
                 {m.key === "streaming" && reasoning && !m.content && <div className="reasoning">{reasoning}</div>}
                 {m.saved && m.saved.attachments.length > 0 && (
                   <div className="attachment-list">
                     {m.saved.attachments.map((a) => (
                       <span key={a.name} className="attachment">
-                        {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                        <span aria-hidden="true">{a.kind === "image" ? "🖼" : "📄"}</span> {a.name}
                       </span>
                     ))}
                   </div>
@@ -621,7 +633,7 @@ export function ChatArea({
           {stats && !generating && <StatsLine stats={stats} cost={lastCost} />}
           {notice && !generating && <p className="notice">{tc(notice)}</p>}
           {exported && <p className="dim note">{t("Conversazione salvata in {path}", { path: exported })}</p>}
-          {error && <p className="error pre">{tc(error)}</p>}
+          {error && <p className="error pre" role="alert">{tc(error)}</p>}
           <div ref={bottomRef} />
         </div>
 
@@ -654,10 +666,11 @@ export function ChatArea({
             disabled={!canSend || generating}
             onClick={pickAttachments}
           >
-            📎
+            <span aria-hidden="true">📎</span>
           </button>
           <textarea
             value={draft}
+            aria-label={t("Messaggio")}
             placeholder={canSend ? t("Scrivi un messaggio…") : (blockedReason ?? "")}
             title={t("Invio per inviare, Maiusc+Invio per andare a capo")}
             disabled={!canSend}
@@ -809,7 +822,14 @@ function UsageBar({ contextUsed, contextTotal, cost }: UsageProps) {
           >
             {t("Contesto occupato: {used} / {total} token", { used: contextUsed, total: contextTotal })}
           </span>
-          <div className="meter-track">
+          <div
+            className="meter-track"
+            role="meter"
+            aria-label={t("Contesto occupato")}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(percent)}
+          >
             <div className={percent > 85 ? "meter-fill high" : "meter-fill"} style={{ width: `${percent}%` }} />
           </div>
         </>

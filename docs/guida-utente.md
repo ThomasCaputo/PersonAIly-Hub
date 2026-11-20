@@ -1,0 +1,202 @@
+# Guida per l'utente
+
+Questa guida spiega come usare PersonAIly Hub, dall'installazione al primo agente.
+La versione inglese è in [user-guide.md](user-guide.md).
+
+- [Installazione](#installazione)
+- [Primo avvio](#primo-avvio)
+- [Modelli locali](#modelli-locali)
+- [Modelli cloud](#modelli-cloud)
+- [Chat](#chat)
+- [Agenti e permessi](#agenti-e-permessi)
+- [Server MCP](#server-mcp)
+- [Documenti consultabili](#documenti-consultabili)
+- [VS Code](#vs-code)
+- [Backup, aggiornamenti e segnalazioni](#backup-aggiornamenti-e-segnalazioni)
+- [Tastiera e accessibilità](#tastiera-e-accessibilità)
+- [Problemi frequenti](#problemi-frequenti)
+
+## Installazione
+
+PersonAIly Hub 1.0 funziona su **Windows 10 e 11 a 64 bit**. Dalla pagina
+[Releases](https://github.com/ThomasCaputo/personaily-hub/releases) scarica:
+
+- `PersonAIly-Hub_<versione>_x64-setup.exe`, l'installatore (consigliato): non chiede i
+  permessi di amministratore, aggiunge l'app al menu Start e riceve gli aggiornamenti;
+- oppure `PersonAIly-Hub_<versione>_x64-portable.exe`, un solo file da avviare dove vuoi,
+  senza installazione (gli aggiornamenti si scaricano a mano).
+
+Se Windows SmartScreen avvisa che l'app è sconosciuta, scegli **Ulteriori informazioni →
+Esegui comunque**, oppure controlla prima il file con `SHA256SUMS.txt`.
+
+## Primo avvio
+
+Alla prima apertura una breve configurazione guidata:
+
+1. mostra la scheda video e la RAM del computer;
+2. ti fa scegliere tra **un modello sul tuo computer** (gratuito e privato) e **un servizio
+   cloud** (con la tua chiave API);
+3. per il modello locale installa la versione giusta di llama.cpp (CUDA con una GPU NVIDIA,
+   Vulkan con AMD e Intel) e propone un modello adatto alla memoria, da scaricare con un clic.
+
+Puoi saltarla e farla più tardi: `Ctrl+K` → **Configurazione guidata del primo avvio**.
+
+## Modelli locali
+
+Tutto si fa nella pagina **Modelli**.
+
+- **Motore:** llama.cpp, il programma che esegue i modelli. L'app lo scarica e lo
+  aggiorna; puoi tenere più varianti (CUDA, Vulkan, solo processore) e scegliere quale usare.
+- **Cartelle:** le cartelle in cui tieni i file `.gguf`. Quelli scaricati dall'app finiscono
+  in una di queste.
+- **Scarica un modello:** cerca su Hugging Face, scegli una quantizzazione (Q4_K_M è un buon
+  compromesso) e scarica. I download si possono interrompere e riprendere.
+- **Caricare un modello:** apri la sua scheda, scegli i parametri e premi **Carica**.
+
+**Dove sta il modello (collocazione).** Il modello e la sua memoria di lavoro (cache KV)
+stanno **o tutti nella VRAM** (veloce) **o tutti nella RAM** (più lento, ma la RAM di solito è
+di più). Prima di caricare l'app stima quanta memoria serve e ti avvisa se non basta. Per i
+modelli troppo grandi per la VRAM c'è la collocazione **ibrida**: scegli quanti layer mettere
+sulla GPU e il resto va in RAM.
+
+**Contesto.** È quanta conversazione il modello riesce a leggere. Più è lungo, più memoria
+serve. Sotto la chat una barra mostra quanto è pieno.
+
+**Immagini.** Alcuni modelli leggono le immagini grazie a un file `mmproj`: scaricalo insieme
+al modello e, al caricamento, spunta il componente visivo.
+
+**Scaricamento automatico.** In Modelli → Motore puoi far scaricare il modello dopo qualche
+minuto senza uso, per liberare la memoria.
+
+## Modelli cloud
+
+In **Modelli → Provider cloud** aggiungi un servizio: Anthropic, oppure uno compatibile con
+OpenAI (OpenAI, OpenRouter, Groq, Mistral, Google AI Studio…). Incolla la chiave API e
+premi **Aggiorna modelli**.
+
+- La chiave sta nel **Gestore credenziali di Windows**, mai in un file.
+- Con i modelli di cui si conosce il prezzo l'app stima il costo di ogni risposta. Con
+  Anthropic usa la memoria temporanea del servizio (prompt caching): le conversazioni lunghe
+  e gli agenti costano molto meno.
+- In **Impostazioni → Spesa cloud** puoi fissare un limite al mese e per conversazione.
+
+## Chat
+
+- Scegli il modello in alto; puoi cambiarlo a metà conversazione.
+- **Invio** manda il messaggio, **Maiusc+Invio** va a capo, **Interrompi** ferma la risposta.
+- **Allegati:** 📎 oppure trascina i file nella finestra (testo, PDF, immagini).
+- **Modifica** un tuo messaggio o **Rigenera** l'ultima risposta: la versione vecchia resta e
+  la ritrovi con le frecce ‹ ›.
+- **Strumenti** (sopra i messaggi): file delle cartelle concesse, ricerca web, documenti.
+  Il livello di permesso decide che cosa il modello può fare senza chiedere.
+- **Esporta** salva la conversazione in Markdown (o in JSON, con tutti i rami).
+- Il pannello a destra contiene i parametri (temperatura, top-p, contesto…) e il prompt di
+  sistema, salvati per ogni modello. I preset con nome si esportano e importano.
+- **Confronto:** la pagina omonima manda lo stesso messaggio a due modelli affiancati.
+
+## Agenti e permessi
+
+Un **agente** è un assistente che lavora da solo su un compito: legge e scrive i file delle
+sue cartelle, usa il terminale (PowerShell) e gli strumenti dei server MCP.
+
+1. In **Agenti → Agenti** creane uno: nome, modello, istruzioni, cartelle di lavoro,
+   strumenti e livello di permesso.
+2. In **Sessioni → Nuovo compito** scegli l'agente e scrivi il compito.
+3. Segui ogni passo: messaggi, strumenti usati, file toccati. Puoi mettere in **pausa**,
+   **fermare** o rispondere all'agente per farlo continuare.
+
+**Permessi.** Tre livelli:
+
+| Livello | Senza chiedere | Chiede conferma |
+|---|---|---|
+| Chiedi sempre | leggere | scrivere, modificare, comandi |
+| Consenti modifiche ai file | leggere, scrivere, modificare | comandi |
+| Consenti tutto | tutto | — |
+
+Quando l'agente chiede conferma vedi esattamente che cosa farebbe: **Consenti** (una volta),
+**Consenti sempre in questa sessione** o **Nega**. Fuori dalle cartelle concesse non si va,
+a nessun livello.
+
+**Punto di ripristino.** Prima di ogni sessione l'app fotografa le cartelle dell'agente (serve
+git installato): con **Annulla le modifiche** le riporti com'erano.
+
+**Limiti.** *Passi massimi* ferma l'agente dopo un certo numero di giri; *token massimi per
+passo* interrompe un passo troppo lungo (succede con i modelli locali piccoli) e fa riprovare
+l'agente in breve.
+
+**Deleghe.** Un agente può affidare parti del compito ad altri agenti scelti da te; ognuno
+lavora con le sue cartelle e i suoi permessi.
+
+## Server MCP
+
+I server [MCP](https://modelcontextprotocol.io) aggiungono strumenti agli agenti (GitHub,
+browser, database…). Si configurano in **Impostazioni → Server MCP**:
+
+- **Server noti:** un elenco di server diffusi da aggiungere con un clic (alcuni chiedono di
+  completare un percorso o un token);
+- **Programma su questo computer (stdio):** un comando come `npx -y @nome/server`;
+- **Server a un indirizzo (HTTP):** l'indirizzo `https://…` di un server remoto, con le
+  intestazioni che servono (di solito `Authorization: Bearer <token>`).
+
+Variabili d'ambiente e intestazioni stanno nel Gestore credenziali. **Prova** avvia il
+server e mostra i suoi strumenti. Poi, nell'editor dell'agente, spunta i server da usare. Se il
+server offre delle risorse (documenti, file), l'agente le può elencare e leggere. Gli strumenti
+MCP chiedono sempre conferma, salvo con «Consenti tutto».
+
+## Documenti consultabili
+
+In **Impostazioni → Documenti consultabili** scegli un modello di embedding (per esempio
+nomic-embed-text o multilingual-e5, in formato GGUF) e le cartelle da indicizzare (tra
+quelle concesse). Poi, in chat o negli agenti, accendi lo strumento **Documenti**: il modello
+cerca i brani più vicini alla domanda. Tutto resta sul tuo computer.
+
+## VS Code
+
+Installa `personaily-hub-vscode_<versione>.vsix` (in VS Code: **Estensioni → ⋯ → Installa da
+VSIX…**). L'estensione usa l'app, o da sola il nucleo senza finestra (`app-server`), se l'app è
+chiusa.
+
+- Pannello chat con le conversazioni dell'app e il file aperto come contesto.
+- `Ctrl+Alt+I` chiede una modifica alla selezione: arriva come diff da accettare o rifiutare.
+- Agenti da avviare e seguire, con le conferme come notifiche.
+- Completamento del codice in linea con un modello locale per il codice (per esempio
+  Qwen2.5-Coder), spento di base.
+
+Indirizzo e token dell'API locale sono in **Impostazioni → API locale**: servono anche ad
+altri programmi compatibili con OpenAI.
+
+## Backup, aggiornamenti e segnalazioni
+
+- **Impostazioni → Backup dei dati:** salva conversazioni, agenti, impostazioni e preset in un
+  `.zip`; **Ripristina da un backup** lo rimette al riavvio. Le chiavi API restano nel Gestore credenziali.
+- **Impostazioni → Aggiornamenti:** l'app controlla all'avvio se c'è una versione nuova, la
+  scarica, ne verifica la firma e la installa. Il controllo si può spegnere.
+- **Impostazioni → Segnalare un problema:** **Copia le informazioni diagnostiche** prepara un
+  testo da allegare a una segnalazione, senza chiavi, conversazioni né nome utente.
+- I dati stanno in `%APPDATA%\dev.personaily.hub`.
+
+## Tastiera e accessibilità
+
+- `Ctrl+K` apre la tavolozza dei comandi: pagine, nuova conversazione, esportazione, tema,
+  ricerca nelle conversazioni.
+- `Tab` all'apertura porta al collegamento **Vai al contenuto**.
+- Nella lista delle conversazioni `F2` rinomina quella selezionata.
+- Nelle richieste di conferma i pulsanti si raggiungono con `Tab`; `Esc` chiude tavolozza e
+  configurazione guidata.
+- I lettori di schermo annunciano la risposta del modello quando è completa, gli errori e le
+  richieste di permesso. Il tema chiaro e quello scuro rispettano i contrasti WCAG AA.
+
+## Problemi frequenti
+
+**Il modello non entra in memoria.** Riduci il contesto, scegli la cache KV `q8_0` (già
+predefinita), una quantizzazione più piccola o la collocazione in RAM / ibrida.
+
+**Il modello è lento.** Se è in RAM è normale; in VRAM, controlla l'avviso "sconfina nella
+RAM": vuol dire che la VRAM non basta e il driver sta usando la memoria di sistema.
+
+**Un agente locale si incastra.** Con modelli piccoli succede che ripeta lo stesso percorso
+per minuti: il limite di token per passo lo ferma. Aiuta anche dare all'agente una sola
+cartella e un compito preciso.
+
+**SmartScreen avvisa a ogni installazione.** Gli eseguibili non sono ancora firmati con un
+certificato Authenticode; la firma degli aggiornamenti invece è sempre controllata.

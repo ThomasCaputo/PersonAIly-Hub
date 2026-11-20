@@ -28,7 +28,15 @@ pub fn resolve(path: &str, folders: &[PathBuf]) -> Result<PathBuf> {
         ));
     };
 
-    let raw = Path::new(path.trim());
+    // `\src\a.txt` senza unità, come lo scrivono spesso i modelli, è
+    // relativo alla cartella di lavoro, non alla radice del disco.
+    let trimmed = path.trim();
+    let raw = Path::new(trimmed);
+    let raw = if raw.has_root() && !raw.is_absolute() {
+        Path::new(trimmed.trim_start_matches(['/', '\\']))
+    } else {
+        raw
+    };
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
@@ -60,6 +68,21 @@ pub fn resolve(path: &str, folders: &[PathBuf]) -> Result<PathBuf> {
     }
 }
 
+/// Percorso da mostrare al modello: relativo alla cartella di lavoro (la
+/// prima concessa) quando sta lì dentro, così il modello continua a usare
+/// percorsi brevi; assoluto altrimenti.
+pub fn shown(path: &Path, folders: &[PathBuf]) -> String {
+    let root = folders.first().and_then(|f| f.canonicalize().ok());
+    match root
+        .as_deref()
+        .and_then(|root| path.strip_prefix(root).ok())
+    {
+        Some(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+        Some(rel) => rel.display().to_string(),
+        None => display(path),
+    }
+}
+
 /// Percorso da mostrare: senza il prefisso `\\?\` dei percorsi risolti di Windows.
 pub fn display(path: &Path) -> String {
     let text = path.display().to_string();
@@ -87,7 +110,7 @@ pub fn list_folder(path: &str, folders: &[PathBuf]) -> Result<String> {
             .then(a.1.to_lowercase().cmp(&b.1.to_lowercase()))
     });
 
-    let mut out = format!("Contenuto di {}:\n", display(&dir));
+    let mut out = format!("Contenuto di {}:\n", shown(&dir, folders));
     if entries.is_empty() {
         out.push_str("(cartella vuota)\n");
     }
@@ -185,7 +208,7 @@ pub fn write_file(path: &str, content: &str, folders: &[PathBuf]) -> Result<Stri
     Ok(format!(
         "{} {} ({} caratteri).",
         if existed { "Sostituito" } else { "Creato" },
-        display(&file),
+        shown(&file, folders),
         content.chars().count()
     ))
 }
@@ -244,7 +267,7 @@ pub fn edit_file(
         )),
         1 => {
             write_atomic(&file, text.replacen(old_text, new_text, 1).as_bytes())?;
-            Ok(format!("Modificato {}.", display(&file)))
+            Ok(format!("Modificato {}.", shown(&file, folders)))
         }
         n => Err(Error::msg(format!(
             "old_text compare {n} volte nel file: aggiungi righe vicine per renderlo unico."
@@ -334,7 +357,20 @@ mod tests {
                 .starts_with("Sostituito")
         );
 
+        // I percorsi mostrati sono relativi; `\note` senza unità è relativo.
+        assert_eq!(created, r"Creato note\spesa.txt (11 caratteri).");
+        assert!(read_file(r"\note\spesa.txt", &folders).is_ok());
+        assert!(read_file("/note/spesa.txt", &folders).is_ok());
+        assert!(
+            list_folder("note", &folders)
+                .unwrap()
+                .starts_with("Contenuto di note:"),
+            "{}",
+            list_folder("note", &folders).unwrap()
+        );
+
         let listing = list_folder(".", &folders).unwrap();
+        assert!(listing.starts_with("Contenuto di .:"));
         assert!(listing.contains("[cartella] note"));
         assert!(listing.contains("doppio.txt (1 byte)"));
         assert!(!listing.contains(r"\\?\"));

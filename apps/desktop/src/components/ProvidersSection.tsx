@@ -179,7 +179,7 @@ export function ProvidersSection({ providers, onChange }: Props) {
         </div>
       )}
 
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
 
     </section>
   );

@@ -52,16 +52,23 @@ stored as GitHub secrets; the public half is `plugins.updater.pubkey` in
 `apps/desktop/src-tauri/tauri.conf.json`. Losing the private key means installed apps can no
 longer be updated automatically, so keep a copy somewhere safe.
 
+Authenticode signing (the publisher name Windows shows, so SmartScreen does not warn) is
+optional and done by `scripts/sign.ps1`: with SignPath (`SIGNPATH_API_TOKEN`,
+`SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`, also as GitHub
+secrets) or with a certificate installed on the machine (`WINDOWS_CERT_THUMBPRINT`).
+`release.ps1` signs `app-server.exe`, the app and the installer *before* the updater
+signature is computed; without those variables it builds unsigned and prints a warning.
+
 ## Repository layout
 
 ```
 apps/desktop/        Tauri app (React + TypeScript UI, Rust shell)
-crates/core/         Core: providers, local models, tools, agents, storage
+crates/core/         Core: providers, local models, tools, agents, storage (`Core` methods in src/ops/)
 crates/server/       Local API (also used by the app) and the headless app-server
 extensions/vscode/   VS Code extension: chat, editor context, changes as diffs, agents
 packages/api-client/ TypeScript types of the local API, generated from the Rust types
 docs/                Requirements, architecture, roadmap and decision records (Italian)
-scripts/             Release build
+scripts/             Release build and signing
 ```
 
 ## Translations

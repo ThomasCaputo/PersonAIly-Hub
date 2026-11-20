@@ -42,9 +42,9 @@ Libreria Rust senza interfaccia grafica. Moduli:
 | `models` | Libreria dei file GGUF: scansione delle cartelle scelte dall'utente |
 | `gguf` | Lettura dei metadati di un file GGUF (solo l'intestazione, non i pesi) |
 | `hub` | Ricerca e download di modelli GGUF da Hugging Face (file `.part`, ripresa, impronta) |
-| `named_presets` | Preset con nome: parametri di generazione e prompt di sistema, esportabili e importabili. I preset per modello (caricamento e generazione) li gestisce il nucleo in `lib.rs` |
+| `named_presets` | Preset con nome: parametri di generazione e prompt di sistema, esportabili e importabili. I preset per modello (caricamento e generazione) li gestisce il nucleo in `ops/library.rs` |
 | `tools` | Strumenti offerti ai modelli (file, ricerca web, lettura pagine, terminale) e permessi: decide se una chiamata è consentita, negata o va chiesta all'utente |
-| `mcp` | Client MCP: avvio dei server stdio e chiamata dei loro strumenti |
+| `mcp` | Client MCP: server stdio avviati dall'app o remoti via HTTP, loro strumenti e risorse |
 | `attachments` | Allegati a un messaggio: testo, PDF e immagini |
 | `chat` | Ciclo di una conversazione: messaggio → modello → eventuali strumenti → risposta |
 | `agents` | Definizioni degli agenti e loro sessioni; riusa il ciclo di `chat` senza attendere l'utente a ogni passo |
@@ -56,6 +56,22 @@ Libreria Rust senza interfaccia grafica. Moduli:
 | `export` | Esportazione di una conversazione in Markdown o JSON |
 | `backup` | Backup e ripristino dei dati in un file `.zip` ([ADR 0020](adr/0020-aggiornamenti-backup-registro.md)) |
 | `log` | Registro diagnostico `logs/core.log`, con rotazione, e testo per le segnalazioni |
+
+`lib.rs` contiene i tipi condivisi e `Core` con il suo costruttore; i metodi di `Core` stanno
+in `ops/`, un file per argomento ([ADR 0021](adr/0021-completamento-1-0-0.md)):
+
+| File in `ops/` | Metodi |
+|---|---|
+| `library` | Cartelle dei modelli, preset, preset con nome, download da Hugging Face |
+| `engine` | Varianti di llama.cpp, caricamento, stato della memoria, completamento in linea, manutenzione |
+| `settings` | Cartelle concesse, strumenti predefiniti, lingua, preferenze, sicurezza, spesa |
+| `conversation` | Conversazioni, invio e rinvio dei messaggi, rami, esportazione |
+| `rounds` | Il ciclo modello → strumenti → modello, conferme, registro delle azioni |
+| `sessions` | Agenti, sessioni, deleghe, punti di ripristino |
+| `mcp_servers` | Server MCP configurati |
+| `documents` | Documenti consultabili (RAG) |
+| `providers` | Provider cloud |
+| `diagnostics` | Backup, registri, informazioni diagnostiche |
 
 ### Server — `crates/server`
 

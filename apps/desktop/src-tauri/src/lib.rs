@@ -240,10 +240,9 @@ enum StreamEvent {
     },
 }
 
-/// Inoltra all'interfaccia gli eventi di una risposta in arrivo.
-fn stream_to(channel: Channel<StreamEvent>) -> impl FnMut(ChatEvent) {
-    move |event| {
-        let event = match event {
+impl From<ChatEvent> for StreamEvent {
+    fn from(event: ChatEvent) -> Self {
+        match event {
             ChatEvent::Text(text) => StreamEvent::Text { text },
             ChatEvent::Reasoning(text) => StreamEvent::Reasoning { text },
             ChatEvent::Saved => StreamEvent::Saved,
@@ -258,10 +257,16 @@ fn stream_to(channel: Channel<StreamEvent>) -> impl FnMut(ChatEvent) {
                 summary,
                 arguments,
             },
-        };
+        }
+    }
+}
+
+/// Inoltra all'interfaccia gli eventi di una risposta in arrivo.
+fn stream_to(channel: Channel<StreamEvent>) -> impl FnMut(ChatEvent) {
+    move |event| {
         // Se la finestra è stata chiusa non c'è più nessuno ad ascoltare: la
         // risposta continua e finisce comunque nell'archivio.
-        let _ = channel.send(event);
+        let _ = channel.send(StreamEvent::from(event));
     }
 }
 
@@ -777,6 +782,14 @@ fn runs_in_tray(lifecycle: State<'_, Arc<Lifecycle>>) -> bool {
 #[tauri::command]
 fn open_external(app: tauri::AppHandle, url: String) -> CmdResult<()> {
     use tauri_plugin_opener::OpenerExt;
+    let parsed = external_url(&url)?;
+    app.opener()
+        .open_url(parsed.as_str(), None::<&str>)
+        .map_err(text)
+}
+
+/// Un indirizzo che si può aprire nel browser: web o posta, nient'altro.
+fn external_url(url: &str) -> CmdResult<tauri::Url> {
     let parsed = tauri::Url::parse(url.trim()).map_err(|_| "Indirizzo non valido.".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https" | "mailto") {
         return Err(format!(
@@ -784,9 +797,7 @@ fn open_external(app: tauri::AppHandle, url: String) -> CmdResult<()> {
             parsed.scheme()
         ));
     }
-    app.opener()
-        .open_url(parsed.as_str(), None::<&str>)
-        .map_err(text)
+    Ok(parsed)
 }
 
 /// L'aggiornamento trovato dall'ultimo controllo, in attesa di installazione.
@@ -1022,14 +1033,19 @@ fn tray_menu(app: &AppHandle, core: &Core) -> tauri::Result<Menu<tauri::Wry>> {
         Some(lang) => lang == "en",
         None => !app_core::system_language_is_italian(),
     };
-    let (open, exit) = if english {
-        ("Open PersonAIly Hub", "Quit")
-    } else {
-        ("Apri PersonAIly Hub", "Esci")
-    };
+    let (open, exit) = tray_labels(english);
     let open = MenuItem::with_id(app, "open", open, true, None::<&str>)?;
     let exit = MenuItem::with_id(app, "quit", exit, true, None::<&str>)?;
     Menu::with_items(app, &[&open, &exit])
+}
+
+/// Le voci del menu dell'area di notifica, nella lingua dell'interfaccia.
+fn tray_labels(english: bool) -> (&'static str, &'static str) {
+    if english {
+        ("Open PersonAIly Hub", "Quit")
+    } else {
+        ("Apri PersonAIly Hub", "Esci")
+    }
 }
 
 /// L'icona nell'area di notifica: un clic riapre la finestra, il menu
@@ -1246,4 +1262,108 @@ pub fn run() {
             tauri::async_runtime::block_on(core.unload_model());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn si_aprono_solo_indirizzi_web_e_di_posta() {
+        assert!(external_url(" https://esempio.it/pagina ").is_ok());
+        assert!(external_url("http://esempio.it").is_ok());
+        assert!(external_url("mailto:qualcuno@esempio.it").is_ok());
+        for refused in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "ms-settings:privacy",
+            "C:\\Windows\\notepad.exe",
+            "non è un indirizzo",
+        ] {
+            assert!(external_url(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn la_finestra_mostra_solo_le_pagine_dell_app() {
+        let url = |u: &str| tauri::Url::parse(u).unwrap();
+        assert!(is_app_page(&url("tauri://localhost/index.html")));
+        assert!(is_app_page(&url("http://tauri.localhost/")));
+        assert!(is_app_page(&url("https://tauri.localhost/assets/a.js")));
+        assert!(!is_app_page(&url("https://esempio.it/")));
+        assert!(!is_app_page(&url("https://tauri.localhost.esempio.it/")));
+        assert!(!is_app_page(&url("file:///C:/Users/")));
+        // Il server di Vite solo durante lo sviluppo.
+        assert_eq!(
+            is_app_page(&url("http://localhost:1420/")),
+            cfg!(debug_assertions)
+        );
+    }
+
+    #[test]
+    fn gli_eventi_arrivano_all_interfaccia_nella_forma_attesa() {
+        let json = |event: ChatEvent| serde_json::to_value(StreamEvent::from(event)).unwrap();
+        assert_eq!(
+            json(ChatEvent::Text("ciao".into())),
+            serde_json::json!({"type": "text", "text": "ciao"})
+        );
+        assert_eq!(
+            json(ChatEvent::Reasoning("penso".into())),
+            serde_json::json!({"type": "reasoning", "text": "penso"})
+        );
+        assert_eq!(json(ChatEvent::Saved), serde_json::json!({"type": "saved"}));
+        assert_eq!(
+            json(ChatEvent::ToolRequest {
+                id: "c1:x".into(),
+                name: "write_file".into(),
+                summary: "Scrivere".into(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+            }),
+            serde_json::json!({"type": "toolRequest", "id": "c1:x", "name": "write_file",
+                               "summary": "Scrivere", "arguments": {"path": "a.txt"}})
+        );
+    }
+
+    #[test]
+    fn il_menu_dell_area_di_notifica_segue_la_lingua() {
+        assert_eq!(tray_labels(true), ("Open PersonAIly Hub", "Quit"));
+        assert_eq!(tray_labels(false), ("Apri PersonAIly Hub", "Esci"));
+    }
+
+    /// Ogni comando che l'interfaccia chiama (`invoke("nome")` in `api.ts`)
+    /// deve essere registrato qui: altrimenti fallisce solo quando l'utente
+    /// tocca il pulsante.
+    #[test]
+    fn i_comandi_dell_interfaccia_esistono() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("generate_handler![")
+            .expect("elenco dei comandi");
+        let end = start + source[start..].find(']').unwrap();
+        let registered: Vec<&str> = source[start + "generate_handler![".len()..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        let api = include_str!("../../src/api.ts");
+        let mut called = Vec::new();
+        for (i, _) in api.match_indices("invoke<") {
+            let rest = &api[i..];
+            let Some(open) = rest.find("(\"") else {
+                continue;
+            };
+            let name: String = rest[open + 2..].chars().take_while(|&c| c != '"').collect();
+            called.push(name);
+        }
+        assert!(
+            called.len() > 50,
+            "trovati solo {} comandi in api.ts",
+            called.len()
+        );
+        let missing: Vec<&String> = called
+            .iter()
+            .filter(|name| !registered.contains(&name.as_str()))
+            .collect();
+        assert!(missing.is_empty(), "comandi non registrati: {missing:?}");
+    }
 }

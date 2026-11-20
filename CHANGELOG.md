@@ -3,9 +3,22 @@
 All notable changes to PersonAIly Hub. Versions follow [Semantic Versioning](https://semver.org).
 The section of each version is also used as the release notes shown by the in-app updater.
 
-## [1.0.0] — not released yet
+## [1.0.0] — 2026-11-20
 
 ### Added
+- **Guided first start:** detects the GPU, installs the right llama.cpp build and suggests a
+  model that fits your memory, or connects a cloud provider.
+- **MCP over HTTP** ("streamable HTTP") for remote servers, with headers such as
+  `Authorization` stored in the Credential Manager; **MCP resources** the agents can list and
+  read; a list of **well-known MCP servers** to add with one click.
+- **Prompt caching with Anthropic**, with cache reads and writes counted in the cost estimate.
+- **Agents are sturdier with small local models:** short paths relative to the working folder,
+  and a per-step token limit after which the agent is asked to try again more briefly instead
+  of stopping.
+- **Accessibility:** skip link, screen-reader announcements for replies, errors and permission
+  requests, labels on every field, keyboard renaming (`F2`), reduced motion, checked contrast in
+  both themes.
+- **User guide** in English and Italian (`docs/user-guide.md`, `docs/guida-utente.md`).
 - **Automatic updates.** The app checks GitHub for a new version at startup (can be turned off in
   Settings → Updates), downloads it, verifies its signature and installs it. The portable exe
   points to the releases page instead.
@@ -27,13 +40,18 @@ The section of each version is also used as the release notes shown by the in-ap
   model after some idle minutes.
 
 ### Changed
+- 1.0 is for Windows only; Linux and macOS come later.
 - VRAM is read through the NVIDIA driver library instead of starting `nvidia-smi`.
+- Release builds can be signed with Authenticode (SignPath or a local certificate) once a
+  certificate is available.
 - Faster streaming of long Markdown replies; smaller interface (KaTeX fonts in woff2 only).
 
 ### Fixed
 - A lock file left by a crashed core no longer blocks the local API when Windows reuses its
   process id.
 - Error messages shown in Italian while the interface was in English.
+- A path like `\src\file.txt` written by a model pointed at the root of the drive and was
+  refused; it is now relative to the agent's working folder.
 
 ## [0.1.0] — 2026-11-14
 

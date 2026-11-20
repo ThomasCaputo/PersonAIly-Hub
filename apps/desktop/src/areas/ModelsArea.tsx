@@ -87,7 +87,7 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
         ))}
       </section>
 
-      {error && <p className="error">{tc(error)}</p>}
+      {error && <p className="error" role="alert">{tc(error)}</p>}
 
       <HubSection folders={folders} status={status} onDownloaded={rescan} />
 
@@ -187,7 +187,7 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
 
   return (
     <div className={isLoaded ? "card loaded" : "card"}>
-      <button className="card-head" onClick={onToggle}>
+      <button className="card-head" aria-expanded={open} onClick={onToggle}>
         <div>
           <div className="card-title">
             {model.name}
@@ -195,7 +195,9 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
           </div>
           <div className="dim">{model.error ? t("Non leggibile: {error}", { error: tc(model.error) }) : details}</div>
         </div>
-        <span className="dim">{open ? "▾" : "▸"}</span>
+        <span className="dim" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
       </button>
 
       {open && preset && (
@@ -330,7 +332,7 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
           </details>
 
           {check && <Estimate check={check} placement={preset.load.placement} />}
-          {error && <p className="error pre">{tc(error)}</p>}
+          {error && <p className="error pre" role="alert">{tc(error)}</p>}
 
           <div className="row">
             {isLoaded ? (

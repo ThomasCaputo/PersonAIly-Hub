@@ -61,6 +61,18 @@ impl CloudModel {
         let output = completion_tokens? as f64 * self.output_price?;
         Some((input + output) / 1_000_000.0)
     }
+
+    /// Come [`CloudModel::cost`], tenendo conto della cache del servizio: i
+    /// token scritti in cache costano 1,25 volte, quelli letti un decimo.
+    /// Alcuni modelli recenti leggono la cache a meno: la stima resta prudente.
+    pub fn cost_with_cache(&self, stats: &crate::chat::GenerationStats) -> Option<f64> {
+        let read = stats.cache_read_tokens.unwrap_or(0);
+        let write = stats.cache_write_tokens.unwrap_or(0);
+        let plain = stats.prompt_tokens?.saturating_sub(read + write);
+        let base = self.cost(Some(plain), stats.completion_tokens)?;
+        let price = self.input_price?;
+        Some(base + (write as f64 * 1.25 + read as f64 * 0.1) * price / 1_000_000.0)
+    }
 }
 
 /// Prezzo "per token" scritto come testo (formato di OpenRouter) → dollari
@@ -276,6 +288,15 @@ mod tests {
         assert!((model.cost(Some(2000), Some(1000)).unwrap() - 0.021).abs() < 1e-9);
         // Senza conteggio dei token non si inventa un costo.
         assert_eq!(model.cost(None, Some(1000)), None);
+        // 1000 letti dalla cache (0,1x) e 1000 scritti (1,25x): 0,00405 $ + 0,015 $.
+        let stats = crate::chat::GenerationStats {
+            prompt_tokens: Some(2000),
+            completion_tokens: Some(1000),
+            cache_read_tokens: Some(1000),
+            cache_write_tokens: Some(1000),
+            ..Default::default()
+        };
+        assert!((model.cost_with_cache(&stats).unwrap() - 0.01905).abs() < 1e-9);
     }
 
     #[test]

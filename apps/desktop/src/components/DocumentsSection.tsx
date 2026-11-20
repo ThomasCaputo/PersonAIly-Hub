@@ -143,7 +143,7 @@ export function DocumentsSection({ grantedFolders }: { grantedFolders: string[] 
           <div className="meter-fill" style={{ width: `${(status.doneFiles / status.totalFiles) * 100}%` }} />
         </div>
       )}
-      {status.error && <p className="error pre">{tc(status.error)}</p>}
+      {status.error && <p className="error pre" role="alert">{tc(status.error)}</p>}
       {status.skipped.length > 0 && (
         <p className="dim note">
           {t("File non leggibili, saltati: {list}", { list: status.skipped.slice(0, 5).join(", ") })}
@@ -177,7 +177,7 @@ export function DocumentsSection({ grantedFolders }: { grantedFolders: string[] 
           ))}
         </div>
       )}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </section>
   );
 }

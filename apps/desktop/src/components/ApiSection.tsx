@@ -65,7 +65,7 @@ export function ApiSection() {
         )}
       </p>
       {!info && <p className="dim">{t("Avvio in corso…")}</p>}
-      {info?.error && <p className="error pre">{t("L'API locale non è attiva: {error}", { error: tc(info.error) })}</p>}
+      {info?.error && <p className="error pre" role="alert">{t("L'API locale non è attiva: {error}", { error: tc(info.error) })}</p>}
       {info && !info.running && !info.error && <p className="dim">{t("Avvio in corso…")}</p>}
       {address && info?.token && (
         <div className="api-grid">
@@ -90,7 +90,7 @@ export function ApiSection() {
           </span>
         </div>
       )}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </section>
   );
 }

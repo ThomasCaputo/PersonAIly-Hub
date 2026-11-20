@@ -106,7 +106,8 @@ Fatto ([ADR 0008](adr/0008-agenti-e-terminale.md)):
 Rimandato (non blocca la Tappa 5):
 
 - [ ] Agenti con modelli cloud provati con una chiave vera (come in Tappa 2 e 3).
-- [ ] MCP provato con server pubblicati (npm, PyPI); trasporto HTTP e risorse MCP.
+- [ ] MCP provato con server pubblicati (npm, PyPI).
+- [x] Trasporto HTTP e risorse MCP ([ADR 0021](adr/0021-completamento-1-0-0.md)).
 
 **Fatto quando:** un agente porta a termine un compito in più passi su una cartella di
 progetto, e l'utente può seguirlo e fermarlo.
@@ -155,11 +156,12 @@ Rimandato (non blocca la Tappa 6):
 - [x] Tema chiaro e scuro (GE-6): Impostazioni → Aspetto, di base come il sistema.
 - [x] Aggiornamento automatico (GE-7): controllo all'avvio, download firmato e installazione
       ([ADR 0020](adr/0020-aggiornamenti-backup-registro.md)).
-- [ ] Firma degli eseguibili (Authenticode), per togliere l'avviso di SmartScreen.
+- [ ] Firma degli eseguibili (Authenticode), per togliere l'avviso di SmartScreen: script
+      pronti, manca il certificato ([ADR 0021](adr/0021-completamento-1-0-0.md)).
 - [x] Lingue (GE-5): italiano e inglese nell'app, scelta in Impostazioni → Lingua
       ([ADR 0012](adr/0012-lingue-interfaccia.md)). L'estensione VS Code segue la lingua di
       VS Code; i modelli rispondono nella lingua dell'utente (o in quella scelta/di sistema).
-- [ ] Guida per l'utente.
+- [x] Guida per l'utente: [guida-utente.md](guida-utente.md), [user-guide.md](user-guide.md).
 - [x] Nome definitivo (**PersonAIly Hub**) e licenza (**Apache-2.0**).
 - [x] Prima versione pubblica per Windows (0.1.0).
 
@@ -191,7 +193,7 @@ Rimandato:
 - [x] Estensione VS Code in inglese (testi, comandi e impostazioni).
 - [x] Messaggi d'errore rari del nucleo in inglese, nell'app e nell'estensione (stesso
       dizionario `core-en.ts`). Restano in italiano i testi letti solo dai modelli.
-- [ ] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
+- [x] `cargo audit` e `npm audit` nei controlli automatici su GitHub (20-11-2026).
 - [ ] Prova completa del clic su un collegamento dentro la risposta di un modello.
 
 Richieste del 16-11-2026:
@@ -256,21 +258,21 @@ Indispensabile:
 - [x] Prove dell'interfaccia (vitest), con il controllo che le traduzioni del nucleo
       corrispondano ancora ai testi Rust.
 - [x] `CHANGELOG.md` e `scripts/set-version.mjs`.
-- [ ] Chiave di firma degli aggiornamenti: generarla e salvarla nei segreti di GitHub.
-- [ ] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
-- [ ] Firma Authenticode degli eseguibili.
-- [ ] Prove dal vivo ancora mancanti (vedi le voci "Da provare" e "Rimandato" qui sopra).
+- [x] Chiave di firma degli aggiornamenti, salvata nei segreti di GitHub.
+- [x] `cargo audit` e `npm audit` nei controlli automatici su GitHub.
+
+- [x] Primo avvio guidato, guida per l'utente, percorsi relativi e limite di token per
+      passo negli agenti, prompt caching, MCP via HTTP con risorse e catalogo,
+      accessibilità, prove dell'interfaccia e del guscio Tauri, divisione di `lib.rs`
+      ([ADR 0021](adr/0021-completamento-1-0-0.md)).
+
+Ciò che resta (certificato Authenticode, prove dal vivo, tag) è in
+[piano-1.0.0.md](piano-1.0.0.md).
 
 ## Dopo
 
 Linux e macOS (GE-2), Gemini (CL-3).
 
-Idee ancora da valutare:
-
-- **MCP via HTTP/SSE** e risorse MCP (già rimandati in Tappa 4), più un piccolo catalogo
-  di server noti.
-- **Percorsi relativi per gli strumenti sui file:** con percorsi molto lunghi Qwen2.5 7B
-  si incastra scrivendoli (misurato il 20-11: minuti di generazione senza risultato).
-  Accettare percorsi relativi alla prima cartella concessa e un limite di token per passo
-  renderebbe gli agenti più robusti.
+Idee ancora da valutare: OAuth per i server MCP remoti, prompt MCP, più modelli locali
+caricati insieme.
 

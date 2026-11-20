@@ -273,7 +273,21 @@ assistantMessage: Message | null, stats: GenerationStats, cancelled: boolean,
  */
 notice: string | null, };
 
-export type GenerationStats = { promptTokens: number | null, completionTokens: number | null, tokensPerSecond: number | null, };
+export type GenerationStats = { 
+/**
+ * Tutti i token letti, compresi quelli serviti dalla cache del servizio.
+ */
+promptTokens: number | null, completionTokens: number | null, tokensPerSecond: number | null, 
+/**
+ * Dei token letti, quanti sono arrivati dalla cache del servizio
+ * (costano circa un decimo). Solo con Anthropic.
+ */
+cacheReadTokens: number | null, 
+/**
+ * Dei token letti, quanti sono stati scritti nella cache (costano un
+ * quarto in più). Solo con Anthropic.
+ */
+cacheWriteTokens: number | null, };
 
 export type AnswerBody = { id: string, approval: Approval, };
 
@@ -343,6 +357,10 @@ mcpServers: Array<string>,
  * Passi massimi prima di fermarsi e aspettare l'utente.
  */
 maxSteps: number, 
+/**
+ * Token massimi per passo (vedi [`DEFAULT_MAX_STEP_TOKENS`]).
+ */
+maxStepTokens: number, 
 /**
  * Prima di ogni sessione fotografa le cartelle, per poter annullare
  * tutto ciò che l'agente ha cambiato (vedi [`crate::snapshots`]).

@@ -22,6 +22,12 @@ use crate::tools::{Risk, ToolDef, ToolSettings};
 pub const DEFAULT_MAX_STEPS: u32 = 50;
 /// Nessun agente può fare più passi di così senza che l'utente risponda.
 pub const MAX_STEPS_LIMIT: u32 = 500;
+/// Token che il modello può scrivere in un passo, se il preset non ne
+/// indica meno: un modello che si incastra (ripete lo stesso percorso per
+/// minuti) viene fermato e invitato a riprovare in breve.
+pub const DEFAULT_MAX_STEP_TOKENS: u32 = 8192;
+/// Limiti accettati per i token di un passo.
+pub const STEP_TOKENS_RANGE: (u32, u32) = (256, 131_072);
 
 /// Lo strumento con cui un agente affida un compito a un altro (AG-8).
 pub const DELEGATE_TOOL: &str = "delegate_task";
@@ -91,6 +97,8 @@ pub struct Agent {
     pub mcp_servers: Vec<String>,
     /// Passi massimi prima di fermarsi e aspettare l'utente.
     pub max_steps: u32,
+    /// Token massimi per passo (vedi [`DEFAULT_MAX_STEP_TOKENS`]).
+    pub max_step_tokens: u32,
     /// Prima di ogni sessione fotografa le cartelle, per poter annullare
     /// tutto ciò che l'agente ha cambiato (vedi [`crate::snapshots`]).
     pub restore_points: bool,
@@ -115,6 +123,7 @@ impl Default for Agent {
             },
             mcp_servers: Vec::new(),
             max_steps: DEFAULT_MAX_STEPS,
+            max_step_tokens: DEFAULT_MAX_STEP_TOKENS,
             restore_points: true,
             delegates: Vec::new(),
         }
@@ -134,6 +143,9 @@ impl Agent {
         self.delegates.dedup();
         self.delegates.retain(|&id| id != self.id);
         self.max_steps = self.max_steps.clamp(1, MAX_STEPS_LIMIT);
+        self.max_step_tokens = self
+            .max_step_tokens
+            .clamp(STEP_TOKENS_RANGE.0, STEP_TOKENS_RANGE.1);
         self
     }
 }

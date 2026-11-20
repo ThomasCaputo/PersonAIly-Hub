@@ -107,5 +107,7 @@ conversazione e il contesto occupato, che quindi sopravvivono al riavvio.
   rivedere quando cambia la versione dell'API.
 - La tabella dei prezzi di Anthropic va aggiornata a mano quando escono nuovi modelli o
   cambiano i listini; un modello che non vi compare resta senza stima.
-- La memoria temporanea dei prompt del servizio (prompt caching), che riduce i costi
-  nelle conversazioni lunghe, non è ancora usata.
+- ~~La memoria temporanea dei prompt del servizio (prompt caching), che riduce i costi
+  nelle conversazioni lunghe, non è ancora usata.~~ Usata dalla 1.0.0 con Anthropic
+  ([ADR 0021](0021-completamento-1-0-0.md)); i servizi compatibili OpenAI che la offrono la
+  applicano da soli.

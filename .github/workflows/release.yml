@@ -13,6 +13,13 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    # Authenticode with SignPath, only once the project has these secrets
+    # (see scripts/sign.ps1). Without them the build continues unsigned.
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_POLICY_SLUG: ${{ secrets.SIGNPATH_POLICY_SLUG }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +37,11 @@ jobs:
         run: |
           $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           if ("v$version" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} != app version $version" }
+
+      - name: Install the SignPath module
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: Install-Module -Name SignPath -Force -Scope CurrentUser
 
       - name: Build installer and portable exe
         shell: pwsh

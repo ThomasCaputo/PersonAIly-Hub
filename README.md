@@ -14,7 +14,7 @@ GGUF models running on your own PC or the cloud providers you already use.
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 ![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
 
-[Download](#download) · [Features](#features) · [Getting started](#getting-started) · [Privacy & security](#privacy--security) · [Contributing](CONTRIBUTING.md)
+[Download](#download) · [Features](#features) · [Getting started](#getting-started) · [User guide](docs/user-guide.md) · [Privacy & security](#privacy--security) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -44,6 +44,8 @@ chat, the same agents and the same tools whichever model you pick.
   Google AI Studio, …) with your own API key.
 - Keys are stored in the Windows Credential Manager, never in plain files.
 - Optional spending limits, per month and per conversation.
+- Prompt caching with Anthropic: long conversations and agents re-read the cached history at a
+  fraction of the price.
 
 **Chat**
 - Streaming answers you can stop, Markdown with code highlighting and math formulas.
@@ -64,8 +66,10 @@ chat, the same agents and the same tools whichever model you pick.
 - Pause, resume or stop them; run several at once.
 - Undo everything an agent changed with one click (a snapshot is taken before each session).
 - Agents can hand parts of a task over to other agents.
-- Terminal commands and external tools through [MCP](https://modelcontextprotocol.io),
-  always behind your permission rules.
+- Terminal commands and external tools through [MCP](https://modelcontextprotocol.io):
+  local servers (stdio) or remote ones over HTTP, their tools and resources, and a list of
+  well-known servers to add with one click. Always behind your permission rules.
+- Per-step token limit: a small local model that gets stuck is stopped and asked to try again.
 
 **Integrations**
 - A local **OpenAI-compatible API**, so existing tools can use your models.
@@ -77,7 +81,7 @@ chat, the same agents and the same tools whichever model you pick.
   working agents and the VS Code extension carry on, while the interface frees its memory.
 
 The interface (and the VS Code extension) is available in **English** and **Italian**, with
-a light and a dark theme.
+a light and a dark theme, and works with the keyboard and screen readers.
 
 ## Download
 
@@ -97,6 +101,8 @@ Get the latest version from the [Releases page](https://github.com/ThomasCaputo/
 
 ### Requirements
 
+PersonAIly Hub 1.0 is **Windows only**. Linux and macOS are planned for a later version.
+
 - Windows 10 or 11, 64-bit, with [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)
   (already included in Windows 11).
 - For local models: enough RAM or VRAM for the model you choose. An NVIDIA GPU (CUDA)
@@ -104,12 +110,19 @@ Get the latest version from the [Releases page](https://github.com/ThomasCaputo/
 
 ## Getting started
 
+The first time you open the app, a guided setup detects your GPU, installs the right build of
+llama.cpp and suggests a model that fits your memory, or connects a cloud provider. To do it by
+hand instead:
+
 1. **Local model:** on the **Models** page, install llama.cpp under **Engine**, then get a
    model from **Download a model** (or add a folder with your `.gguf` files under
    **Folders**) and load it.
 2. **Cloud model:** on the **Models** page, add a provider under **Cloud providers** and
    paste your API key.
 3. Start a **chat**, or create an **agent** and give it a folder and a task.
+
+The [user guide](docs/user-guide.md) ([in Italian](docs/guida-utente.md)) covers everything
+else: placement and memory, agents and permissions, MCP servers, VS Code, backups.
 
 ## Privacy & security
 
@@ -133,8 +146,10 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Status
 
-PersonAIly Hub is at its first public version (**0.1**). Windows is the main platform;
-Linux and macOS are planned. Upcoming work is tracked in the [roadmap](docs/roadmap.md).
+PersonAIly Hub is at version **1.0**, for Windows. Linux and macOS, Gemini through its own API
+and several local models loaded at once are planned next. What changed is in the
+[changelog](CHANGELOG.md); upcoming work is tracked in the [roadmap](docs/roadmap.md)
+(in Italian).
 
 ## Contributing
 

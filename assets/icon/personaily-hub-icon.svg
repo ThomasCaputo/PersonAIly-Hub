@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- PersonAIly Hub: "PH" con "AI" sotto la pancia della P, colori nordici
+       (verde scuro dei pini, azzurro e bianco del ghiaccio). Sorgente di tutte le icone:
+       npm run tauri icon ../../assets/icon/personaily-hub-icon.svg -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d5444"/>
+      <stop offset="1" stop-color="#0b2a22"/>
+    </linearGradient>
+    <radialGradient id="frost" cx="0.5" cy="0.05" r="0.75">
+      <stop offset="0" stop-color="#bfe6f5" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#bfe6f5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ice" gradientUnits="userSpaceOnUse" x1="0" y1="240" x2="0" y2="800">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d6eef7"/>
+    </linearGradient>
+    <linearGradient id="glacier" gradientUnits="userSpaceOnUse" x1="0" y1="240" x2="0" y2="800">
+      <stop offset="0" stop-color="#a9e2f7"/>
+      <stop offset="1" stop-color="#5fb8dd"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="48" y="48" width="928" height="928" rx="208"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)"/>
+    <rect x="48" y="48" width="928" height="928" fill="url(#frost)"/>
+    <!-- fila di pini sul fondo -->
+    <g fill="#082019" opacity="0.9">
+      <path d="M70 766 L107 843 L33 843 Z M70 814 L119 890 L21 890 Z M70 861 L131 938 L9 938 Z M60 936 h20 v40 h-20 Z M140 686 L195 799 L85 799 Z M140 756 L213 869 L67 869 Z M140 826 L230 939 L50 939 Z M130 936 h20 v40 h-20 Z M215 746 L257 832 L173 832 Z M215 799 L270 885 L160 885 Z M215 852 L283 938 L147 938 Z M205 936 h20 v40 h-20 Z M300 656 L362 782 L238 782 Z M300 734 L381 860 L219 860 Z M300 813 L401 939 L199 939 Z M290 936 h20 v40 h-20 Z M385 736 L429 826 L341 826 Z M385 792 L443 882 L327 882 Z M385 848 L457 938 L313 938 Z M375 936 h20 v40 h-20 Z M470 696 L523 804 L417 804 Z M470 763 L540 871 L400 871 Z M470 830 L556 938 L384 938 Z M460 936 h20 v40 h-20 Z M555 756 L595 837 L515 837 Z M555 806 L607 887 L503 887 Z M555 857 L620 938 L490 938 Z M545 936 h20 v40 h-20 Z M630 676 L687 793 L573 793 Z M630 749 L705 866 L555 866 Z M630 822 L724 939 L536 939 Z M620 936 h20 v40 h-20 Z M715 736 L759 826 L671 826 Z M715 792 L773 882 L657 882 Z M715 848 L787 938 L643 938 Z M705 936 h20 v40 h-20 Z M800 646 L864 777 L736 777 Z M800 727 L884 858 L716 858 Z M800 808 L904 939 L696 939 Z M790 936 h20 v40 h-20 Z M880 726 L926 821 L834 821 Z M880 785 L941 879 L819 879 Z M880 844 L956 938 L804 938 Z M870 936 h20 v40 h-20 Z M955 686 L1010 799 L900 799 Z M955 756 L1028 869 L883 869 Z M955 826 L1045 939 L865 939 Z M945 936 h20 v40 h-20 Z"/>
+      <rect x="48" y="930" width="928" height="46"/>
+    </g>
+  </g>
+
+  <!-- P (bianco ghiaccio) -->
+  <g fill="none" stroke="url(#ice)" stroke-width="88" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M250 780 V250 H340 A125 125 0 0 1 340 500 H250"/>
+  </g>
+  <!-- H (azzurro ghiaccio) -->
+  <g fill="none" stroke="url(#glacier)" stroke-width="88" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M640 250 V780 M800 250 V780 M640 515 H800"/>
+  </g>
+  <!-- AI piccolo sotto la pancia della P -->
+  <g fill="none" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M345 780 L395 630 L445 780 M362 728 H428" stroke="url(#ice)"/>
+    <path d="M512 630 V780" stroke="url(#glacier)"/>
+  </g>
+</svg>

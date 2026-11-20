@@ -1697,6 +1697,114 @@ input[type="range"]:focus {
   padding-left: 20px;
 }
 
+/* ── Primo avvio guidato ── */
+.welcome-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.welcome {
+  width: min(720px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 28px 32px;
+}
+
+.welcome h1:focus {
+  outline: none;
+}
+
+.welcome-hw {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 12px 0 20px;
+}
+
+.welcome-hw dt {
+  color: var(--text-dim);
+}
+
+.welcome-hw dd {
+  margin: 0;
+}
+
+.welcome-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.welcome .choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  text-align: left;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.welcome .choice:hover,
+.welcome .choice:focus-visible {
+  border-color: var(--md-primary);
+}
+
+.welcome-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.welcome-steps h2 {
+  font-size: 1rem;
+  margin: 18px 0 6px;
+}
+
+.welcome-tips {
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.welcome-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.welcome-foot {
+  margin-top: 20px;
+  text-align: right;
+}
+
+.mcp-catalog {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+fieldset.field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+fieldset.field legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
 /* ── API locale ── */
 .api-grid {
   display: grid;
@@ -1905,4 +2013,46 @@ details > summary {
 .rag-hit-text {
   white-space: pre-wrap;
   font-size: 13px;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.welcome .label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+/* ── Accessibilità ── */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 100;
+  padding: 8px 14px;
+  border-radius: var(--md-shape-sm);
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+.content:focus {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

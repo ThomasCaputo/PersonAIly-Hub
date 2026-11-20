@@ -98,7 +98,7 @@ export function DataSection() {
       </section>
 
       {message && <p className="dim note pre">{message}</p>}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </>
   );
 }

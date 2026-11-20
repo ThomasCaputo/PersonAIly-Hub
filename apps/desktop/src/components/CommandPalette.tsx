@@ -93,6 +93,7 @@ export function CommandPalette({ commands, onOpenConversation, onClose }: Props)
         <input
           ref={inputRef}
           className="palette-input"
+          aria-label={t("Cerca un comando o una conversazione")}
           placeholder={t("Cerca un comando o una conversazione…")}
           value={filter}
           role="combobox"

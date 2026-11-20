@@ -26,3 +26,4 @@ ADR che sostituisce il precedente.
 | [0018](0018-deleghe-tra-agenti.md) | Agenti che delegano ad altri agenti in sessioni figlie (AG-8) | Accettata e provata con un modello locale |
 | [0019](0019-rami-e-completamento-in-linea.md) | Rami della conversazione; completamento del codice in linea in VS Code (VS-6) | Accettata; completamento in linea da provare con un modello per il codice |
 | [0020](0020-aggiornamenti-backup-registro.md) | Aggiornamento automatico firmato, backup dei dati, registro diagnostico | Accettata; aggiornamento da provare con la prima release firmata |
+| [0021](0021-completamento-1-0-0.md) | Ultimi lavori per la 1.0.0: agenti con percorsi relativi, prompt caching, MCP via HTTP e risorse, primo avvio, accessibilità, divisione del nucleo, firma Authenticode | Accettata; da provare dal vivo |

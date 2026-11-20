@@ -182,7 +182,7 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
         </>
       )}
 
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </section>
   );
 }

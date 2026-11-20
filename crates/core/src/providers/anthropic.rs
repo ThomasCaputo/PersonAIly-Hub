@@ -166,8 +166,21 @@ fn request_body(
         // delle risposte in corso non si rimanda.
         "messages": api_messages(messages, extras),
     });
+    // Prompt caching: il servizio rilegge strumenti, prompt di sistema e
+    // cronologia a ogni passo; dalla cache costano circa un decimo. Un punto
+    // fisso alla fine del prompt di sistema (copre anche gli strumenti, che
+    // vengono prima) e, con le comodità, quello automatico che segue la
+    // conversazione mentre cresce. Strumenti e prompt sono costruiti sempre
+    // nello stesso ordine: altrimenti la cache non servirebbe.
     if !system_prompt.trim().is_empty() {
-        body["system"] = json!(system_prompt);
+        body["system"] = json!([{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": { "type": "ephemeral" },
+        }]);
+    }
+    if extras {
+        body["cache_control"] = json!({ "type": "ephemeral" });
     }
     if !sampling.stop.is_empty() {
         body["stop_sequences"] = json!(sampling.stop);
@@ -365,6 +378,8 @@ fn apply_event(
                         + read("cache_read_input_tokens")
                         + read("cache_creation_input_tokens"),
                 );
+                outcome.stats.cache_read_tokens = Some(read("cache_read_input_tokens"));
+                outcome.stats.cache_write_tokens = Some(read("cache_creation_input_tokens"));
             }
         }
         Some("content_block_start") => {
@@ -591,7 +606,13 @@ mod tests {
         );
         assert_eq!(with["thinking"]["display"], json!("summarized"));
         assert_eq!(with["fallbacks"], json!("default"));
-        assert_eq!(with["system"], json!("Sii breve."));
+        // Prompt caching: punto fisso sul prompt di sistema più quello automatico.
+        assert_eq!(with["system"][0]["text"], json!("Sii breve."));
+        assert_eq!(
+            with["system"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert_eq!(with["cache_control"]["type"], json!("ephemeral"));
         assert_eq!(with["stop_sequences"], json!(["FINE"]));
 
         // Un modello senza ripiego automatico.
@@ -602,6 +623,7 @@ mod tests {
         let plain = request_body("claude-opus-5-5", None, &user("x"), &[], "", &s, false);
         assert!(plain.get("thinking").is_none());
         assert!(plain.get("fallbacks").is_none());
+        assert!(plain.get("cache_control").is_none());
     }
 
     #[test]

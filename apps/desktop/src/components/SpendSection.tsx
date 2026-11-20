@@ -102,7 +102,7 @@ export function SpendSection() {
         </button>
       </div>
       {saved && <p className="dim note">{t("Limiti salvati.")}</p>}
-      {error && <p className="error pre">{tc(error)}</p>}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
     </section>
   );
 }

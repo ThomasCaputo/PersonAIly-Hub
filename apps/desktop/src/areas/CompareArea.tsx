@@ -228,7 +228,7 @@ export function CompareArea({ status, providers }: Props) {
                 )}
                 {side.stats && side.streaming === null && <CompareStats stats={side.stats} cost={cost} />}
                 {side.notice && <p className="notice">{tc(side.notice)}</p>}
-                {side.error && <p className="error pre">{tc(side.error)}</p>}
+                {side.error && <p className="error pre" role="alert">{tc(side.error)}</p>}
                 {!ready(side) && (
                   <p className="dim note">
                     {side.model.kind === "local"
@@ -245,6 +245,7 @@ export function CompareArea({ status, providers }: Props) {
       <div className="composer compare-composer">
         <textarea
           value={draft}
+          aria-label={t("Messaggio per entrambi i modelli")}
           placeholder={t("Scrivi un messaggio per entrambi i modelli…")}
           title={t("Invio per inviare, Maiusc+Invio per andare a capo")}
           rows={3}
