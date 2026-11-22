@@ -285,6 +285,10 @@ impl Core {
                         all.push(ChatMessage::new("system", system));
                     }
                     all.extend(chat.iter().cloned());
+                    let all = chat::fit_template(all, loaded.template);
+                    // Un template senza strumenti non li presenterebbe al
+                    // modello: llama.cpp ne scarterebbe le definizioni.
+                    let defs = if loaded.template.no_tools { &[] } else { defs };
                     let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
                     let body = chat::request_body(&all, defs, sampling, None, chat::Flavor::Llama);
                     let result = chat::stream_chat(
@@ -430,6 +434,13 @@ impl Core {
             if cancelled {
                 break;
             }
+        }
+
+        // Strumenti attivi ma un modello che non sa usarli: lo si dice, invece
+        // di lasciar credere che li abbia provati.
+        let no_tools = matches!(target, Target::Local(loaded) if loaded.template.no_tools);
+        if notice.is_none() && no_tools && !defs.is_empty() && !cancelled {
+            notice = Some(chat::NOTICE_NO_TOOLS.to_string());
         }
 
         Ok(SendOutcome {

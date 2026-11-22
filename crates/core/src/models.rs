@@ -37,6 +37,10 @@ pub struct ModelInfo {
     /// Se e come si controlla il ragionamento ("thinking") del modello: con
     /// `switch` si accende e spegne, con `effort` (gpt-oss) si riduce.
     pub thinking: gguf::ThinkingControl,
+    /// Limiti del template di chat, per adattare la conversazione.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub template: gguf::TemplateLimits,
     /// Dettagli per la stima della memoria: non servono all'interfaccia.
     #[serde(skip)]
     #[ts(skip)]
@@ -188,6 +192,7 @@ pub fn inspect(path: &Path) -> ModelInfo {
         parts,
         error,
         thinking: meta.thinking,
+        template: meta.template,
         layout: meta.layout,
     }
 }

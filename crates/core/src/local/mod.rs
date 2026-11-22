@@ -547,6 +547,7 @@ mod tests {
             parts: 1,
             error: None,
             thinking: Default::default(),
+            template: Default::default(),
             layout: Default::default(),
         }
     }

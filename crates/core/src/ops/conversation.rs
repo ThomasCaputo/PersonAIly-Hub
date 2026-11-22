@@ -198,6 +198,8 @@ impl Core {
                     all.push(ChatMessage::new("system", system));
                 }
                 all.extend(rest);
+                let all = chat::fit_template(all, loaded.template);
+                let tools = if loaded.template.no_tools { &[] } else { tools };
                 let url = format!("http://127.0.0.1:{}/v1/chat/completions", loaded.port);
                 let body = chat::request_body(&all, tools, &sampling, None, chat::Flavor::Llama);
                 let result = chat::stream_chat(

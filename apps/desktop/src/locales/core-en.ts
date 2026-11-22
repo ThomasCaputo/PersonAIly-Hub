@@ -9,6 +9,8 @@ export const CORE_EN: Record<string, string> = {
   "La risposta è stata troncata: raggiunto il limite di token per risposta.":
     "The reply was cut off: the per-reply token limit was reached.",
   "Il modello ha rifiutato di rispondere a questa richiesta.": "The model refused to answer this request.",
+  "Questo modello non sa usare gli strumenti (file, ricerca web, documenti, server MCP): il suo template non li prevede, quindi ha risposto solo con quello che sa. Per usarli carica un modello che li supporta, come Qwen2.5 o Nemotron.":
+    "This model cannot use tools (files, web search, documents, MCP servers): its template does not support them, so it answered only with what it knows. To use them, load a model that supports them, such as Qwen2.5 or Nemotron.",
   "Il modello ha usato strumenti troppe volte di seguito: mi sono fermato. Scrivi per farlo continuare.":
     "The model used tools too many times in a row, so it was stopped. Write to make it continue.",
   "Nuova conversazione": "New conversation",

@@ -11,6 +11,7 @@ use tokio::process::{Child, Command};
 use super::install::Variant;
 use super::{LoadParams, build_args};
 use crate::error::{Error, Result};
+use crate::gguf::TemplateLimits;
 
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -45,6 +46,10 @@ pub struct LoadedModel {
     #[serde(skip)]
     #[ts(skip)]
     pub pinned_host_bytes: u64,
+    /// Limiti del template di chat: la conversazione va adattata.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub template: TemplateLimits,
 }
 
 /// Cartella in cui l'app tiene le versioni scaricate di llama.cpp.
@@ -143,14 +148,16 @@ impl LocalRuntime {
         self.data_dir.join("logs").join(self.log_name)
     }
 
-    /// Il modello caricato, se il suo processo è ancora vivo.
-    /// Vedi [`LoadedModel::pinned_host_bytes`].
-    pub fn set_pinned_host_bytes(&mut self, bytes: u64) {
+    /// Ciò che si sa del modello caricato leggendone il file: vedi
+    /// [`LoadedModel::pinned_host_bytes`] e [`LoadedModel::template`].
+    pub fn set_model_facts(&mut self, pinned_host_bytes: u64, template: TemplateLimits) {
         if let Some((model, _)) = &mut self.current {
-            model.pinned_host_bytes = bytes;
+            model.pinned_host_bytes = pinned_host_bytes;
+            model.template = template;
         }
     }
 
+    /// Il modello caricato, se il suo processo è ancora vivo.
     pub fn loaded(&mut self) -> Option<LoadedModel> {
         if let Some((_, child)) = &mut self.current
             && !matches!(child.try_wait(), Ok(None))
@@ -242,6 +249,7 @@ impl LocalRuntime {
             vision,
             api_key,
             pinned_host_bytes: 0,
+            template: TemplateLimits::default(),
         };
         self.current = Some((model.clone(), child));
         Ok(model)

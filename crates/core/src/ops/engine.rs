@@ -227,7 +227,7 @@ impl Core {
         } else {
             model.layout.host_weights_bytes()
         };
-        runtime.set_pinned_host_bytes(pinned);
+        runtime.set_model_facts(pinned, model.template);
         log::info(format!("modello caricato (processo {})", loaded.pid));
         self.touch_local();
         Ok(loaded)

@@ -108,6 +108,8 @@ pub struct ChatOutcome {
 pub const NOTICE_TRUNCATED: &str =
     "La risposta è stata troncata: raggiunto il limite di token per risposta.";
 
+pub const NOTICE_NO_TOOLS: &str = "Questo modello non sa usare gli strumenti (file, ricerca web, documenti, server MCP): il suo template non li prevede, quindi ha risposto solo con quello che sa. Per usarli carica un modello che li supporta, come Qwen2.5 o Nemotron.";
+
 /// A chi è destinata la richiesta: decide quali parametri si possono inviare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
@@ -168,6 +170,73 @@ fn openai_messages(messages: &[ChatMessage]) -> Vec<Value> {
             role => json!({ "role": role, "content": m.content }),
         })
         .collect()
+}
+
+/// Adatta la conversazione ai limiti del template di un modello locale.
+///
+/// - Senza strumenti nel template (Gemma 3), le chiamate e i loro risultati
+///   diventano testo: il modello sa comunque che cosa è successo, e il
+///   template non va in errore per i messaggi `tool`.
+/// - Con i ruoli da alternare, o dopo la trasformazione qui sopra, i
+///   messaggi consecutivi dello stesso ruolo si uniscono in uno (succede
+///   anche quando l'utente riscrive dopo un errore).
+pub fn fit_template(
+    messages: Vec<ChatMessage>,
+    limits: crate::gguf::TemplateLimits,
+) -> Vec<ChatMessage> {
+    if !limits.no_tools && !limits.strict_roles {
+        return messages;
+    }
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for mut m in messages {
+        if limits.no_tools {
+            if !m.tool_calls.is_empty() {
+                for call in std::mem::take(&mut m.tool_calls) {
+                    let line = format!("[Strumento {} con {}]", call.name, call.arguments);
+                    if !m.content.is_empty() {
+                        m.content.push('\n');
+                    }
+                    m.content.push_str(&line);
+                    names.insert(call.id, call.name);
+                }
+                m.native = None;
+            }
+            if m.role == "tool" {
+                let name = m
+                    .tool_call_id
+                    .take()
+                    .and_then(|id| names.get(&id).cloned())
+                    .unwrap_or_else(|| "strumento".to_string());
+                let label = if m.is_error {
+                    "Errore di"
+                } else {
+                    "Risultato di"
+                };
+                m = ChatMessage::new("user", format!("[{label} {name}]\n{}", m.content));
+            }
+        }
+        match out.last_mut() {
+            // Il prompt di sistema resta a sé: è il template a sistemarlo.
+            Some(last)
+                if last.role == m.role
+                    && m.role != "system"
+                    && m.tool_calls.is_empty()
+                    && last.tool_calls.is_empty()
+                    && m.role != "tool" =>
+            {
+                if !m.content.is_empty() {
+                    if !last.content.is_empty() {
+                        last.content.push_str("\n\n");
+                    }
+                    last.content.push_str(&m.content);
+                }
+                last.images.extend(m.images);
+            }
+            _ => out.push(m),
+        }
+    }
+    out
 }
 
 /// Corpo della richiesta.
@@ -463,6 +532,72 @@ impl SseParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gguf::TemplateLimits;
+
+    /// La cronologia della conversazione che mandava Gemma 3 in errore.
+    fn history_with_tools() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::new("system", "Sei un assistente."),
+            ChatMessage::new("user", "Cosa c'è nella cartella?"),
+            ChatMessage {
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "list_dir".into(),
+                    arguments: json!({ "path": "." }),
+                }],
+                ..ChatMessage::new("assistant", "")
+            },
+            ChatMessage {
+                tool_call_id: Some("c1".into()),
+                ..ChatMessage::new("tool", "a.txt b.txt")
+            },
+            ChatMessage::new("assistant", "Ci sono a.txt e b.txt."),
+            ChatMessage::new("user", "Usa il server MCP."),
+            // Riscritto dopo un errore: due messaggi dell'utente di fila.
+            ChatMessage::new("user", "Mi senti?"),
+        ]
+    }
+
+    #[test]
+    fn senza_strumenti_nel_template_la_cronologia_diventa_testo_alternato() {
+        let gemma = TemplateLimits {
+            no_tools: true,
+            strict_roles: true,
+        };
+        let out = fit_template(history_with_tools(), gemma);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["system", "user", "assistant", "user", "assistant", "user"]
+        );
+        assert!(
+            out.iter()
+                .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
+        );
+        assert_eq!(out[2].content, "[Strumento list_dir con {\"path\":\".\"}]");
+        assert_eq!(out[3].content, "[Risultato di list_dir]\na.txt b.txt");
+        assert_eq!(out[5].content, "Usa il server MCP.\n\nMi senti?");
+    }
+
+    #[test]
+    fn con_gli_strumenti_si_uniscono_solo_i_ruoli_ripetuti() {
+        let strict = TemplateLimits {
+            no_tools: false,
+            strict_roles: true,
+        };
+        let out = fit_template(history_with_tools(), strict);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["system", "user", "assistant", "tool", "assistant", "user"]
+        );
+        assert_eq!(out[2].tool_calls.len(), 1);
+        // Un template senza limiti riceve la cronologia così com'è.
+        assert_eq!(
+            fit_template(history_with_tools(), TemplateLimits::default()).len(),
+            7
+        );
+    }
 
     #[test]
     fn sse_ricompone_le_righe_spezzate() {

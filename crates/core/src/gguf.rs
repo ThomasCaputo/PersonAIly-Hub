@@ -27,7 +27,32 @@ pub struct GgufMeta {
     pub has_chat_template: bool,
     /// Se e come si controlla il ragionamento ("thinking") del modello.
     pub thinking: ThinkingControl,
+    pub template: TemplateLimits,
     pub layout: Layout,
+}
+
+/// Limiti del template di chat di cui tenere conto nel mandare la
+/// conversazione a `llama-server`. Di base nessuno.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateLimits {
+    /// Il template non prevede gli strumenti (Gemma 3): llama.cpp ne scarta
+    /// le definizioni, e i messaggi `tool` della cronologia lo mandano in
+    /// errore.
+    pub no_tools: bool,
+    /// Il template vuole utente e modello rigorosamente alternati, e dà
+    /// errore altrimenti ("Conversation roles must alternate").
+    pub strict_roles: bool,
+}
+
+impl TemplateLimits {
+    /// Dal testo del template. Uno che non nomina mai "tool" non sa né
+    /// presentare gli strumenti né leggerne i risultati.
+    pub fn from_template(template: &str) -> Self {
+        Self {
+            no_tools: !template.contains("tool"),
+            strict_roles: template.contains("must alternate"),
+        }
+    }
 }
 
 /// Come si controlla il ragionamento di un modello, secondo il suo template.
@@ -211,6 +236,10 @@ pub fn read_meta(path: &Path) -> Result<GgufMeta> {
         has_chat_template: values.contains_key("tokenizer.chat_template"),
         thinking: text("tokenizer.chat_template")
             .map(|t| thinking_control(&t))
+            .unwrap_or_default(),
+        // Senza template llama.cpp ne usa uno suo, che non ha questi limiti.
+        template: text("tokenizer.chat_template")
+            .map(|t| TemplateLimits::from_template(&t))
             .unwrap_or_default(),
         architecture,
     })

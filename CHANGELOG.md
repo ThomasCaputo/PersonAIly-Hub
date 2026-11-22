@@ -11,6 +11,10 @@ The section of each version is also used as the release notes shown by the in-ap
   right away.
 
 ### Fixed
+- **"Conversation roles must alternate" error with Gemma 3** (and other models whose chat
+  template has no tools or wants strictly alternating roles): tool calls and results already in
+  the conversation are sent to these models as text, and consecutive messages from the same role
+  are merged. When tools are enabled, a notice explains that the model cannot use them.
 - **Searchable documents:** a folder revoked from the models, or removed from the searchable
   documents, leaves the index right away; before, its passages stayed searchable until the next
   indexing.
