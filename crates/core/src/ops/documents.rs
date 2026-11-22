@@ -2,6 +2,10 @@
 
 use crate::*;
 
+/// Dopo tanti file di fila rifiutati dal modello di embedding, l'errore non
+/// è dei file ma del modello: l'indicizzazione si ferma.
+const MAX_EMBED_FAILURES_IN_A_ROW: u32 = 5;
+
 impl Core {
     pub fn rag_settings(&self) -> rag::RagSettings {
         self.store()
@@ -32,7 +36,22 @@ impl Core {
         if previous.embedding_model != settings.embedding_model {
             store.rag_clear()?;
         }
-        store.set_setting(SETTING_RAG, &serde_json::to_string(settings)?)
+        store.set_setting(SETTING_RAG, &serde_json::to_string(settings)?)?;
+        // Una cartella tolta dai documenti esce subito dall'indice.
+        store.rag_keep_folders(&settings.folders)?;
+        Ok(())
+    }
+
+    /// Le cartelle in cui si può cercare adesso: scelte per i documenti e
+    /// ancora concesse ai modelli.
+    pub(crate) fn rag_allowed_folders(&self) -> Result<Vec<String>> {
+        let granted = self.granted_folders()?;
+        Ok(self
+            .rag_settings()
+            .folders
+            .into_iter()
+            .filter(|f| granted.contains(f))
+            .collect())
     }
 
     pub fn rag_status(&self) -> Result<rag::RagStatus> {
@@ -59,11 +78,19 @@ impl Core {
 
     /// Prefissi che alcuni modelli di embedding vogliono davanti a domande e
     /// documenti (e5: `query: ` e `passage: `; nomic: `search_query: `…).
+    ///
+    /// Si guarda solo il nome del file, e "e5" deve essere una parola a sé
+    /// (`multilingual-e5-small`): una cartella o un nome che la contengono
+    /// per caso non devono cambiare i prefissi.
     pub(crate) fn embedding_prefixes(model_path: &str) -> (&'static str, &'static str) {
-        let name = model_path.to_lowercase();
+        let name = Path::new(model_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let mut words = name.split(|c: char| !c.is_ascii_alphanumeric());
         if name.contains("nomic") {
             ("search_query: ", "search_document: ")
-        } else if name.contains("e5") {
+        } else if words.any(|w| w == "e5") {
             ("query: ", "passage: ")
         } else {
             ("", "")
@@ -84,9 +111,13 @@ impl Core {
         }
         let engine = self.engine()?;
         let port = local::runtime::free_port()?;
-        let name = models::inspect(Path::new(&model_path)).name;
+        let info = models::inspect(Path::new(&model_path));
+        let context = rag::embedding_context(info.context_length);
+        // Il contesto resta nei parametri: l'indicizzazione ne ricava la
+        // lunghezza dei pezzi.
         let params = LoadParams {
             placement: Placement::Ram,
+            context_length: context,
             ..Default::default()
         };
         let mean = self
@@ -95,9 +126,9 @@ impl Core {
             .unwrap_or_else(|e| e.into_inner())
             .as_deref()
             == Some(model_path.as_str());
-        let args = rag::embedding_args(&model_path, port, mean);
+        let args = rag::embedding_args(&model_path, port, mean, context);
         let loaded = runtime
-            .start(&engine, &model_path, &name, &params, port, args, false)
+            .start(&engine, &model_path, &info.name, &params, port, args, false)
             .await?;
         Ok((loaded, model_path))
     }
@@ -170,10 +201,23 @@ impl Core {
         result
     }
 
+    /// I vettori dei pezzi di un file, a lotti.
+    async fn embed_chunks(&self, chunks: &[String], passage: &str) -> Result<Vec<Vec<f32>>> {
+        let mut vectors = Vec::with_capacity(chunks.len());
+        for batch in chunks.chunks(rag::EMBED_BATCH) {
+            let inputs: Vec<String> = batch.iter().map(|c| format!("{passage}{c}")).collect();
+            vectors.extend(self.embed_texts(&inputs).await?);
+            self.touch_embedder();
+        }
+        Ok(vectors)
+    }
+
     pub(crate) async fn index_all(&self) -> Result<()> {
         let settings = self.rag_settings();
-        let (_, model_path) = self.embedder().await?;
+        let (embedder, model_path) = self.embedder().await?;
         let (_, passage) = Self::embedding_prefixes(&model_path);
+        let chunk_chars = rag::chunk_chars(embedder.params.context_length);
+        let mut failures_in_a_row = 0;
         let granted = self.granted_folders()?;
         let folders: Vec<String> = settings
             .folders
@@ -212,18 +256,19 @@ impl Core {
                         tokio::task::spawn_blocking(move || tools::files::read_text(&source))
                             .await
                             .map_err(|e| Error::msg(e.to_string()))?;
-                    match text {
+                    let embedded = match text {
                         Ok(text) => {
-                            let chunks = rag::chunk_text(&text);
-                            let mut vectors = Vec::with_capacity(chunks.len());
-                            for batch in chunks.chunks(rag::EMBED_BATCH) {
-                                let inputs: Vec<String> =
-                                    batch.iter().map(|c| format!("{passage}{c}")).collect();
-                                vectors.extend(self.embed_texts(&inputs).await?);
-                                self.touch_embedder();
-                            }
-                            let pairs: Vec<(String, Vec<f32>)> =
-                                chunks.into_iter().zip(vectors).collect();
+                            let chunks = rag::chunk_text_sized(&text, chunk_chars);
+                            self.embed_chunks(&chunks, passage)
+                                .await
+                                .map(|vectors| chunks.into_iter().zip(vectors).collect::<Vec<_>>())
+                                .map_err(Some)
+                        }
+                        Err(_) => Err(None),
+                    };
+                    match embedded {
+                        Ok(pairs) => {
+                            failures_in_a_row = 0;
                             self.store().rag_replace_file(
                                 &folder,
                                 &path,
@@ -232,7 +277,22 @@ impl Core {
                                 &pairs,
                             )?;
                         }
-                        Err(_) => {
+                        // Un file che il modello di embedding rifiuta (per
+                        // esempio un pezzo troppo lungo) si salta, come quelli
+                        // illeggibili. Se però falliscono molti file di fila il
+                        // problema è il modello: ci si ferma.
+                        Err(Some(e)) => {
+                            failures_in_a_row += 1;
+                            if failures_in_a_row >= MAX_EMBED_FAILURES_IN_A_ROW {
+                                return Err(e);
+                            }
+                            self.rag_progress
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .skipped
+                                .push(path.clone());
+                        }
+                        Err(None) => {
                             self.rag_progress
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
@@ -247,7 +307,14 @@ impl Core {
                     .done_files += 1;
             }
         }
-        self.store().rag_prune(&folders, &existing)?;
+        // Una cartella revocata durante l'indicizzazione non deve restare:
+        // si tengono solo quelle ancora ammesse adesso.
+        let allowed = self.rag_allowed_folders()?;
+        let still: Vec<String> = folders
+            .into_iter()
+            .filter(|f| allowed.contains(f))
+            .collect();
+        self.store().rag_prune(&still, &existing)?;
         Ok(())
     }
 
@@ -257,7 +324,8 @@ impl Core {
         let (prefix, _) = Self::embedding_prefixes(&model_path);
         let input = [format!("{prefix}{query}")];
         let question = self.embed_texts(&input).await?.pop().unwrap_or_default();
-        let chunks = self.store().rag_chunks()?;
+        let allowed = self.rag_allowed_folders()?;
+        let chunks = self.store().rag_chunks(&allowed)?;
         let mut hits: Vec<rag::Hit> = chunks
             .into_iter()
             .map(|(path, text, vector)| rag::Hit {

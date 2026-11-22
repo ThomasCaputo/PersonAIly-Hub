@@ -99,10 +99,32 @@ impl Core {
     }
 
     /// Confronta la memoria necessaria con quella libera nella collocazione scelta.
+    ///
+    /// Caricare un modello scarica prima quello presente: la memoria che
+    /// occupa conta come libera, altrimenti ricaricare lo stesso modello con
+    /// altri parametri sembrerebbe impossibile.
     pub fn check_load(&self, model_path: &str, params: &LoadParams) -> LoadCheck {
         let model = models::inspect(Path::new(model_path));
         let estimate = local::estimate_memory(&model, params);
-        LoadCheck::new(estimate, params.placement, &sysmon::snapshot())
+        let mut memory = sysmon::snapshot();
+        let loaded_pid = self
+            .runtime
+            .try_lock()
+            .ok()
+            .and_then(|mut runtime| runtime.loaded())
+            .map(|m| m.pid);
+        if let Some(pid) = loaded_pid {
+            if let (Some(gpu), Some(process)) =
+                (memory.gpu.as_mut(), sysmon::process_gpu_memory(pid))
+            {
+                gpu.free_bytes = (gpu.free_bytes + process.dedicated_bytes).min(gpu.total_bytes);
+            }
+            if let Some(ram) = sysmon::process_ram(pid) {
+                memory.ram_available_bytes =
+                    (memory.ram_available_bytes + ram).min(memory.ram_total_bytes);
+            }
+        }
+        LoadCheck::new(estimate, params.placement, &memory)
     }
 
     /// Carica un modello. Se la stima dice che non entra, rifiuta, a meno che
@@ -157,7 +179,11 @@ impl Core {
                         } else {
                             "RAM"
                         },
-                        gib(check.estimate.total_bytes),
+                        gib(if placement == Placement::Vram {
+                            check.estimate.vram_bytes
+                        } else {
+                            check.estimate.total_bytes
+                        }),
                         gib(check.available_bytes.unwrap_or(0)),
                     ),
                 };
@@ -166,14 +192,15 @@ impl Core {
         }
 
         log::info(format!(
-            "caricamento di {} con {} ({:?}, contesto {}, cache {:?}, layer GPU {:?}, immagini {})",
+            "caricamento di {} con {} ({:?}, contesto {}, cache {:?}, layer GPU {:?}, immagini {}, ragionamento {})",
             model.name,
             engine.dir_name,
             params.placement,
             params.context_length,
             params.kv_cache_type,
             params.gpu_layers,
-            mmproj.is_some()
+            mmproj.is_some(),
+            params.thinking
         ));
         let loaded = match runtime
             .load(&engine, model_path, &model.name, params, mmproj)
@@ -185,6 +212,15 @@ impl Core {
                 return Err(e);
             }
         };
+        // Letti con `dio`, gli embedding che llama.cpp tiene in RAM finiscono
+        // in memoria bloccata per la GPU, contata come memoria condivisa: il
+        // controllo dello sconfinamento deve saperlo.
+        let pinned = if params.effective_load_mode() == "mmap" {
+            0
+        } else {
+            model.layout.host_weights_bytes()
+        };
+        runtime.set_pinned_host_bytes(pinned);
         log::info(format!("modello caricato (processo {})", loaded.pid));
         self.touch_local();
         Ok(loaded)
@@ -230,12 +266,12 @@ impl Core {
         // scelta. Con la collocazione ibrida i pesi dei layer in RAM compaiono
         // come memoria condivisa della GPU (misurati 1,2-3 GB, ADR 0016): il
         // contatore non distingue uno sconfinamento, quindi non si usa.
-        let in_vram = loaded
+        let vram_model = loaded
             .as_ref()
-            .is_some_and(|m| m.params.placement == Placement::Vram);
-        let vram_spill_bytes = process_gpu
-            .filter(|_| in_vram)
-            .and_then(|gpu| local::vram_spill(gpu.shared_bytes));
+            .filter(|m| m.params.placement == Placement::Vram);
+        let vram_spill_bytes = vram_model
+            .zip(process_gpu.as_ref())
+            .and_then(|(m, gpu)| local::vram_spill(gpu.shared_bytes, m.pinned_host_bytes));
 
         RuntimeStatus {
             loading,

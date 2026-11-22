@@ -703,3 +703,74 @@ fn gli_indirizzi_noti_vengono_dall_utente_e_dalle_ricerche() {
         ["https://utente.it/pagina", "https://trovato.it/a"]
     );
 }
+
+#[test]
+fn una_cartella_revocata_esce_subito_dall_indice() {
+    let dir = std::env::temp_dir().join(format!("core-rag-revoke-{}", std::process::id()));
+    let core = Core::new(&dir).unwrap();
+    let (a, b) = ("C:/doc/a".to_string(), "C:/doc/b".to_string());
+    core.set_granted_folders(&[a.clone(), b.clone()]).unwrap();
+    core.set_rag_settings(&rag::RagSettings {
+        embedding_model: None,
+        folders: vec![a.clone(), b.clone()],
+    })
+    .unwrap();
+    let chunk = vec![("testo".to_string(), vec![1.0f32, 0.0])];
+    core.store()
+        .rag_replace_file(&a, "C:/doc/a/uno.md", 1, 5, &chunk)
+        .unwrap();
+    core.store()
+        .rag_replace_file(&b, "C:/doc/b/due.md", 1, 5, &chunk)
+        .unwrap();
+    assert_eq!(core.store().rag_counts().unwrap(), (2, 2));
+
+    // Revocare B ai modelli la toglie dai documenti e dall'indice.
+    core.set_granted_folders(std::slice::from_ref(&a)).unwrap();
+    assert_eq!(core.rag_settings().folders, vec![a.clone()]);
+    assert_eq!(core.store().rag_counts().unwrap(), (1, 1));
+
+    // La ricerca guarda solo le cartelle ammesse, anche se l'indice ne ha altre.
+    let hits = core.store().rag_chunks(&[]).unwrap();
+    assert!(hits.is_empty());
+    assert_eq!(
+        core.store()
+            .rag_chunks(std::slice::from_ref(&a))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Toglierla dai documenti consultabili fa lo stesso.
+    core.set_rag_settings(&rag::RagSettings {
+        embedding_model: None,
+        folders: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(core.store().rag_counts().unwrap(), (0, 0));
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn i_prefissi_di_embedding_vengono_dal_nome_del_file() {
+    let e5 = ("query: ", "passage: ");
+    let nomic = ("search_query: ", "search_document: ");
+    let none = ("", "");
+    assert_eq!(
+        Core::embedding_prefixes(r"C:\m\multilingual-e5-small-Q8_0.gguf"),
+        e5
+    );
+    assert_eq!(
+        Core::embedding_prefixes(r"C:\m\nomic-embed-text-v1.5.Q8_0.gguf"),
+        nomic
+    );
+    assert_eq!(Core::embedding_prefixes(r"C:\m\bge-m3-Q8_0.gguf"), none);
+    // Una cartella che contiene "e5" o "nomic" non conta.
+    assert_eq!(
+        Core::embedding_prefixes(r"C:\e5\nomic\bge-m3-Q8_0.gguf"),
+        none
+    );
+    // "e5" dentro un'altra parola non conta.
+    assert_eq!(Core::embedding_prefixes(r"C:\m\Qwe5-embed.gguf"), none);
+}

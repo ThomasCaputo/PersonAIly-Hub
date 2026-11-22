@@ -298,6 +298,22 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
             </label>
           )}
 
+          {model.supportsThinking && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={preset.load.thinking}
+                onChange={(e) => setLoad({ thinking: e.target.checked })}
+              />
+              <span>
+                <strong>{t("Ragionamento (thinking)")}</strong>
+                <span className="dim note block">
+                  {t("Il modello ragiona prima di rispondere: risposte più accurate, ma più lente. Spento, risponde subito.")}
+                </span>
+              </span>
+            </label>
+          )}
+
           <details className="advanced">
             <summary>{t("Avanzate")}</summary>
             <div className="field">
@@ -383,11 +399,13 @@ function Estimate({ check, placement }: { check: LoadCheck; placement: Placement
     );
   }
   const place = placement === "vram" ? "VRAM" : "RAM";
+  const need = placement === "vram" ? estimate.vramBytes : estimate.totalBytes;
+  const host = placement === "vram" ? estimate.hostWeightsBytes : 0;
   return (
     <div className={fits ? "estimate" : "estimate bad"}>
       <div>
         {tn("Memoria necessaria: {amount}", {
-          amount: <strong>{t("circa {gb} GB", { gb: gb(estimate.totalBytes) })}</strong>,
+          amount: <strong>{t("circa {gb} GB", { gb: gb(need) })}</strong>,
         })}
         {availableBytes != null && ` — ${t("{place} libera: {gb} GB", { place, gb: gb(availableBytes) })}`}
       </div>
@@ -398,6 +416,14 @@ function Estimate({ check, placement }: { check: LoadCheck; placement: Placement
           : ` + ${t("cache KV non calcolabile")}`}
         {` + ${t("margine {gb} GB", { gb: gb(estimate.overheadBytes) })}`}
       </div>
+      {host > 0 && (
+        <div className="dim">
+          {t("In più {gb} GB di embedding restano in RAM: llama.cpp li tiene sempre lì, non è uno sconfinamento.", {
+            gb: gb(host),
+          })}
+          {ramAvailableBytes != null && ` ${t("RAM disponibile: {gb} GB", { gb: gb(ramAvailableBytes) })}`}
+        </div>
+      )}
       {!fits && <div>{t("Il modello non entra nella {place} libera: riduci il contesto o libera memoria.", { place })}</div>}
       {availableBytes == null && <div className="dim">{t("Memoria libera non misurabile su questa GPU.")}</div>}
 

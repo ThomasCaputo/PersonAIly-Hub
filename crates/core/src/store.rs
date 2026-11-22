@@ -1057,6 +1057,22 @@ impl Store {
         Ok(removed)
     }
 
+    /// Toglie dall'indice i file delle cartelle che non sono in `folders`:
+    /// cartelle revocate ai modelli o tolte dai documenti consultabili.
+    pub fn rag_keep_folders(&self, folders: &[String]) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT folder FROM rag_files")?;
+        let indexed: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut removed = 0;
+        for folder in indexed.iter().filter(|f| !folders.contains(f)) {
+            removed += self
+                .conn
+                .execute("DELETE FROM rag_files WHERE folder = ?1", [folder])?;
+        }
+        Ok(removed)
+    }
+
     /// Svuota l'indice (per esempio cambiando modello di embedding: i vettori
     /// di modelli diversi non si confrontano).
     pub fn rag_clear(&self) -> Result<()> {
@@ -1073,19 +1089,26 @@ impl Store {
         )?)
     }
 
-    /// Tutti i pezzi con il loro file e il vettore, per la ricerca.
-    pub fn rag_chunks(&self) -> Result<Vec<(String, String, Vec<f32>)>> {
+    /// I pezzi delle cartelle `folders` con il loro file e il vettore, per la
+    /// ricerca. Il filtro è una seconda protezione: l'indice si ripulisce già
+    /// quando una cartella non è più ammessa (vedi [`Store::rag_keep_folders`]).
+    pub fn rag_chunks(&self, folders: &[String]) -> Result<Vec<(String, String, Vec<f32>)>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT f.path, c.text, c.embedding FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id",
+            "SELECT f.folder, f.path, c.text, c.embedding FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get(0)?,
+            let folder: String = row.get(0)?;
+            if !folders.contains(&folder) {
+                return Ok(None);
+            }
+            Ok(Some((
                 row.get(1)?,
-                crate::rag::from_bytes(&row.get::<_, Vec<u8>>(2)?),
-            ))
+                row.get(2)?,
+                crate::rag::from_bytes(&row.get::<_, Vec<u8>>(3)?),
+            )))
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+        Ok(rows.into_iter().flatten().collect())
     }
 
     // ── Impostazioni ────────────────────────────────────────────────────

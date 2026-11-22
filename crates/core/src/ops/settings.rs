@@ -41,9 +41,20 @@ impl Core {
         })
     }
 
+    /// Revocare una cartella la toglie anche dai documenti consultabili: da
+    /// subito i modelli non ne trovano più i brani.
     pub fn set_granted_folders(&self, folders: &[String]) -> Result<()> {
         self.store()
-            .set_setting(SETTING_GRANTED_FOLDERS, &serde_json::to_string(folders)?)
+            .set_setting(SETTING_GRANTED_FOLDERS, &serde_json::to_string(folders)?)?;
+        let mut rag = self.rag_settings();
+        let before = rag.folders.len();
+        rag.folders.retain(|f| folders.contains(f));
+        if rag.folders.len() != before {
+            self.store()
+                .set_setting(SETTING_RAG, &serde_json::to_string(&rag)?)?;
+        }
+        self.store().rag_keep_folders(&rag.folders)?;
+        Ok(())
     }
 
     /// Strumenti e permessi con cui nasce una nuova conversazione.

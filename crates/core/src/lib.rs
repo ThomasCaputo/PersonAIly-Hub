@@ -105,7 +105,8 @@ pub struct LoadCheck {
     /// Memoria libera nella collocazione scelta; `None` se non misurabile.
     /// Con la collocazione ibrida è la VRAM libera.
     pub available_bytes: Option<u64>,
-    /// Solo con la collocazione ibrida: la RAM disponibile.
+    /// La RAM disponibile, quando la collocazione ne usa anche un po': con
+    /// quella ibrida, o con "Solo VRAM" per gli embedding d'ingresso.
     pub ram_available_bytes: Option<u64>,
     pub fits: bool,
 }
@@ -118,11 +119,13 @@ impl LoadCheck {
         // Senza una misura non possiamo garantire nulla: non blocchiamo.
         let fits_in = |need: u64, free: Option<u64>| free.is_none_or(|free| need <= free);
         match placement {
+            // In RAM restano solo gli embedding d'ingresso (`ram_bytes`).
             Placement::Vram => Self {
                 estimate,
                 available_bytes: vram_free,
-                ram_available_bytes: None,
-                fits: fits_in(estimate.total_bytes, vram_free),
+                ram_available_bytes: ram_free.filter(|_| estimate.ram_bytes > 0),
+                fits: fits_in(estimate.vram_bytes, vram_free)
+                    && fits_in(estimate.ram_bytes, ram_free),
             },
             Placement::Ram => Self {
                 estimate,

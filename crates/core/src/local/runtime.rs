@@ -40,6 +40,11 @@ pub struct LoadedModel {
     /// protezioni dell'API locale. Non esce mai dal nucleo.
     #[serde(skip)]
     pub api_key: String,
+    /// Pesi che llama.cpp tiene in RAM in memoria bloccata per la GPU: Windows
+    /// li conta come memoria condivisa, ma non sono uno sconfinamento.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub pinned_host_bytes: u64,
 }
 
 /// Cartella in cui l'app tiene le versioni scaricate di llama.cpp.
@@ -139,6 +144,13 @@ impl LocalRuntime {
     }
 
     /// Il modello caricato, se il suo processo è ancora vivo.
+    /// Vedi [`LoadedModel::pinned_host_bytes`].
+    pub fn set_pinned_host_bytes(&mut self, bytes: u64) {
+        if let Some((model, _)) = &mut self.current {
+            model.pinned_host_bytes = bytes;
+        }
+    }
+
     pub fn loaded(&mut self) -> Option<LoadedModel> {
         if let Some((_, child)) = &mut self.current
             && !matches!(child.try_wait(), Ok(None))
@@ -228,6 +240,7 @@ impl LocalRuntime {
             engine: engine.dir_name.clone(),
             vision,
             api_key,
+            pinned_host_bytes: 0,
         };
         self.current = Some((model.clone(), child));
         Ok(model)

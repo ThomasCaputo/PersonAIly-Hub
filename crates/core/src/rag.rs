@@ -18,10 +18,32 @@ use crate::tools::{Risk, ToolDef};
 /// Lo strumento con cui il modello cerca nei documenti.
 pub const DOCUMENTS_TOOL: &str = "search_documents";
 
-/// Lunghezza indicativa di un pezzo, in caratteri, e quanto si sovrappone al
-/// successivo (perché una frase a cavallo non si perda).
+/// Lunghezza massima di un pezzo, in caratteri; ogni pezzo si sovrappone al
+/// successivo per un sesto della sua lunghezza (perché una frase a cavallo
+/// non si perda). Con i modelli dal contesto corto i pezzi sono più piccoli,
+/// vedi [`chunk_chars`].
 const CHUNK_CHARS: usize = 1200;
-const CHUNK_OVERLAP: usize = 200;
+/// Contesto massimo del `llama-server` degli embedding, in token.
+const EMBED_CONTEXT: u64 = 2048;
+/// Pezzi più corti di così non hanno senso, qualunque sia il modello.
+const MIN_CHUNK_CHARS: usize = 300;
+
+/// Contesto con cui avviare il modello di embedding: il suo massimo, se
+/// minore di [`EMBED_CONTEXT`]. `multilingual-e5` per esempio arriva a 512
+/// token, e oltre non sa dove si trovano le parole.
+pub fn embedding_context(trained: Option<u64>) -> u32 {
+    trained
+        .filter(|t| *t > 0)
+        .map_or(EMBED_CONTEXT, |t| t.min(EMBED_CONTEXT)) as u32
+}
+
+/// Caratteri per pezzo perché entri nel contesto del modello di embedding.
+/// Si contano 2 caratteri per token, per stare larghi: nel codice e con i
+/// vocabolari dei modelli BERT un token è spesso più corto di una parola.
+/// Si lasciano 32 token al prefisso (`passage: `…) e ai token speciali.
+pub fn chunk_chars(context: u32) -> usize {
+    (context.saturating_sub(32) as usize * 2).clamp(MIN_CHUNK_CHARS, CHUNK_CHARS)
+}
 /// File più grandi di così non si indicizzano.
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 /// Pezzi restituiti per ogni ricerca.
@@ -88,21 +110,28 @@ pub struct Hit {
 
 /// Divide un testo in pezzi di circa [`CHUNK_CHARS`] caratteri, tagliando di
 /// preferenza tra un paragrafo e l'altro, poi tra una riga e l'altra; pezzi
-/// consecutivi si sovrappongono di circa [`CHUNK_OVERLAP`] caratteri.
+/// consecutivi si sovrappongono di circa un sesto della lunghezza.
 pub fn chunk_text(text: &str) -> Vec<String> {
+    chunk_text_sized(text, CHUNK_CHARS)
+}
+
+/// Come [`chunk_text`], con pezzi di al massimo `size` caratteri.
+pub fn chunk_text_sized(text: &str, size: usize) -> Vec<String> {
+    let size = size.max(MIN_CHUNK_CHARS);
+    let overlap = size / 6;
     let chars: Vec<char> = text.chars().collect();
     let mut chunks = Vec::new();
     let mut start = 0;
     while start < chars.len() {
-        let mut end = (start + CHUNK_CHARS).min(chars.len());
+        let mut end = (start + size).min(chars.len());
         if end < chars.len() {
             // Il punto di taglio migliore nell'ultimo terzo del pezzo.
-            let window = &chars[start + CHUNK_CHARS * 2 / 3..end];
+            let window = &chars[start + size * 2 / 3..end];
             let cut = find_last(window, &['\n', '\n'])
                 .or_else(|| window.iter().rposition(|&c| c == '\n'))
                 .or_else(|| window.iter().rposition(|&c| c == '.' || c == ' '));
             if let Some(cut) = cut {
-                end = start + CHUNK_CHARS * 2 / 3 + cut + 1;
+                end = start + size * 2 / 3 + cut + 1;
             }
         }
         let chunk: String = chars[start..end].iter().collect();
@@ -112,7 +141,7 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         if end >= chars.len() {
             break;
         }
-        start = end.saturating_sub(CHUNK_OVERLAP).max(start + 1);
+        start = end.saturating_sub(overlap).max(start + 1);
     }
     chunks
 }
@@ -213,8 +242,14 @@ pub fn scan(folder: &Path) -> Vec<FileStamp> {
 /// perché un pezzo si elabora tutto in una volta. Con `mean_pooling` il
 /// vettore è la media dei token: serve ai modelli che non dichiarano come
 /// riassumere il testo (quelli di chat), mentre i veri modelli di embedding
-/// usano il loro.
-pub fn embedding_args(model_path: &str, port: u16, mean_pooling: bool) -> Vec<String> {
+/// usano il loro. `context` viene da [`embedding_context`].
+pub fn embedding_args(
+    model_path: &str,
+    port: u16,
+    mean_pooling: bool,
+    context: u32,
+) -> Vec<String> {
+    let context = context.to_string();
     let mut args: Vec<String> = [
         "--model",
         model_path,
@@ -224,11 +259,11 @@ pub fn embedding_args(model_path: &str, port: u16, mean_pooling: bool) -> Vec<St
         &port.to_string(),
         "--embeddings",
         "--ctx-size",
-        "2048",
+        &context,
         "--batch-size",
-        "2048",
+        &context,
         "--ubatch-size",
-        "2048",
+        &context,
         "--parallel",
         "1",
         "--device",
@@ -346,6 +381,22 @@ mod tests {
         assert!(chunks.concat().contains("barche"));
         assert!(chunk_text("   ").is_empty());
         assert_eq!(chunk_text("breve"), ["breve"]);
+    }
+
+    #[test]
+    fn i_pezzi_entrano_nel_contesto_del_modello_di_embedding() {
+        // multilingual-e5: 512 token; nomic-embed-text: 8192, limitati a 2048.
+        assert_eq!(embedding_context(Some(512)), 512);
+        assert_eq!(embedding_context(Some(8192)), 2048);
+        assert_eq!(embedding_context(None), 2048);
+        assert_eq!(chunk_chars(512), 960);
+        assert_eq!(chunk_chars(2048), CHUNK_CHARS);
+        assert_eq!(chunk_chars(64), MIN_CHUNK_CHARS);
+
+        let text = "Una frase di prova sul mare e sulle barche. ".repeat(100);
+        let chunks = chunk_text_sized(&text, 960);
+        assert!(chunks.len() > 4);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 960));
     }
 
     #[test]

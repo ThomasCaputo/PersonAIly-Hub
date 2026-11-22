@@ -222,6 +222,9 @@ export const EN: Record<string, string> = {
   "cache KV {gb} GB": "KV cache {gb} GB",
   "cache KV non calcolabile": "KV cache not computable",
   "margine {gb} GB": "margin {gb} GB",
+  "In più {gb} GB di embedding restano in RAM: llama.cpp li tiene sempre lì, non è uno sconfinamento.":
+    "Another {gb} GB of embeddings stay in RAM: llama.cpp always keeps them there, it is not a spill.",
+  "RAM disponibile: {gb} GB": "RAM available: {gb} GB",
   "Il modello non entra nella {place} libera: riduci il contesto o libera memoria.":
     "The model does not fit in the free {place}: reduce the context or free some memory.",
   "Memoria libera non misurabile su questa GPU.": "Free memory cannot be measured on this GPU.",
@@ -461,6 +464,9 @@ export const EN: Record<string, string> = {
   "diviso in {n} file": "split into {n} files",
   "legge le immagini": "reads images",
   "Lettura delle immagini": "Image input",
+  "Ragionamento (thinking)": "Reasoning (thinking)",
+  "Il modello ragiona prima di rispondere: risposte più accurate, ma più lente. Spento, risponde subito.":
+    "The model reasons before answering: more accurate answers, but slower. When off, it answers right away.",
   "Carica anche il componente visivo {file} ({size} GB in più).":
     "Also loads the vision component {file} ({size} GB more).",
 
@@ -532,7 +538,8 @@ export const EN: Record<string, string> = {
   "Crea l'indice": "Build the index",
   "Indicizzazione: {done} di {total} file…": "Indexing: {done} of {total} files…",
   "{files} file, {chunks} brani nell'indice": "{files} files, {chunks} passages in the index",
-  "File non leggibili, saltati: {list}": "Unreadable files, skipped: {list}",
+  "File saltati (non leggibili o rifiutati dal modello di embedding): {list}":
+    "Skipped files (unreadable or rejected by the embedding model): {list}",
   "Prova una ricerca": "Try a search",
   "Che cosa cerchi nei tuoi documenti?": "What are you looking for in your documents?",
   "sessione {n}": "session {n}",

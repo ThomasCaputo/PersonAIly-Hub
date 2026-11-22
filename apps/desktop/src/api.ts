@@ -26,6 +26,8 @@ export type LoadParams = {
   vision: boolean;
   /** Solo per la collocazione ibrida: quanti layer vanno sulla GPU. */
   gpuLayers: number | null;
+  /** Con `false` un modello che sa ragionare risponde subito (`--reasoning off`). */
+  thinking: boolean;
 };
 
 export type SamplingParams = {
@@ -61,23 +63,28 @@ export type ModelInfo = {
   mmprojBytes: number | null;
   /** In quanti file è diviso il modello (1 = un file solo). */
   parts: number;
+  /** Il modello sa ragionare prima di rispondere ("thinking"). */
+  supportsThinking: boolean;
   error: string | null;
 };
 
 export type LoadCheck = {
   estimate: {
+    /** Pesi nella memoria scelta: con la GPU, quelli che vanno sulla GPU. */
     weightsBytes: number;
+    /** Embedding d'ingresso che llama.cpp tiene sempre in RAM (0 con "Solo RAM"). */
+    hostWeightsBytes: number;
     kvCacheBytes: number;
     overheadBytes: number;
     totalBytes: number;
     kvCacheKnown: boolean;
-    /** Parte del totale in VRAM e in RAM (divise solo con la collocazione ibrida). */
+    /** Parte del totale in VRAM e in RAM ("Solo VRAM" lascia in RAM gli embedding). */
     vramBytes: number;
     ramBytes: number;
   };
   /** Memoria libera nella collocazione scelta; con quella ibrida, la VRAM. */
   availableBytes: number | null;
-  /** Solo con la collocazione ibrida: la RAM disponibile. */
+  /** La RAM disponibile, se la collocazione ne usa: ibrida, o "Solo VRAM" con embedding in RAM. */
   ramAvailableBytes: number | null;
   fits: boolean;
 };

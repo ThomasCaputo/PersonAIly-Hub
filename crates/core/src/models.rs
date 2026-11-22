@@ -34,6 +34,13 @@ pub struct ModelInfo {
     pub parts: u32,
     /// Presente se il file non si è potuto leggere.
     pub error: Option<String>,
+    /// Il modello sa ragionare prima di rispondere: si può caricare con il
+    /// ragionamento acceso o spento.
+    pub supports_thinking: bool,
+    /// Dettagli per la stima della memoria: non servono all'interfaccia.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub layout: gguf::Layout,
 }
 
 /// Lunghezza del suffisso `-00001-of-00003.gguf` dei modelli divisi.
@@ -145,6 +152,11 @@ pub fn inspect(path: &Path) -> ModelInfo {
         None => file_name.trim_end_matches(".gguf").to_string(),
     };
 
+    // Il nome del file è più preciso del campo `general.file_type`: con le
+    // quantizzazioni miste (le "UD" di Unsloth) quel campo dice spesso il
+    // tipo sbagliato, per esempio Q8_0 per un file UD-Q6_K_XL.
+    let quantization = quantization_from_name(&display_stem).or(meta.quantization);
+
     ModelInfo {
         path: path.to_string_lossy().into_owned(),
         name: meta
@@ -155,7 +167,7 @@ pub fn inspect(path: &Path) -> ModelInfo {
         size_bytes,
         architecture: meta.architecture,
         size_label: meta.size_label,
-        quantization: meta.quantization,
+        quantization,
         context_length: meta.context_length,
         block_count: meta.block_count,
         embedding_length: meta.embedding_length,
@@ -165,7 +177,36 @@ pub fn inspect(path: &Path) -> ModelInfo {
         mmproj_bytes,
         parts,
         error,
+        supports_thinking: meta.supports_thinking,
+        layout: meta.layout,
     }
+}
+
+/// La quantizzazione scritta nel nome del file (`…-Q4_K_M`, `…-UD-Q6_K_XL`,
+/// `….IQ3_XXS`, `…-BF16`), se c'è.
+pub fn quantization_from_name(stem: &str) -> Option<String> {
+    let upper = stem.to_ascii_uppercase();
+    let tokens: Vec<&str> = upper.split(['-', '.']).collect();
+    let is_quant = |t: &str| {
+        if matches!(t, "F16" | "F32" | "BF16" | "MXFP4") {
+            return true;
+        }
+        let mut parts = t.split('_');
+        let head = parts.next().unwrap_or("");
+        let base = head.strip_prefix('I').unwrap_or(head);
+        let Some(digits) = base.strip_prefix('Q') else {
+            return false;
+        };
+        !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit())
+            && parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric()))
+    };
+    let i = tokens.iter().rposition(|t| is_quant(t))?;
+    let quant = tokens[i];
+    Some(match i.checked_sub(1).map(|j| tokens[j]) {
+        Some("UD") => format!("UD-{quant}"),
+        _ => quant.to_string(),
+    })
 }
 
 /// Cerca tutti i modelli nelle cartelle indicate, in ordine alfabetico.
@@ -237,6 +278,22 @@ mod tests {
                 .unwrap()
                 .ends_with("mmproj-prova.gguf")
         );
+    }
+
+    #[test]
+    fn legge_la_quantizzazione_dal_nome() {
+        let q = |s: &str| quantization_from_name(s);
+        assert_eq!(
+            q("NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q6_K_XL").as_deref(),
+            Some("UD-Q6_K_XL")
+        );
+        assert_eq!(q("Qwen2.5-7B-Instruct-Q4_K_M").as_deref(), Some("Q4_K_M"));
+        assert_eq!(q("gemma-3-1b-it-UD-Q4_K_XL").as_deref(), Some("UD-Q4_K_XL"));
+        assert_eq!(q("Llama-3.1-8B.IQ3_XXS").as_deref(), Some("IQ3_XXS"));
+        assert_eq!(q("phi-4-bf16").as_deref(), Some("BF16"));
+        assert_eq!(q("qwen2.5-coder-7b-instruct-q8_0").as_deref(), Some("Q8_0"));
+        assert_eq!(q("Qwen2.5-7B-Instruct"), None);
+        assert_eq!(q("modello"), None);
     }
 
     #[test]

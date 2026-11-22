@@ -146,7 +146,7 @@ export function DocumentsSection({ grantedFolders }: { grantedFolders: string[] 
       {status.error && <p className="error pre" role="alert">{tc(status.error)}</p>}
       {status.skipped.length > 0 && (
         <p className="dim note">
-          {t("File non leggibili, saltati: {list}", { list: status.skipped.slice(0, 5).join(", ") })}
+          {t("File saltati (non leggibili o rifiutati dal modello di embedding): {list}", { list: status.skipped.slice(0, 5).join(", ") })}
           {status.skipped.length > 5 && " …"}
         </p>
       )}

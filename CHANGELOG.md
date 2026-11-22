@@ -3,6 +3,33 @@
 All notable changes to PersonAIly Hub. Versions follow [Semantic Versioning](https://semver.org).
 The section of each version is also used as the release notes shown by the in-app updater.
 
+## [Unreleased]
+
+### Added
+- **Reasoning on or off at load time:** models that can think before answering (Qwen3, Gemma 4,
+  DeepSeek R1…) get a "Reasoning (thinking)" option in their card; turned off, they answer
+  right away.
+
+### Fixed
+- **Searchable documents:** a folder revoked from the models, or removed from the searchable
+  documents, leaves the index right away; before, its passages stayed searchable until the next
+  indexing.
+- **Searchable documents:** a file the embedding model rejects is skipped instead of stopping
+  the whole indexing, and passages are sized to the embedding model's context (512 tokens for
+  `multilingual-e5`).
+- **Searchable documents:** the `query:`/`passage:` prefixes are chosen from the embedding
+  model's file name only, so a folder name containing "e5" or "nomic" no longer changes them.
+- **False "spilling into RAM" warning** with models whose input embeddings are large, such as
+  Gemma 4 / Gemma 3n "E" models: llama.cpp always keeps those tables in RAM, and the warning
+  mistook them for the driver spilling VRAM.
+- **Memory estimate:** it now counts the embeddings that stay in RAM separately, and sizes the
+  KV cache of sliding-window and shared-KV layers as llama.cpp does (Gemma 4 E4B at 32K context:
+  about 6 GB of VRAM instead of 9.6).
+- With a model already loaded, the check before reloading counts its memory as free, instead of
+  saying the same model no longer fits.
+- **Quantization label** taken from the file name when it has one: mixed quantizations such as
+  Unsloth's `UD-Q6_K_XL` were shown as `Q8_0`.
+
 ## [1.0.0] — 2026-11-20
 
 ### Added
