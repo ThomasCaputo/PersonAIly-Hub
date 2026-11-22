@@ -205,6 +205,16 @@ fn create_conversation(core: CoreState<'_>) -> CmdResult<Conversation> {
 }
 
 #[tauri::command(async)]
+fn create_temporary_conversation(core: CoreState<'_>) -> CmdResult<Conversation> {
+    core.create_temporary_conversation().map_err(text)
+}
+
+#[tauri::command(async)]
+fn keep_conversation(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.keep_conversation(id).map_err(text)
+}
+
+#[tauri::command(async)]
 fn rename_conversation(core: CoreState<'_>, id: i64, title: String) -> CmdResult<()> {
     core.rename_conversation(id, &title).map_err(text)
 }
@@ -1148,6 +1158,8 @@ pub fn run() {
             runtime_status,
             list_conversations,
             create_conversation,
+            create_temporary_conversation,
+            keep_conversation,
             rename_conversation,
             delete_conversation,
             get_messages,

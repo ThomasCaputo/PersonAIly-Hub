@@ -162,6 +162,12 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX rag_chunks_by_file ON rag_chunks (file_id);
     ",
+    // 11 — conversazioni temporanee (le colonne del confronto tra modelli):
+    //      non si vedono nella cronologia finché l'utente non le salva, e
+    //      si cancellano a ogni avvio
+    "
+    ALTER TABLE conversations ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// Caratteri del risultato conservati nel registro delle azioni.
@@ -431,6 +437,37 @@ impl Store {
         self.conversation(self.conn.last_insert_rowid())
     }
 
+    /// Una conversazione che non compare nella cronologia finché non la si
+    /// tiene con [`Store::keep_conversation`].
+    pub fn create_temporary_conversation(&self, title: &str) -> Result<Conversation> {
+        self.conn.execute(
+            "INSERT INTO conversations (title, temporary) VALUES (?1, 1)",
+            [title],
+        )?;
+        self.conversation(self.conn.last_insert_rowid())
+    }
+
+    /// Rende normale una conversazione temporanea: entra nella cronologia, in
+    /// cima.
+    pub fn keep_conversation(&self, id: i64) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE conversations SET temporary = 0, updated_at = datetime('now') WHERE id = ?1",
+            [id],
+        )?;
+        if changed == 0 {
+            return Err(Error::msg("Conversazione non trovata."));
+        }
+        Ok(())
+    }
+
+    /// Cancella le conversazioni temporanee rimaste (all'avvio: quelle di un
+    /// confronto non salvato prima di chiudere l'app).
+    pub fn delete_temporary_conversations(&self) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM conversations WHERE temporary = 1", [])?)
+    }
+
     pub fn conversation(&self, id: i64) -> Result<Conversation> {
         Ok(self.conn.query_row(
             "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?1",
@@ -460,10 +497,12 @@ impl Store {
                       WHERE m.conversation_id = c.id AND m.content LIKE ?1 ESCAPE '\'))"
         };
         let phrase = format!("\"{}\"", query.replace('"', "\"\""));
-        // Le conversazioni delle sessioni degli agenti si vedono nella pagina Agenti.
+        // Le conversazioni delle sessioni degli agenti si vedono nella pagina
+        // Agenti; quelle temporanee (confronto non salvato) da nessuna parte.
         let mut stmt = self.conn.prepare(&format!(
             r"SELECT id, title, created_at, updated_at FROM conversations c
-              WHERE NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.conversation_id = c.id)
+              WHERE c.temporary = 0
+                AND NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.conversation_id = c.id)
                 AND (?3 = '' OR c.title LIKE ?1 ESCAPE '\' OR {in_messages})
               ORDER BY updated_at DESC, id DESC"
         ))?;
@@ -1342,6 +1381,40 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "ciao");
         assert_eq!(messages[1].model.as_deref(), Some("modello"));
+    }
+
+    #[test]
+    fn le_conversazioni_temporanee_restano_fuori_finche_non_si_salvano() {
+        let store = Store::open_in_memory().unwrap();
+        let normale = store.create_conversation("normale").unwrap();
+        let tenuta = store.create_temporary_conversation("confronto A").unwrap();
+        let buttata = store.create_temporary_conversation("confronto B").unwrap();
+        store
+            .add_message(tenuta.id, "user", "carbonara", None)
+            .unwrap();
+        store
+            .add_message(buttata.id, "user", "carbonara", None)
+            .unwrap();
+
+        // Né nella cronologia né nella ricerca.
+        let ids = |q: &str| -> Vec<i64> {
+            store
+                .list_conversations(q)
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        assert_eq!(ids(""), [normale.id]);
+        assert!(ids("carbonara").is_empty());
+
+        // Salvata, entra in cima; le altre si cancellano all'avvio.
+        store.keep_conversation(tenuta.id).unwrap();
+        assert_eq!(ids("carbonara"), [tenuta.id]);
+        assert_eq!(store.delete_temporary_conversations().unwrap(), 1);
+        assert!(store.conversation(buttata.id).is_err());
+        assert_eq!(ids("").len(), 2);
+        assert!(store.keep_conversation(buttata.id).is_err());
     }
 
     #[test]

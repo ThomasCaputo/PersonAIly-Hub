@@ -563,6 +563,11 @@ export const EN: Record<string, string> = {
   "Modello locale": "Local model",
   "Confronto tra modelli": "Model comparison",
   "Nuovo confronto": "New comparison",
+  "Salva entrambe": "Save both",
+  "Salva come conversazione": "Save as conversation",
+  "Salvata nella chat.": "Saved to the chat.",
+  "Le due conversazioni restano solo qui: salva quelle che vuoi tenere nella chat. Le altre si cancellano con «Nuovo confronto» o chiudendo l'app.":
+    "The two conversations stay only here: save the ones you want to keep in the chat. The others are deleted with “New comparison” or when you close the app.",
   "Di modelli locali ne è caricato uno alla volta: le due colonne useranno lo stesso modello.":
     "Only one local model is loaded at a time: both columns will use the same model.",
   "Colonna {n}": "Column {n}",

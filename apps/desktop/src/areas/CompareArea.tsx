@@ -26,6 +26,8 @@ type Side = {
   stats: GenerationStats | null;
   notice: string | null;
   error: string | null;
+  /** Salvata come conversazione: da qui compare nella cronologia della chat. */
+  saved: boolean;
 };
 
 const emptySide = (model: ModelRef): Side => ({
@@ -36,6 +38,7 @@ const emptySide = (model: ModelRef): Side => ({
   stats: null,
   notice: null,
   error: null,
+  saved: false,
 });
 
 /** Strumenti spenti: si confrontano le risposte, non le azioni. */
@@ -45,8 +48,10 @@ type Props = { status: RuntimeStatus | null; providers: ProviderInfo[] };
 
 /**
  * Confronto tra due modelli: lo stesso messaggio va a entrambi, le risposte
- * arrivano affiancate e in parallelo. Ogni colonna è una normale conversazione
- * (senza strumenti), quindi resta nella cronologia della chat. Di modelli
+ * arrivano affiancate e in parallelo. Ogni colonna è una conversazione
+ * temporanea (senza strumenti): non compare nella cronologia della chat
+ * finché l'utente non la salva, una o entrambe. "Nuovo confronto" cancella
+ * quelle non salvate; il nucleo cancella le rimaste a ogni avvio. Di modelli
  * locali ne gira uno alla volta: si confronta di solito un locale con un
  * cloud, o due cloud.
  */
@@ -118,7 +123,7 @@ export function CompareArea({ status, providers }: Props) {
       const preset = await api.getPreset(key);
       const first = conversationId === null;
       if (conversationId === null) {
-        conversationId = (await api.createConversation()).id;
+        conversationId = (await api.createTemporaryConversation()).id;
         await api.setConversationTools(conversationId, NO_TOOLS);
         update(index, { conversationId });
       }
@@ -173,7 +178,26 @@ export function CompareArea({ status, providers }: Props) {
     run(1, text, current[1]);
   };
 
-  const restart = () => setSides((current) => [emptySide(current[0].model), emptySide(current[1].model)]);
+  /** Salva una colonna come conversazione normale. */
+  const save = async (index: 0 | 1) => {
+    const id = sides[index].conversationId;
+    if (id === null) return;
+    try {
+      await api.keepConversation(id);
+      update(index, { saved: true });
+    } catch (e) {
+      update(index, { error: String(e) });
+    }
+  };
+  const unsaved = ([0, 1] as const).filter((i) => sides[i].conversationId !== null && !sides[i].saved);
+
+  // Le colonne non salvate si buttano: erano temporanee.
+  const restart = () => {
+    for (const side of sides) {
+      if (side.conversationId !== null && !side.saved) api.deleteConversation(side.conversationId).catch(() => {});
+    }
+    setSides((current) => [emptySide(current[0].model), emptySide(current[1].model)]);
+  };
 
   const stop = () => {
     for (const side of sides) if (side.conversationId !== null) api.stopGeneration(side.conversationId).catch(() => {});
@@ -183,10 +207,18 @@ export function CompareArea({ status, providers }: Props) {
     <div className="compare">
       <div className="compare-head">
         <h1>{t("Confronto tra modelli")}</h1>
+        {unsaved.length === 2 && (
+          <button className="btn" disabled={generating} onClick={() => unsaved.forEach(save)}>
+            {t("Salva entrambe")}
+          </button>
+        )}
         <button className="btn" disabled={generating} onClick={restart}>
           {t("Nuovo confronto")}
         </button>
       </div>
+      <p className="dim note">
+        {t("Le due conversazioni restano solo qui: salva quelle che vuoi tenere nella chat. Le altre si cancellano con «Nuovo confronto» o chiudendo l'app.")}
+      </p>
       {bothLocal && (
         <p className="notice">
           {t("Di modelli locali ne è caricato uno alla volta: le due colonne useranno lo stesso modello.")}
@@ -229,6 +261,18 @@ export function CompareArea({ status, providers }: Props) {
                 {side.stats && side.streaming === null && <CompareStats stats={side.stats} cost={cost} />}
                 {side.notice && <p className="notice">{tc(side.notice)}</p>}
                 {side.error && <p className="error pre" role="alert">{tc(side.error)}</p>}
+                {side.conversationId !== null &&
+                  (side.saved ? (
+                    <p className="dim note">{t("Salvata nella chat.")}</p>
+                  ) : (
+                    <button
+                      className="btn compare-save"
+                      disabled={side.streaming !== null}
+                      onClick={() => save(index as 0 | 1)}
+                    >
+                      {t("Salva come conversazione")}
+                    </button>
+                  ))}
                 {!ready(side) && (
                   <p className="dim note">
                     {side.model.kind === "local"

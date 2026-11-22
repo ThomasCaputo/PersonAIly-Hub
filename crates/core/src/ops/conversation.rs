@@ -130,6 +130,18 @@ impl Core {
         self.store().create_conversation(DEFAULT_TITLE)
     }
 
+    /// Una conversazione temporanea, per una colonna del confronto tra
+    /// modelli: funziona come le altre ma non compare nella cronologia finché
+    /// non la si salva con [`Core::keep_conversation`]. All'avvio si cancella.
+    pub fn create_temporary_conversation(&self) -> Result<Conversation> {
+        self.store().create_temporary_conversation(DEFAULT_TITLE)
+    }
+
+    /// Salva una conversazione temporanea: da qui è una conversazione normale.
+    pub fn keep_conversation(&self, id: i64) -> Result<()> {
+        self.store().keep_conversation(id)
+    }
+
     /// Conversazioni dalla più recente; con `query` solo quelle che contengono
     /// il testo cercato nel titolo o in un messaggio.
     pub fn list_conversations(&self, query: &str) -> Result<Vec<Conversation>> {

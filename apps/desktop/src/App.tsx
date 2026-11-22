@@ -82,6 +82,12 @@ export default function App() {
   // Cambiando lingua l'interfaccia intera si ridisegna da qui.
   useLanguage();
   const [areaId, setAreaId] = useState<AreaId>("chat");
+  // Il confronto, una volta aperto, resta montato: le sue conversazioni sono
+  // temporanee e cambiando pagina non devono sparire.
+  const [compareOpened, setCompareOpened] = useState(false);
+  useEffect(() => {
+    if (areaId === "compare") setCompareOpened(true);
+  }, [areaId]);
   const [core, setCore] = useState<CoreInfo | null>(null);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -344,7 +350,11 @@ export default function App() {
             {areaId === "agents" && (
               <AgentsArea status={status} providers={providers} onOpenModels={() => setAreaId("models")} />
             )}
-            {areaId === "compare" && <CompareArea status={status} providers={providers} />}
+            {compareOpened && (
+              <div className="area-kept" hidden={areaId !== "compare"}>
+                <CompareArea status={status} providers={providers} />
+              </div>
+            )}
             {areaId === "settings" && <SettingsArea />}
           </Suspense>
         </div>

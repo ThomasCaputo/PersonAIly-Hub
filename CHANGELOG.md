@@ -6,6 +6,10 @@ The section of each version is also used as the release notes shown by the in-ap
 ## [Unreleased]
 
 ### Added
+- **Model comparison keeps its conversations temporary:** the two columns no longer land in the
+  chat history on their own. "Save as conversation" (or "Save both") keeps the ones you want;
+  the others are deleted with "New comparison" or when the app closes. The comparison also
+  survives switching to another page and back.
 - **Reasoning on or off at load time:** models that can think before answering (Qwen3, Gemma 4,
   DeepSeek R1…) get a "Reasoning (thinking)" option in their card; turned off, they answer
   right away.

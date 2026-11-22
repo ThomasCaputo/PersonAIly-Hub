@@ -58,7 +58,14 @@ parts: number,
 /**
  * Presente se il file non si è potuto leggere.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * Se e come si controlla il ragionamento ("thinking") del modello: con
+ * `switch` si accende e spegne, con `effort` (gpt-oss) si riduce.
+ */
+thinking: ThinkingControl, };
+
+export type ThinkingControl = "none" | "switch" | "effort";
 
 export type LoadedModel = { modelPath: string, modelName: string, params: LoadParams, port: number, pid: number, 
 /**
@@ -88,7 +95,13 @@ vision: boolean,
 /**
  * Solo per [`Placement::Hybrid`]: quanti layer vanno sulla GPU.
  */
-gpuLayers: number | null, };
+gpuLayers: number | null, 
+/**
+ * Con `false` il modello risponde subito, senza ragionare prima
+ * (`--reasoning off`), o ragiona il meno possibile se non sa farne a
+ * meno (gpt-oss). Conta solo per i modelli che sanno ragionare.
+ */
+thinking: boolean, };
 
 export type Placement = "vram" | "ram" | "hybrid";
 

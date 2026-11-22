@@ -442,6 +442,9 @@ export const api = {
 
   listConversations: (query = "") => invoke<Conversation[]>("list_conversations", { query }),
   createConversation: () => invoke<Conversation>("create_conversation"),
+  /** Non compare nella cronologia finché non la si salva con `keepConversation`. */
+  createTemporaryConversation: () => invoke<Conversation>("create_temporary_conversation"),
+  keepConversation: (id: number) => invoke<void>("keep_conversation", { id }),
   renameConversation: (id: number, title: string) =>
     invoke<void>("rename_conversation", { id, title }),
   deleteConversation: (id: number) => invoke<void>("delete_conversation", { id }),

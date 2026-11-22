@@ -499,6 +499,8 @@ impl Core {
         let store = Store::open(&data_dir.join("data.sqlite"))?;
         // Nessuna sessione lavora più dopo un riavvio.
         store.mark_sessions_interrupted()?;
+        // Un confronto non salvato prima di chiudere l'app non si recupera.
+        store.delete_temporary_conversations()?;
         // Il registro non deve crescere senza limite: si ripulisce a ogni avvio
         // (e poi di tanto in tanto, vedi `log_action`).
         let _ = store.prune_actions_by_setting();

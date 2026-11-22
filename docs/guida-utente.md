@@ -92,7 +92,7 @@ premi **Aggiorna modelli**.
 - **Esporta** salva la conversazione in Markdown (o in JSON, con tutti i rami).
 - Il pannello a destra contiene i parametri (temperatura, top-p, contesto…) e il prompt di
   sistema, salvati per ogni modello. I preset con nome si esportano e importano.
-- **Confronto:** la pagina omonima manda lo stesso messaggio a due modelli affiancati.
+- **Confronto:** la pagina omonima manda lo stesso messaggio a due modelli affiancati. Le due conversazioni sono temporanee: con «Salva come conversazione» (o «Salva entrambe») le tieni nella chat, le altre si cancellano con «Nuovo confronto» o chiudendo l'app.
 
 ## Agenti e permessi
 

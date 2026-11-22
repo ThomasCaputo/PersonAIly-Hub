@@ -470,6 +470,14 @@ textarea {
   min-height: 0;
 }
 
+.area-kept {
+  height: 100%;
+}
+
+.area-kept[hidden] {
+  display: none;
+}
+
 .spill {
   padding: 12px 20px;
   background: var(--md-error-container);
@@ -1953,11 +1961,18 @@ details > summary {
 }
 
 .compare-head h1 {
+  flex: 1;
   margin: 0;
 }
 
-.compare > .notice {
+.compare > .notice,
+.compare > .note {
   margin: 0 24px 8px;
+}
+
+.compare-save {
+  align-self: flex-start;
+  margin-top: 8px;
 }
 
 .compare-columns {
