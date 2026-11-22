@@ -730,14 +730,14 @@ fn una_cartella_revocata_esce_subito_dall_indice() {
     assert_eq!(core.store().rag_counts().unwrap(), (1, 1));
 
     // La ricerca guarda solo le cartelle ammesse, anche se l'indice ne ha altre.
-    let hits = core.store().rag_chunks(&[]).unwrap();
-    assert!(hits.is_empty());
+    let index = rag::VectorIndex::new(core.store().rag_vectors().unwrap());
+    assert!(index.nearest(&[1.0, 0.0], &[], 6).is_empty());
+    let hits = index.nearest(&[1.0, 0.0], std::slice::from_ref(&a), 6);
+    assert_eq!(hits.len(), 1);
+    let ids: Vec<i64> = hits.iter().map(|(id, _)| *id).collect();
     assert_eq!(
-        core.store()
-            .rag_chunks(std::slice::from_ref(&a))
-            .unwrap()
-            .len(),
-        1
+        core.store().rag_chunk_texts(&ids).unwrap(),
+        [("C:/doc/a/uno.md".to_string(), "testo".to_string())]
     );
 
     // Toglierla dai documenti consultabili fa lo stesso.

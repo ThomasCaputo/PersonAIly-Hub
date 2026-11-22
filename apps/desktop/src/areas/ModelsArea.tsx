@@ -298,7 +298,7 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
             </label>
           )}
 
-          {model.supportsThinking && (
+          {model.thinking !== "none" && (
             <label className="check">
               <input
                 type="checkbox"
@@ -308,7 +308,9 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
               <span>
                 <strong>{t("Ragionamento (thinking)")}</strong>
                 <span className="dim note block">
-                  {t("Il modello ragiona prima di rispondere: risposte più accurate, ma più lente. Spento, risponde subito.")}
+                  {model.thinking === "effort"
+                    ? t("Il modello ragiona prima di rispondere e non sa farne a meno: spento, ragiona il meno possibile.")
+                    : t("Il modello ragiona prima di rispondere: risposte più accurate, ma più lente. Spento, risponde subito.")}
                 </span>
               </span>
             </label>

@@ -347,6 +347,12 @@ pub struct Core {
     /// Il modello di embedding che non dichiara il "pooling" e va avviato con
     /// `--pooling mean` (un modello di chat usato per gli embedding).
     mean_pooling_model: Mutex<Option<String>>,
+    /// Copia in memoria dei vettori dell'indice, per non rileggerli a ogni
+    /// ricerca. Si svuota quando l'indice cambia e quando il modello di
+    /// embedding si chiude per riposo.
+    /// Il numero cresce a ogni modifica: una copia costruita mentre l'indice
+    /// cambiava non si conserva.
+    rag_vectors: Mutex<(u64, Option<Arc<rag::VectorIndex>>)>,
 }
 
 /// Dove gira un ciclo modello → strumenti: una risposta in chat o una sessione.
@@ -528,6 +534,7 @@ impl Core {
             last_embed_use: Mutex::new(std::time::Instant::now()),
             rag_progress: Mutex::new(rag::RagStatus::default()),
             mean_pooling_model: Mutex::new(None),
+            rag_vectors: Mutex::new((0, None)),
         })
     }
 

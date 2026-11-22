@@ -1089,26 +1089,38 @@ impl Store {
         )?)
     }
 
-    /// I pezzi delle cartelle `folders` con il loro file e il vettore, per la
-    /// ricerca. Il filtro è una seconda protezione: l'indice si ripulisce già
-    /// quando una cartella non è più ammessa (vedi [`Store::rag_keep_folders`]).
-    pub fn rag_chunks(&self, folders: &[String]) -> Result<Vec<(String, String, Vec<f32>)>> {
+    /// Tutti i vettori dell'indice con la cartella del loro file, per
+    /// costruire l'indice in memoria ([`crate::rag::VectorIndex`]).
+    pub fn rag_vectors(&self) -> Result<Vec<(i64, String, Vec<f32>)>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT f.folder, f.path, c.text, c.embedding FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id",
+            "SELECT c.id, f.folder, c.embedding FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id",
         )?;
         let rows = stmt.query_map([], |row| {
-            let folder: String = row.get(0)?;
-            if !folders.contains(&folder) {
-                return Ok(None);
-            }
-            Ok(Some((
+            Ok((
+                row.get(0)?,
                 row.get(1)?,
-                row.get(2)?,
-                crate::rag::from_bytes(&row.get::<_, Vec<u8>>(3)?),
-            )))
+                crate::rag::from_bytes(&row.get::<_, Vec<u8>>(2)?),
+            ))
         })?;
-        let rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
-        Ok(rows.into_iter().flatten().collect())
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// File e testo di alcuni pezzi, nell'ordine di `ids`; quelli non più
+    /// nell'indice si saltano.
+    pub fn rag_chunk_texts(&self, ids: &[i64]) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.path, c.text FROM rag_chunks c JOIN rag_files f ON f.id = c.file_id WHERE c.id = ?1",
+        )?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(row) = stmt
+                .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?
+            {
+                out.push(row);
+            }
+        }
+        Ok(out)
     }
 
     // ── Impostazioni ────────────────────────────────────────────────────

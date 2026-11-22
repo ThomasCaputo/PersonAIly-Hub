@@ -34,9 +34,9 @@ pub struct ModelInfo {
     pub parts: u32,
     /// Presente se il file non si è potuto leggere.
     pub error: Option<String>,
-    /// Il modello sa ragionare prima di rispondere: si può caricare con il
-    /// ragionamento acceso o spento.
-    pub supports_thinking: bool,
+    /// Se e come si controlla il ragionamento ("thinking") del modello: con
+    /// `switch` si accende e spegne, con `effort` (gpt-oss) si riduce.
+    pub thinking: gguf::ThinkingControl,
     /// Dettagli per la stima della memoria: non servono all'interfaccia.
     #[serde(skip)]
     #[ts(skip)]
@@ -132,7 +132,7 @@ pub fn inspect(path: &Path) -> ModelInfo {
         .iter()
         .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
         .sum();
-    let (meta, mut error) = match gguf::read_meta(path) {
+    let (mut meta, mut error) = match gguf::read_meta(path) {
         Ok(meta) => (meta, None),
         Err(e) => (gguf::GgufMeta::default(), Some(e.to_string())),
     };
@@ -140,6 +140,16 @@ pub fn inspect(path: &Path) -> ModelInfo {
         error = Some(format!(
             "il modello è diviso in {parts} file e ne mancano {missing}"
         ));
+    }
+    // In un modello diviso i tensori sono sparsi tra le parti: la stima
+    // della memoria li vuole tutti. Se una parte non si legge resta quella
+    // fatta con la prima, più prudente.
+    if parts > 1 && error.is_none() {
+        let all: Result<Vec<Vec<(String, u64)>>, _> =
+            files.iter().map(|f| gguf::read_tensor_list(f)).collect();
+        if let Ok(all) = all {
+            meta.layout.set_tensors(&all.concat());
+        }
     }
     let mmproj = find_mmproj(path);
     let mmproj_bytes = mmproj
@@ -177,7 +187,7 @@ pub fn inspect(path: &Path) -> ModelInfo {
         mmproj_bytes,
         parts,
         error,
-        supports_thinking: meta.supports_thinking,
+        thinking: meta.thinking,
         layout: meta.layout,
     }
 }
@@ -316,6 +326,30 @@ mod tests {
         );
         assert!(!is_model_file(Path::new("c/Grande-00002-of-00002.gguf")));
         assert!(is_model_file(Path::new("c/Grande-00001-of-00002.gguf")));
+    }
+
+    #[test]
+    fn un_modello_diviso_si_misura_su_tutte_le_parti() {
+        let dir = std::env::temp_dir().join(format!("models-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("Grande-00001-of-00002.gguf");
+        std::fs::write(
+            &first,
+            gguf::tests::gguf_with_tensors(&[("token_embd.weight", 640)]),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Grande-00002-of-00002.gguf"),
+            gguf::tests::gguf_with_tensors(&[("output.weight", 640)]),
+        )
+        .unwrap();
+        let model = inspect(&first);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(model.parts, 2);
+        assert_eq!(model.layout.token_embd_bytes, 640);
+        // `output.weight` sta nella seconda parte: il modello non riusa gli
+        // embedding in uscita, quindi niente copia in più sulla GPU.
+        assert!(!model.layout.tied_output);
     }
 
     #[test]

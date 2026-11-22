@@ -465,6 +465,8 @@ export const EN: Record<string, string> = {
   "legge le immagini": "reads images",
   "Lettura delle immagini": "Image input",
   "Ragionamento (thinking)": "Reasoning (thinking)",
+  "Il modello ragiona prima di rispondere e non sa farne a meno: spento, ragiona il meno possibile.":
+    "The model reasons before answering and cannot skip it: when off, it reasons as little as possible.",
   "Il modello ragiona prima di rispondere: risposte più accurate, ma più lente. Spento, risponde subito.":
     "The model reasons before answering: more accurate answers, but slower. When off, it answers right away.",
   "Carica anche il componente visivo {file} ({size} GB in più).":

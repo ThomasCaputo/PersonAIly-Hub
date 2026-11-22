@@ -9,6 +9,7 @@ pub mod sysmon;
 
 use serde::{Deserialize, Serialize};
 
+use crate::gguf::ThinkingControl;
 use crate::models::ModelInfo;
 
 /// Versione di llama.cpp con cui gli argomenti qui sotto sono stati provati.
@@ -77,7 +78,8 @@ pub struct LoadParams {
     /// Solo per [`Placement::Hybrid`]: quanti layer vanno sulla GPU.
     pub gpu_layers: Option<u32>,
     /// Con `false` il modello risponde subito, senza ragionare prima
-    /// (`--reasoning off`). Conta solo per i modelli che sanno ragionare.
+    /// (`--reasoning off`), o ragiona il meno possibile se non sa farne a
+    /// meno (gpt-oss). Conta solo per i modelli che sanno ragionare.
     pub thinking: bool,
 }
 
@@ -150,12 +152,14 @@ pub struct Preset {
 }
 
 /// Argomenti con cui avviare `llama-server`. `mmproj` è il componente
-/// visivo da caricare insieme al modello, se c'è.
+/// visivo da caricare insieme al modello, se c'è; `thinking` dice come si
+/// spegne il ragionamento di quel modello.
 pub fn build_args(
     model_path: &str,
     params: &LoadParams,
     port: u16,
     mmproj: Option<&str>,
+    thinking: ThinkingControl,
 ) -> Vec<String> {
     let kv = params.kv_cache_type.arg();
     let mut args: Vec<String> = [
@@ -211,9 +215,17 @@ pub fn build_args(
     args.extend(placement);
 
     // Acceso, llama.cpp decide dal template (`auto`): così i modelli che non
-    // ragionano restano come sono.
+    // ragionano restano come sono. Spento, dipende dal modello: gpt-oss non
+    // sa rispondere senza ragionare, gli si chiede di ragionare poco.
     if !params.thinking {
-        args.extend(["--reasoning".to_string(), "off".to_string()]);
+        let (flag, value) = match thinking {
+            ThinkingControl::None => ("", ""),
+            ThinkingControl::Switch => ("--reasoning", "off"),
+            ThinkingControl::Effort => ("--reasoning-effort", "low"),
+        };
+        if !flag.is_empty() {
+            args.extend([flag.to_string(), value.to_string()]);
+        }
     }
     if let Some(threads) = params.threads {
         args.extend(["--threads".to_string(), threads.to_string()]);
@@ -399,7 +411,13 @@ mod tests {
 
     #[test]
     fn vram_mette_tutto_sulla_gpu() {
-        let args = build_args("m.gguf", &LoadParams::default(), 4000, None);
+        let args = build_args(
+            "m.gguf",
+            &LoadParams::default(),
+            4000,
+            None,
+            ThinkingControl::Switch,
+        );
         assert!(has_pair(&args, "--gpu-layers", "all"));
         assert!(has(&args, "--kv-offload"));
         assert!(!has(&args, "--no-kv-offload"));
@@ -413,7 +431,7 @@ mod tests {
             gpu_layers: Some(14),
             ..Default::default()
         };
-        let args = build_args("m.gguf", &params, 4000, None);
+        let args = build_args("m.gguf", &params, 4000, None, ThinkingControl::Switch);
         assert!(has_pair(&args, "--gpu-layers", "14"));
         assert!(has(&args, "--kv-offload"));
         assert!(!has(&args, "--device"));
@@ -425,7 +443,7 @@ mod tests {
             placement: Placement::Ram,
             ..Default::default()
         };
-        let args = build_args("m.gguf", &params, 4000, None);
+        let args = build_args("m.gguf", &params, 4000, None, ThinkingControl::Switch);
         assert!(has_pair(&args, "--gpu-layers", "0"));
         assert!(has_pair(&args, "--device", "none"));
         assert!(has(&args, "--no-kv-offload"));
@@ -434,7 +452,13 @@ mod tests {
 
     #[test]
     fn cache_kv_q8_di_default_e_nessuna_copia_in_ram() {
-        let args = build_args("m.gguf", &LoadParams::default(), 4000, None);
+        let args = build_args(
+            "m.gguf",
+            &LoadParams::default(),
+            4000,
+            None,
+            ThinkingControl::Switch,
+        );
         assert!(has_pair(&args, "--cache-type-k", "q8_0"));
         assert!(has_pair(&args, "--cache-type-v", "q8_0"));
         assert!(has_pair(&args, "--flash-attn", "on"));
@@ -444,26 +468,51 @@ mod tests {
 
     #[test]
     fn il_ragionamento_si_spegne_solo_se_richiesto() {
-        let on = build_args("m.gguf", &LoadParams::default(), 4000, None);
+        let on = build_args(
+            "m.gguf",
+            &LoadParams::default(),
+            4000,
+            None,
+            ThinkingControl::Switch,
+        );
         assert!(!has(&on, "--reasoning"));
         let params = LoadParams {
             thinking: false,
             ..Default::default()
         };
-        let off = build_args("m.gguf", &params, 4000, None);
+        let off = build_args("m.gguf", &params, 4000, None, ThinkingControl::Switch);
         assert!(has_pair(&off, "--reasoning", "off"));
+        // gpt-oss non sa rispondere senza ragionare: ragiona poco.
+        let low = build_args("m.gguf", &params, 4000, None, ThinkingControl::Effort);
+        assert!(has_pair(&low, "--reasoning-effort", "low"));
+        assert!(!has(&low, "--reasoning"));
+        // Un modello che non ragiona resta com'è.
+        let plain = build_args("m.gguf", &params, 4000, None, ThinkingControl::None);
+        assert!(!has(&plain, "--reasoning") && !has(&plain, "--reasoning-effort"));
     }
 
     #[test]
     fn il_componente_visivo_segue_la_collocazione() {
-        let vram = build_args("m.gguf", &LoadParams::default(), 4000, Some("v.gguf"));
+        let vram = build_args(
+            "m.gguf",
+            &LoadParams::default(),
+            4000,
+            Some("v.gguf"),
+            ThinkingControl::Switch,
+        );
         assert!(has_pair(&vram, "--mmproj", "v.gguf"));
         assert!(!has(&vram, "--no-mmproj-offload"));
         let params = LoadParams {
             placement: Placement::Ram,
             ..Default::default()
         };
-        let ram = build_args("m.gguf", &params, 4000, Some("v.gguf"));
+        let ram = build_args(
+            "m.gguf",
+            &params,
+            4000,
+            Some("v.gguf"),
+            ThinkingControl::Switch,
+        );
         assert!(has(&ram, "--no-mmproj-offload"));
     }
 
@@ -497,7 +546,7 @@ mod tests {
             mmproj_bytes: None,
             parts: 1,
             error: None,
-            supports_thinking: false,
+            thinking: Default::default(),
             layout: Default::default(),
         }
     }

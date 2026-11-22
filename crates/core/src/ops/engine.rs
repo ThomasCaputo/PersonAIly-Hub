@@ -203,7 +203,14 @@ impl Core {
             params.thinking
         ));
         let loaded = match runtime
-            .load(&engine, model_path, &model.name, params, mmproj)
+            .load(
+                &engine,
+                model_path,
+                &model.name,
+                params,
+                mmproj,
+                model.thinking,
+            )
             .await
         {
             Ok(loaded) => loaded,

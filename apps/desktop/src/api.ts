@@ -63,8 +63,11 @@ export type ModelInfo = {
   mmprojBytes: number | null;
   /** In quanti file è diviso il modello (1 = un file solo). */
   parts: number;
-  /** Il modello sa ragionare prima di rispondere ("thinking"). */
-  supportsThinking: boolean;
+  /**
+   * Se e come si controlla il ragionamento ("thinking"): `switch` si accende
+   * e spegne, `effort` (gpt-oss) si può solo ridurre.
+   */
+  thinking: "none" | "switch" | "effort";
   error: string | null;
 };
 

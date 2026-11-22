@@ -39,6 +39,8 @@ impl Core {
         store.set_setting(SETTING_RAG, &serde_json::to_string(settings)?)?;
         // Una cartella tolta dai documenti esce subito dall'indice.
         store.rag_keep_folders(&settings.folders)?;
+        drop(store);
+        self.invalidate_rag_vectors();
         Ok(())
     }
 
@@ -175,6 +177,9 @@ impl Core {
             && let Ok(mut runtime) = self.embedder.try_lock()
         {
             runtime.unload().await;
+            // Anche la copia in memoria dei vettori si libera: alla prossima
+            // ricerca si rilegge dall'archivio.
+            self.invalidate_rag_vectors();
         }
     }
 
@@ -276,6 +281,7 @@ impl Core {
                                 file.size,
                                 &pairs,
                             )?;
+                            self.invalidate_rag_vectors();
                         }
                         // Un file che il modello di embedding rifiuta (per
                         // esempio un pezzo troppo lungo) si salta, come quelli
@@ -315,6 +321,7 @@ impl Core {
             .filter(|f| allowed.contains(f))
             .collect();
         self.store().rag_prune(&still, &existing)?;
+        self.invalidate_rag_vectors();
         Ok(())
     }
 
@@ -324,18 +331,43 @@ impl Core {
         let (prefix, _) = Self::embedding_prefixes(&model_path);
         let input = [format!("{prefix}{query}")];
         let question = self.embed_texts(&input).await?.pop().unwrap_or_default();
+        // La cartella si controlla anche qui: è una seconda protezione, perché
+        // l'indice si ripulisce già quando una cartella non è più ammessa.
         let allowed = self.rag_allowed_folders()?;
-        let chunks = self.store().rag_chunks(&allowed)?;
-        let mut hits: Vec<rag::Hit> = chunks
+        let index = self.rag_vector_index()?;
+        let nearest = index.nearest(&question, &allowed, rag::RESULTS);
+        let ids: Vec<i64> = nearest.iter().map(|(id, _)| *id).collect();
+        let texts = self.store().rag_chunk_texts(&ids)?;
+        Ok(nearest
             .into_iter()
-            .map(|(path, text, vector)| rag::Hit {
-                score: rag::cosine(&question, &vector),
-                path,
-                text,
-            })
-            .collect();
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-        hits.truncate(rag::RESULTS);
-        Ok(hits)
+            .zip(texts)
+            .map(|((_, score), (path, text))| rag::Hit { path, text, score })
+            .collect())
+    }
+
+    /// L'indice in memoria, costruito alla prima ricerca.
+    fn rag_vector_index(&self) -> Result<Arc<rag::VectorIndex>> {
+        let generation = {
+            let cache = self.rag_vectors.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(index) = &cache.1 {
+                return Ok(index.clone());
+            }
+            cache.0
+        };
+        let index = Arc::new(rag::VectorIndex::new(self.store().rag_vectors()?));
+        let mut cache = self.rag_vectors.lock().unwrap_or_else(|e| e.into_inner());
+        // Se nel frattempo l'indice è cambiato la copia è già vecchia: serve
+        // a questa ricerca, ma non si conserva.
+        if cache.0 == generation {
+            cache.1 = Some(index.clone());
+        }
+        Ok(index)
+    }
+
+    /// L'indice nell'archivio è cambiato: la copia in memoria non vale più.
+    pub(crate) fn invalidate_rag_vectors(&self) {
+        let mut cache = self.rag_vectors.lock().unwrap_or_else(|e| e.into_inner());
+        cache.0 += 1;
+        cache.1 = None;
     }
 }

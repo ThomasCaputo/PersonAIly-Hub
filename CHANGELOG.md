@@ -17,6 +17,12 @@ The section of each version is also used as the release notes shown by the in-ap
 - **Searchable documents:** a file the embedding model rejects is skipped instead of stopping
   the whole indexing, and passages are sized to the embedding model's context (512 tokens for
   `multilingual-e5`).
+- **Searchable documents:** searches keep the index vectors in memory (normalized) instead of
+  reading them all from the database at every question; the copy is dropped when the index
+  changes or the embedding model goes idle.
+- **Reasoning option:** detected from precise template markers only; for gpt-oss, which cannot
+  turn reasoning off, "off" means the lowest reasoning effort.
+- **Memory estimate of split models:** tensors are read from every part, not just the first.
 - **Searchable documents:** the `query:`/`passage:` prefixes are chosen from the embedding
   model's file name only, so a folder name containing "e5" or "nomic" no longer changes them.
 - **False "spilling into RAM" warning** with models whose input embeddings are large, such as

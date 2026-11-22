@@ -121,7 +121,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let engine = app_core::local::runtime::find_server(Path::new(&args[0]), None)?;
     let loaded = runtime
-        .load(&engine, &args[1], &model.name, &params, None)
+        .load(
+            &engine,
+            &args[1],
+            &model.name,
+            &params,
+            None,
+            model.thinking,
+        )
         .await?;
     println!("caricato in {:.1} s", start.elapsed().as_secs_f64());
     print("appena caricato", &read(Some(loaded.pid)), &base);

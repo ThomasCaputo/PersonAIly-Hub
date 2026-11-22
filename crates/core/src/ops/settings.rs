@@ -54,6 +54,7 @@ impl Core {
                 .set_setting(SETTING_RAG, &serde_json::to_string(&rag)?)?;
         }
         self.store().rag_keep_folders(&rag.folders)?;
+        self.invalidate_rag_vectors();
         Ok(())
     }
 

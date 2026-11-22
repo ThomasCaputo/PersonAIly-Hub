@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
+use serde::Serialize;
+
 use crate::error::{Error, Result};
 
 /// Le informazioni che ci servono di un modello.
@@ -23,10 +25,24 @@ pub struct GgufMeta {
     pub head_count: Option<u64>,
     pub head_count_kv: Option<u64>,
     pub has_chat_template: bool,
-    /// Il modello sa ragionare prima di rispondere ("thinking"): il suo
-    /// template di chat lo prevede.
-    pub supports_thinking: bool,
+    /// Se e come si controlla il ragionamento ("thinking") del modello.
+    pub thinking: ThinkingControl,
     pub layout: Layout,
+}
+
+/// Come si controlla il ragionamento di un modello, secondo il suo template.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ThinkingControl {
+    /// Il modello non ragiona prima di rispondere.
+    #[default]
+    None,
+    /// Il ragionamento si accende e si spegne (`--reasoning off`): Qwen3,
+    /// Gemma 4, DeepSeek R1…
+    Switch,
+    /// Il ragionamento non si spegne, si riduce soltanto
+    /// (`--reasoning-effort low`): gpt-oss.
+    Effort,
 }
 
 /// Come llama.cpp distribuisce la memoria del modello: forma della cache KV e
@@ -78,7 +94,9 @@ const MAX_BOOL_ARRAY: u64 = 4096;
 /// Oltre questa lunghezza una stringa è quasi certamente un file corrotto.
 const MAX_STRING: u64 = 64 * 1024 * 1024;
 
-pub fn read_meta(path: &Path) -> Result<GgufMeta> {
+/// Apre un file GGUF e ne legge l'intestazione: numero di tensori e coppie
+/// chiave-valore. Il lettore resta fermo all'inizio dell'elenco dei tensori.
+fn read_header(path: &Path) -> Result<(BufReader<File>, u64, HashMap<String, Value>)> {
     let mut r = BufReader::with_capacity(1 << 16, File::open(path)?);
 
     let mut magic = [0u8; 4];
@@ -102,6 +120,44 @@ pub fn read_meta(path: &Path) -> Result<GgufMeta> {
         let value = read_value(&mut r, kind)?;
         values.insert(key, value);
     }
+    Ok((r, tensor_count, values))
+}
+
+/// Allineamento della sezione dei dati (`general.alignment`, di base 32).
+fn alignment(values: &HashMap<String, Value>) -> u64 {
+    match values.get("general.alignment") {
+        Some(Value::Int(a)) if *a > 0 => *a,
+        _ => 32,
+    }
+}
+
+/// Nome e dimensione dei tensori di un file GGUF. Serve per i modelli divisi
+/// in più file, dove ogni parte ha i suoi.
+pub fn read_tensor_list(path: &Path) -> Result<Vec<(String, u64)>> {
+    let (mut r, tensor_count, values) = read_header(path)?;
+    read_tensors(&mut r, tensor_count, alignment(&values))
+}
+
+impl Layout {
+    /// Ricava dai tensori gli embedding che restano in RAM e se il modello li
+    /// riusa in uscita. Con un modello diviso vanno passati quelli di tutte le
+    /// parti: `output.weight` può stare in una parte diversa da `token_embd`.
+    pub fn set_tensors(&mut self, tensors: &[(String, u64)]) {
+        let bytes = |name: &str| {
+            tensors
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(0, |(_, bytes)| *bytes)
+        };
+        self.token_embd_bytes = bytes("token_embd.weight");
+        self.per_layer_embd_bytes = bytes("per_layer_token_embd.weight");
+        self.tied_output =
+            !tensors.is_empty() && !tensors.iter().any(|(n, _)| n == "output.weight");
+    }
+}
+
+pub fn read_meta(path: &Path) -> Result<GgufMeta> {
+    let (mut r, tensor_count, values) = read_header(path)?;
 
     let text = |key: &str| match values.get(key) {
         Some(Value::Text(s)) => Some(s.clone()),
@@ -128,17 +184,9 @@ pub fn read_meta(path: &Path) -> Result<GgufMeta> {
 
     // Un elenco dei tensori illeggibile non rende inutilizzabile il modello:
     // la stima resta quella prudente.
-    let alignment = int("general.alignment").filter(|a| *a > 0).unwrap_or(32);
-    let tensors = read_tensors(&mut r, tensor_count, alignment).unwrap_or_default();
-    let tensor_bytes = |name: &str| {
-        tensors
-            .iter()
-            .find(|(n, _)| n == name)
-            .map_or(0, |(_, bytes)| *bytes)
-    };
-    let has_output = tensors.iter().any(|(n, _)| n == "output.weight");
+    let tensors = read_tensors(&mut r, tensor_count, alignment(&values)).unwrap_or_default();
 
-    let layout = Layout {
+    let mut layout = Layout {
         key_length: arch_int("attention.key_length"),
         value_length: arch_int("attention.value_length"),
         key_length_swa: arch_int("attention.key_length_swa"),
@@ -146,10 +194,9 @@ pub fn read_meta(path: &Path) -> Result<GgufMeta> {
         sliding_window: arch_int("attention.sliding_window"),
         swa_layers,
         shared_kv_layers: arch_int("attention.shared_kv_layers"),
-        token_embd_bytes: tensor_bytes("token_embd.weight"),
-        per_layer_embd_bytes: tensor_bytes("per_layer_token_embd.weight"),
-        tied_output: !tensors.is_empty() && !has_output,
+        ..Default::default()
     };
+    layout.set_tensors(&tensors);
 
     Ok(GgufMeta {
         layout,
@@ -162,7 +209,9 @@ pub fn read_meta(path: &Path) -> Result<GgufMeta> {
         head_count: arch_int("attention.head_count"),
         head_count_kv: arch_int("attention.head_count_kv"),
         has_chat_template: values.contains_key("tokenizer.chat_template"),
-        supports_thinking: text("tokenizer.chat_template").is_some_and(|t| template_thinks(&t)),
+        thinking: text("tokenizer.chat_template")
+            .map(|t| thinking_control(&t))
+            .unwrap_or_default(),
         architecture,
     })
 }
@@ -198,20 +247,31 @@ fn read_value<R: Read + Seek>(r: &mut R, kind: u32) -> Result<Value> {
     })
 }
 
-/// Un template di chat che prevede il ragionamento: Qwen3 e Gemma 4
-/// (`enable_thinking`), DeepSeek R1 (`<think>`), gpt-oss
-/// (`reasoning_effort`)… Si guarda il template, non il vocabolario, dove
-/// la parola "thinking" compare anche nei modelli che non ragionano.
-fn template_thinks(template: &str) -> bool {
-    [
+/// Come si controlla il ragionamento, dal template di chat. Si cercano i
+/// segni precisi con cui i template lo attivano: `enable_thinking` (Qwen3,
+/// Gemma 4, GLM), i delimitatori `<think>` (DeepSeek R1, QwQ), `<|think|>`
+/// (Gemma 4), `[THINK]` (Magistral); `reasoning_effort` da solo è gpt-oss,
+/// che il ragionamento lo riduce ma non lo spegne. Non basta la parola
+/// "thinking": alcuni template la nominano solo per toglierla dalla
+/// cronologia.
+fn thinking_control(template: &str) -> ThinkingControl {
+    let has = |k: &str| template.contains(k);
+    if [
         "enable_thinking",
         "<think>",
-        "reasoning_content",
-        "reasoning_effort",
-        "thinking",
+        "</think>",
+        "<|think|>",
+        "[THINK]",
     ]
     .iter()
-    .any(|k| template.contains(k))
+    .any(|k| has(k))
+    {
+        ThinkingControl::Switch
+    } else if has("reasoning_effort") {
+        ThinkingControl::Effort
+    } else {
+        ThinkingControl::None
+    }
 }
 
 /// Oltre questo numero di tensori il file è quasi certamente corrotto.
@@ -426,6 +486,51 @@ pub(crate) mod tests {
             .unwrap();
     }
 
+    /// Un GGUF senza metadati con i tensori indicati (nome, byte), uno dopo
+    /// l'altro nella sezione dei dati.
+    pub(crate) fn gguf_with_tensors(tensors: &[(&str, u64)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend(b"GGUF");
+        out.extend(3u32.to_le_bytes());
+        out.extend((tensors.len() as u64).to_le_bytes());
+        out.extend(0u64.to_le_bytes());
+        let mut offset = 0u64;
+        for (name, bytes) in tensors {
+            put_str(&mut out, name);
+            out.extend(1u32.to_le_bytes()); // una dimensione
+            out.extend(bytes.to_le_bytes()); // elementi I8: uno per byte
+            out.extend(24u32.to_le_bytes()); // tipo I8
+            out.extend(offset.to_le_bytes());
+            offset += bytes.div_ceil(32) * 32;
+        }
+        out.resize(out.len().div_ceil(32) * 32, 0);
+        out.resize(out.len() + offset as usize, 0);
+        out
+    }
+
+    #[test]
+    fn misura_i_tensori() {
+        let file = std::env::temp_dir().join(format!("gguf-tensors-{}.gguf", std::process::id()));
+        std::fs::write(
+            &file,
+            gguf_with_tensors(&[("token_embd.weight", 640), ("blk.0.attn_q.weight", 96)]),
+        )
+        .unwrap();
+        let tensors = read_tensor_list(&file).unwrap();
+        let meta = read_meta(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(
+            tensors,
+            [
+                ("token_embd.weight".to_string(), 640),
+                ("blk.0.attn_q.weight".to_string(), 96)
+            ]
+        );
+        assert_eq!(meta.layout.token_embd_bytes, 640);
+        // Senza `output.weight` il modello riusa gli embedding in uscita.
+        assert!(meta.layout.tied_output);
+    }
+
     #[test]
     fn legge_i_metadati() {
         let file = std::env::temp_dir().join(format!("gguf-test-{}.gguf", std::process::id()));
@@ -442,18 +547,32 @@ pub(crate) mod tests {
         assert_eq!(meta.head_count, Some(12));
         assert_eq!(meta.head_count_kv, Some(4));
         assert!(!meta.has_chat_template);
-        assert!(!meta.supports_thinking);
+        assert_eq!(meta.thinking, ThinkingControl::None);
     }
 
     #[test]
     fn riconosce_i_template_che_ragionano() {
-        assert!(template_thinks(
-            "{% if enable_thinking %}<|think|>{% endif %}"
-        ));
-        assert!(template_thinks("{{ '<think>\\n' }}"));
-        assert!(!template_thinks(
-            "{% for m in messages %}<|im_start|>{{ m.role }}{% endfor %}"
-        ));
+        use ThinkingControl::*;
+        assert_eq!(
+            thinking_control("{% if enable_thinking %}<|think|>{% endif %}"),
+            Switch
+        );
+        assert_eq!(thinking_control("{{ '<think>\\n' }}"), Switch);
+        assert_eq!(thinking_control("{{ '[THINK]' + m.content }}"), Switch);
+        // gpt-oss: si regola lo sforzo, non si spegne.
+        assert_eq!(
+            thinking_control("Reasoning: {{ reasoning_effort }}{{ m.thinking }}"),
+            Effort
+        );
+        assert_eq!(
+            thinking_control("{% for m in messages %}<|im_start|>{{ m.role }}{% endfor %}"),
+            None
+        );
+        // Nominare "thinking" solo per toglierlo dalla cronologia non basta.
+        assert_eq!(
+            thinking_control("{% set c = m.content | replace('thinking', '') %}"),
+            None
+        );
     }
 
     #[test]

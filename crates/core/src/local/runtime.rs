@@ -163,7 +163,7 @@ impl LocalRuntime {
 
     /// Carica un modello con la versione di llama.cpp indicata, scaricando
     /// prima quello eventualmente presente. Con `mmproj` il modello legge
-    /// anche le immagini.
+    /// anche le immagini; `thinking` dice come se ne spegne il ragionamento.
     pub async fn load(
         &mut self,
         engine: &InstalledEngine,
@@ -171,9 +171,10 @@ impl LocalRuntime {
         model_name: &str,
         params: &LoadParams,
         mmproj: Option<&str>,
+        thinking: crate::gguf::ThinkingControl,
     ) -> Result<LoadedModel> {
         let port = free_port()?;
-        let args = build_args(model_path, params, port, mmproj);
+        let args = build_args(model_path, params, port, mmproj, thinking);
         self.start(
             engine,
             model_path,

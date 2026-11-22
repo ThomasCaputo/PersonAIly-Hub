@@ -4,10 +4,11 @@
 //! embedding GGUF, eseguito da un secondo `llama-server` sulla CPU, trasforma
 //! ogni pezzo in un vettore. I vettori stanno nell'archivio SQLite. Per
 //! cercare si trasforma anche la domanda e si prendono i pezzi più vicini
-//! (somiglianza del coseno): con qualche decina di migliaia di pezzi basta
-//! scorrerli tutti.
+//! (somiglianza del coseno, sui vettori normalizzati e tenuti in memoria):
+//! con qualche decina di migliaia di pezzi basta scorrerli tutti.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -154,18 +155,75 @@ fn find_last(haystack: &[char], pattern: &[char]) -> Option<usize> {
         .map(|i| i + pattern.len() - 1)
 }
 
-/// Somiglianza del coseno tra due vettori della stessa lunghezza.
-pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
-    for (x, y) in a.iter().zip(b) {
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
+/// Lo stesso vettore con lunghezza 1: tra vettori normalizzati la
+/// somiglianza del coseno è il semplice prodotto scalare.
+pub fn normalized(mut vector: Vec<f32>) -> Vec<f32> {
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        vector.iter_mut().for_each(|x| *x /= norm);
     }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
+    vector
+}
+
+/// Un pezzo dell'indice in memoria: il testo resta nell'archivio e si legge
+/// solo per i pezzi trovati.
+#[derive(Debug, Clone)]
+pub struct IndexedChunk {
+    pub chunk_id: i64,
+    pub folder: Arc<str>,
+    pub vector: Vec<f32>,
+}
+
+/// I vettori dell'indice, normalizzati.
+#[derive(Debug, Default)]
+pub struct VectorIndex {
+    pub chunks: Vec<IndexedChunk>,
+}
+
+impl VectorIndex {
+    pub fn new(rows: Vec<(i64, String, Vec<f32>)>) -> Self {
+        // Molti pezzi per cartella: il nome si tiene una volta sola.
+        let mut folders: Vec<Arc<str>> = Vec::new();
+        let chunks = rows
+            .into_iter()
+            .map(|(chunk_id, folder, vector)| {
+                let folder = match folders.iter().find(|f| ***f == *folder) {
+                    Some(f) => f.clone(),
+                    None => {
+                        let f: Arc<str> = folder.into();
+                        folders.push(f.clone());
+                        f
+                    }
+                };
+                IndexedChunk {
+                    chunk_id,
+                    folder,
+                    vector: normalized(vector),
+                }
+            })
+            .collect();
+        Self { chunks }
+    }
+
+    /// I `limit` pezzi più vicini alla domanda, tra quelli delle cartelle
+    /// ammesse: id e punteggio, dal più vicino.
+    pub fn nearest(&self, question: &[f32], folders: &[String], limit: usize) -> Vec<(i64, f32)> {
+        let question = normalized(question.to_vec());
+        let mut scored: Vec<(i64, f32)> = self
+            .chunks
+            .iter()
+            // Un vettore di lunghezza diversa viene da un altro modello: non
+            // si confronta.
+            .filter(|c| c.vector.len() == question.len())
+            .filter(|c| folders.iter().any(|f| *f == *c.folder))
+            .map(|c| {
+                let dot = c.vector.iter().zip(&question).map(|(a, b)| a * b).sum();
+                (c.chunk_id, dot)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.truncate(limit);
+        scored
     }
 }
 
@@ -401,9 +459,19 @@ mod tests {
 
     #[test]
     fn coseno_e_byte() {
-        assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
-        assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
-        assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+        let index = VectorIndex::new(vec![
+            (1, "A".into(), vec![2.0, 0.0]),
+            (2, "A".into(), vec![0.0, 5.0]),
+            (3, "A".into(), vec![0.0, 0.0]),
+            (4, "B".into(), vec![1.0, 0.0]),
+            // Lunghezza diversa: viene da un altro modello, non si confronta.
+            (5, "A".into(), vec![1.0, 0.0, 0.0]),
+        ]);
+        let hits = index.nearest(&[3.0, 0.0], &["A".to_string()], 6);
+        assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), [1, 2, 3]);
+        assert!((hits[0].1 - 1.0).abs() < 1e-6);
+        assert!(hits[1].1.abs() < 1e-6);
+        assert_eq!(index.nearest(&[1.0, 0.0], &["A".to_string()], 1).len(), 1);
         let v = vec![0.5f32, -1.25, 3.0];
         assert_eq!(from_bytes(&to_bytes(&v)), v);
     }
