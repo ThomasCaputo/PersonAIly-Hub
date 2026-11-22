@@ -5,6 +5,8 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-11-22
+
 ### Added
 - **Model comparison keeps its conversations temporary:** the two columns no longer land in the
   chat history on their own. "Save as conversation" (or "Save both") keeps the ones you want;
@@ -43,6 +45,10 @@ The section of each version is also used as the release notes shown by the in-ap
   saying the same model no longer fits.
 - **Quantization label** taken from the file name when it has one: mixed quantizations such as
   Unsloth's `UD-Q6_K_XL` were shown as `Q8_0`.
+
+### Security
+- Updated the `url` dependency to 2.5.9 (RUSTSEC-2026-0592: stack overflow on nested `blob:`
+  URLs).
 
 ## [1.0.0] — 2026-11-20
 
@@ -100,5 +106,6 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.2.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ThomasCaputo/personaily-hub/releases/tag/v0.1.0

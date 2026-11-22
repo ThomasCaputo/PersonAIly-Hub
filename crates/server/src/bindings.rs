@@ -12,8 +12,8 @@
 use app_core::agents::{Agent, AgentSession, LiveState, PendingRequest, SessionStatus};
 use app_core::attachments::{AttachmentInfo, AttachmentKind};
 use app_core::chat::GenerationStats;
-use app_core::instance::{InstallInfo, InstanceKind, LockInfo};
 use app_core::gguf::ThinkingControl;
+use app_core::instance::{InstallInfo, InstanceKind, LockInfo};
 use app_core::local::runtime::LoadedModel;
 use app_core::local::sysmon::{GpuMemory, MemorySnapshot, ProcessGpuMemory};
 use app_core::local::{KvCacheType, LoadParams, Placement, SamplingParams};
