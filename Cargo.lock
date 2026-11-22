@@ -80,7 +80,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "app-server"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "app-core",
  "axum",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "app-core",
  "app-server",

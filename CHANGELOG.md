@@ -5,7 +5,7 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-11-22
+## [1.2.1] — 2026-11-22
 
 ### Added
 - **Model comparison keeps its conversations temporary:** the two columns no longer land in the
@@ -106,6 +106,6 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
-[1.2.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.0
+[1.2.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.1
 [1.0.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ThomasCaputo/personaily-hub/releases/tag/v0.1.0
