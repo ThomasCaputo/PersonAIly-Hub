@@ -5,6 +5,33 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+### Added
+- **MCP servers in chat:** the tools bar above the messages has an "MCP servers" menu to pick,
+  for each conversation, the servers its model can use (also among the defaults for new
+  conversations). The servers stay running between messages and close after 10 idle minutes.
+  In chat every MCP tool asks for confirmation, even with "Allow everything in the folders",
+  until you choose "Always allow" for that tool.
+- **Skills:** ready-made instructions for certain tasks in the open `SKILL.md` format, created in
+  the app or imported from a folder or a `.zip` (Settings → Skills). With the new "Skills" tool
+  on, in chats and agents, the model sees only their names and descriptions and loads the
+  instructions and files it needs when a request matches. Skills are included in backups.
+- **Browser sign-in (OAuth) for remote MCP servers:** services such as Notion or Linear connect
+  with "Sign in" instead of a pasted token. The app discovers the service's authorization
+  server, registers itself when the service allows it, signs in with PKCE through your browser
+  and renews the token by itself. Tokens are stored in Windows Credential Manager. Notion and
+  Linear are in the list of known servers.
+- **`/` commands from MCP prompts:** typing `/` in a chat lists the prompts offered by the
+  conversation's MCP servers; after filling in their arguments, the prompt's text lands in the
+  message box, to review and send.
+- **Plugins:** packages with skills, MCP servers, agents and `/` commands, in the Claude Code
+  plugin format, installed from a folder or a `.zip` (Settings → Plugins). Installing starts
+  nothing; uninstalling removes everything the plugin created, secrets included. Plugin commands
+  appear in the `/` menu of every conversation. Plugins are included in backups.
+
+### Fixed
+- The "MCP servers" menu above the messages now shows servers added in Settings without
+  reloading the app.
+
 ## [1.2.1] — 2026-11-22
 
 ### Added

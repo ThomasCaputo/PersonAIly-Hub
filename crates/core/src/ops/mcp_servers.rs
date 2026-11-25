@@ -86,6 +86,7 @@ impl Core {
         let mut all = self.stored_mcp_servers()?;
         if let Some(server) = all.iter().find(|s| s.id == id) {
             mcp::forget_env(&*self.env_vault, server)?;
+            self.mcp_oauth_logout(id)?;
         }
         all.retain(|s| s.id != id);
         self.store_mcp_servers(&all)
@@ -96,7 +97,176 @@ impl Core {
         &self,
         config: &mcp::McpServerConfig,
     ) -> Result<Vec<mcp::McpToolInfo>> {
-        mcp::probe(config).await
+        let mut config = config.clone();
+        // Con l'accesso OAuth serve il token, che c'è solo per un server salvato.
+        if config.uses_oauth() {
+            if config.id.is_empty() {
+                return Err(Error::msg(
+                    "Salva il server e fai l'accesso prima di provarlo.",
+                ));
+            }
+            self.authorize_mcp(std::slice::from_mut(&mut config))
+                .await?;
+        }
+        mcp::probe(&config).await
+    }
+
+    /// I server MCP di una conversazione in chat, accesi se non lo sono già
+    /// (ADR 0022). Quelli eliminati nel frattempo si saltano. `None` se non ne
+    /// resta nessuno; un errore se uno non parte.
+    pub(crate) async fn chat_mcp_set(
+        &self,
+        conversation_id: i64,
+        ids: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<Option<Arc<mcp::McpSet>>> {
+        let all = self.mcp_servers()?;
+        let mut configs: Vec<mcp::McpServerConfig> = ids
+            .iter()
+            .filter_map(|id| all.iter().find(|s| &s.id == id).cloned())
+            .collect();
+        if configs.is_empty() {
+            self.close_chat_mcp(conversation_id);
+            return Ok(None);
+        }
+        self.authorize_mcp(&mut configs).await?;
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&configs)?.hash(&mut hasher);
+            cwd.hash(&mut hasher);
+            hasher.finish()
+        };
+        let old = {
+            let mut live = self.chat_mcp.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = live.get_mut(&conversation_id)
+                && entry.key == key
+                && entry.set.is_alive()
+            {
+                entry.last_used = std::time::Instant::now();
+                return Ok(Some(entry.set.clone()));
+            }
+            live.remove(&conversation_id)
+        };
+        // I processi vecchi si chiudono prima di avviare quelli nuovi.
+        drop(old);
+
+        let set = Arc::new(mcp::McpSet::start(&configs, cwd).await?);
+        let evicted = {
+            let mut live = self.chat_mcp.lock().unwrap_or_else(|e| e.into_inner());
+            let replaced = live.insert(
+                conversation_id,
+                ChatMcp {
+                    key,
+                    set: set.clone(),
+                    last_used: std::time::Instant::now(),
+                },
+            );
+            let mut evicted: Vec<ChatMcp> = replaced.into_iter().collect();
+            // Troppe conversazioni con server accesi: si chiude la meno recente.
+            while live.len() > CHAT_MCP_MAX {
+                let Some(oldest) = live
+                    .iter()
+                    .filter(|(id, _)| **id != conversation_id)
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(id, _)| *id)
+                else {
+                    break;
+                };
+                evicted.extend(live.remove(&oldest));
+            }
+            evicted
+        };
+        // Fuori dal lucchetto: chiudere un processo può richiedere un momento.
+        drop(evicted);
+        Ok(Some(set))
+    }
+
+    /// I server MCP di una conversazione, avviati come per un messaggio: stessa
+    /// cartella di lavoro, così si riusano gli stessi processi.
+    async fn conversation_mcp(&self, conversation_id: i64) -> Result<Option<Arc<mcp::McpSet>>> {
+        let settings = self.conversation_tools(conversation_id)?;
+        if settings.mcp_servers.is_empty() {
+            return Ok(None);
+        }
+        let folders = self.granted_folders()?;
+        self.chat_mcp_set(
+            conversation_id,
+            &settings.mcp_servers,
+            folders.first().map(Path::new),
+        )
+        .await
+    }
+
+    /// I prompt dei server MCP della conversazione, da offrire come comandi `/`
+    /// (ADR 0025).
+    pub async fn conversation_prompts(&self, conversation_id: i64) -> Result<Vec<mcp::McpPrompt>> {
+        Ok(match self.conversation_mcp(conversation_id).await? {
+            Some(set) => set.prompts().await,
+            None => Vec::new(),
+        })
+    }
+
+    /// Il testo di un prompt, con gli argomenti scritti dall'utente.
+    pub async fn conversation_prompt(
+        &self,
+        conversation_id: i64,
+        server: usize,
+        name: &str,
+        arguments: &HashMap<String, String>,
+    ) -> Result<String> {
+        let set = self
+            .conversation_mcp(conversation_id)
+            .await?
+            .ok_or_else(|| Error::msg("Questa conversazione non usa server MCP."))?;
+        set.get_prompt(server, name, arguments).await
+    }
+
+    /// Segna come appena usati i server MCP di una conversazione.
+    pub(crate) fn touch_chat_mcp(&self, conversation_id: i64) {
+        if let Some(entry) = self
+            .chat_mcp
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&conversation_id)
+        {
+            entry.last_used = std::time::Instant::now();
+        }
+    }
+
+    /// Chiude i server MCP accesi per una conversazione, se ce ne sono.
+    pub(crate) fn close_chat_mcp(&self, conversation_id: i64) {
+        let entry = self
+            .chat_mcp
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&conversation_id);
+        drop(entry);
+    }
+
+    /// Chiude i server MCP delle conversazioni rimaste senza messaggi per
+    /// [`CHAT_MCP_IDLE`]; quelli di una conversazione che sta rispondendo restano.
+    /// Restituisce quante conversazioni ne avevano.
+    pub(crate) fn close_idle_chat_mcp(&self) -> usize {
+        let busy: Vec<i64> = self
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect();
+        let closed: Vec<ChatMcp> = {
+            let mut live = self.chat_mcp.lock().unwrap_or_else(|e| e.into_inner());
+            let idle: Vec<i64> = live
+                .iter()
+                .filter(|(id, entry)| {
+                    !busy.contains(id) && entry.last_used.elapsed() >= CHAT_MCP_IDLE
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            idle.iter().filter_map(|id| live.remove(id)).collect()
+        };
+        closed.len()
     }
 
     pub(crate) fn mcp_servers_for(&self, ids: &[String]) -> Result<Vec<mcp::McpServerConfig>> {

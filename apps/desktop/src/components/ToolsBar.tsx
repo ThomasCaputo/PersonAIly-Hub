@@ -1,4 +1,5 @@
-import type { Approval, PermissionLevel, ToolRequest, ToolSettings } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, type Approval, type McpServer, type PermissionLevel, type ToolRequest, type ToolSettings } from "../api";
 import { msg, t, tc } from "../i18n";
 
 const LEVELS: { value: PermissionLevel; label: string; hint: string }[] = [
@@ -61,6 +62,16 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
         />
         {t("Documenti")}
       </label>
+      <label title={t("Istruzioni preparate per certi compiti, in Impostazioni → Skill")}>
+        <input
+          type="checkbox"
+          checked={settings.skills ?? false}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...settings, skills: e.target.checked })}
+        />
+        {t("Skill")}
+      </label>
+      <McpPicker settings={settings} disabled={disabled} onChange={onChange} />
       <select
         aria-label={t("Permessi")}
         value={settings.permission}
@@ -75,6 +86,62 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
         ))}
       </select>
     </div>
+  );
+}
+
+type PickerProps = Pick<BarProps, "settings" | "disabled" | "onChange">;
+
+/** I server MCP della conversazione (ADR 0022): un menu con i server configurati. */
+function McpPicker({ settings, disabled, onChange }: PickerProps) {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const menu = useRef<HTMLDetailsElement>(null);
+  const reload = () => api.listMcpServers().then(setServers).catch(() => {});
+  // Si rilegge cambiando conversazione e quando la finestra torna in primo
+  // piano: un server aggiunto nelle Impostazioni compare senza ricaricare.
+  useEffect(() => {
+    reload();
+  }, [settings]);
+  useEffect(() => {
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+  // Un clic fuori dal menu lo chiude.
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (menu.current?.open && !menu.current.contains(e.target as Node)) menu.current.open = false;
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+  if (servers.length === 0) return null;
+
+  // Solo i server che esistono ancora: uno eliminato sparisce dalla scelta.
+  const chosen = servers.filter((s) => (settings.mcpServers ?? []).includes(s.id)).map((s) => s.id);
+  const toggle = (id: string, on: boolean) =>
+    onChange({ ...settings, mcpServers: on ? [...chosen, id] : chosen.filter((c) => c !== id) });
+
+  return (
+    <details className="tools-mcp" ref={menu} onToggle={(e) => e.currentTarget.open && reload()}>
+      <summary aria-disabled={disabled}>
+        {chosen.length === 0 ? t("Server MCP") : t("Server MCP: {n}", { n: chosen.length })}
+      </summary>
+      <div className="tools-mcp-menu">
+        {servers.map((s) => (
+          <label key={s.id}>
+            <input
+              type="checkbox"
+              checked={chosen.includes(s.id)}
+              disabled={disabled}
+              onChange={(e) => toggle(s.id, e.target.checked)}
+            />
+            {s.name}
+          </label>
+        ))}
+        <p className="dim note">
+          {t("Ogni strumento MCP chiede conferma finché non scegli «Consenti sempre» per quello strumento.")}
+        </p>
+      </div>
+    </details>
   );
 }
 

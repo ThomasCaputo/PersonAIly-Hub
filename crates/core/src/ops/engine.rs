@@ -382,6 +382,7 @@ impl Core {
             tick.tick().await;
             self.unload_if_idle().await;
             self.stop_embedder_if_idle().await;
+            self.close_idle_chat_mcp();
         }
     }
 }

@@ -3,6 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Preferences, type SecuritySettings, type Theme, type ToolSettings } from "../api";
 import { ApiSection } from "../components/ApiSection";
 import { McpSection } from "../components/McpSection";
+import { SkillsSection } from "../components/SkillsSection";
+import { PluginsSection } from "../components/PluginsSection";
 import { SpendSection } from "../components/SpendSection";
 import { DocumentsSection } from "../components/DocumentsSection";
 import { DataSection } from "../components/DataSection";
@@ -23,6 +25,8 @@ export function SettingsArea() {
   const { language, chooseLanguage } = useLanguage();
   const [folders, setFolders] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<ToolSettings | null>(null);
+  // Cresce quando si installa o toglie un plugin: le sezioni di skill e server si rileggono.
+  const [pluginsRev, setPluginsRev] = useState(0);
   const [security, setSecurity] = useState<SecuritySettings | null>(null);
   const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [tray, setTray] = useState(false);
@@ -217,7 +221,11 @@ export function SettingsArea() {
 
       <SpendSection />
 
-      <McpSection />
+      <McpSection key={`mcp-${pluginsRev}`} />
+
+      <SkillsSection key={`skills-${pluginsRev}`} />
+
+      <PluginsSection onChanged={() => setPluginsRev((n) => n + 1)} />
 
       <ApiSection />
 

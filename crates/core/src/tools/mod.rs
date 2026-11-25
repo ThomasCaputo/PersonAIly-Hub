@@ -146,10 +146,16 @@ pub struct ToolSettings {
     pub terminal: bool,
     /// Ricerca nei documenti consultabili (RAG locale, ADR 0017).
     pub documents: bool,
+    /// Skill da caricare quando servono (ADR 0023).
+    pub skills: bool,
     pub permission: PermissionLevel,
     /// Strumenti MCP per cui l'utente ha scelto "Consenti sempre".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Solo in chat: i server MCP (identificatori) scelti per la conversazione
+    /// (ADR 0022). Nelle sessioni contano quelli dell'agente.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
 }
 
 impl Default for ToolSettings {
@@ -159,8 +165,10 @@ impl Default for ToolSettings {
             web: false,
             terminal: false,
             documents: false,
+            skills: false,
             permission: PermissionLevel::Ask,
             allowed_tools: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 }

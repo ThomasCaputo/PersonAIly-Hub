@@ -134,6 +134,56 @@ export const CORE_EN: Record<string, string> = {
     "The MCP server address must start with https:// (http:// only for a server on this computer).",
   "Ogni intestazione HTTP ha bisogno di un nome valido (lettere, cifre e trattini).":
     "Every HTTP header needs a valid name (letters, digits and hyphens).",
+  // Skill (ADR 0023)
+  "Lo SKILL.md deve cominciare con un'intestazione tra due righe «---» che contiene name e description.":
+    "SKILL.md must start with a header between two “---” lines containing name and description.",
+  "Manca la descrizione della skill: è ciò che il modello legge per decidere quando usarla.":
+    "The skill has no description: it is what the model reads to decide when to use it.",
+  "La descrizione della skill è troppo lunga (al massimo 1024 caratteri).":
+    "The skill description is too long (1024 characters at most).",
+  "Manca il file SKILL.md o non si legge.": "SKILL.md is missing or cannot be read.",
+  "La skill è troppo grande: al massimo 200 file e 20 MB.": "The skill is too big: 200 files and 20 MB at most.",
+  "Nella cartella o nello zip scelto non c'è un file SKILL.md.": "There is no SKILL.md file in the chosen folder or zip.",
+  "Il file scelto non è un archivio .zip leggibile.": "The chosen file is not a readable .zip archive.",
+  "Lo zip contiene più skill: importale una alla volta.": "The zip contains several skills: import them one at a time.",
+  "Questa skill non esiste più.": "This skill no longer exists.",
+  "Il server di questo prompt non è più attivo.": "The server of this prompt is no longer running.",
+  "Questa conversazione non usa server MCP.": "This conversation uses no MCP servers.",
+  // Plugin (ADR 0026)
+  "Il plugin è troppo grande: al massimo 500 file e 50 MB.": "The plugin is too big: 500 files and 50 MB at most.",
+  "Nella cartella o nello zip scelto non c'è un plugin (manca .claude-plugin/plugin.json).":
+    "There is no plugin in the chosen folder or zip (.claude-plugin/plugin.json is missing).",
+  "Lo zip contiene più plugin: importali uno alla volta.": "The zip contains several plugins: import them one at a time.",
+  "Questo plugin non è installato.": "This plugin is not installed.",
+  "Il plugin non ha più questo comando.": "The plugin no longer has this command.",
+  "Il file di questo comando non c'è più: reinstalla il plugin.": "This command's file is gone: reinstall the plugin.",
+  "Il file dei server MCP indicato nel manifest non c'è.": "The MCP server file named in the manifest is missing.",
+  "Il plugin contiene hooks: l'app non li supporta e li salta.": "The plugin contains hooks: the app does not support them and skips them.",
+  "Il plugin contiene server LSP: l'app non li supporta e li salta.": "The plugin contains LSP servers: the app does not support them and skips them.",
+  "Il plugin contiene stili di risposta: l'app non li supporta e li salta.": "The plugin contains output styles: the app does not support them and skips them.",
+  // Accesso OAuth ai server MCP (ADR 0024)
+  "Il server non chiede un accesso OAuth: scegli «Intestazioni» (o nessuna) nel modulo del server.":
+    "The server does not ask for an OAuth sign-in: choose “Headers” (or none) in the server form.",
+  "Il server non indica il suo server di autorizzazione.": "The server does not name its authorization server.",
+  "Il server di autorizzazione non pubblica i suoi metadati: l'accesso non si può fare.":
+    "The authorization server does not publish its metadata: the sign-in cannot be done.",
+  "Il server di autorizzazione non supporta PKCE con S256: l'accesso sarebbe insicuro.":
+    "The authorization server does not support PKCE with S256: the sign-in would be unsafe.",
+  "Il server di autorizzazione non indica la pagina di accesso.": "The authorization server does not name its sign-in page.",
+  "Il server di autorizzazione non indica dove chiedere i token.": "The authorization server does not say where to request tokens.",
+  "Il servizio non permette all'app di registrarsi da sola: registra un'app OAuth presso il servizio (indirizzo di ritorno http://127.0.0.1/callback) e scrivi il suo Client ID nel modulo.":
+    "The service does not let the app register itself: register an OAuth app with the service (redirect address http://127.0.0.1/callback) and enter its Client ID in the form.",
+  "La risposta del servizio non corrisponde all'accesso avviato (state diverso): riprova.":
+    "The service's reply does not match the sign-in that was started (different state): try again.",
+  "Il servizio non ha restituito il codice di accesso.": "The service did not return the sign-in code.",
+  "Salva il server prima di fare l'accesso.": "Save the server before signing in.",
+  "Questo server non usa l'accesso dal browser: sceglilo nel modulo e salva.":
+    "This server does not use browser sign-in: choose it in the form and save.",
+  "Nessun accesso in corso per questo server.": "No sign-in in progress for this server.",
+  "L'accesso è già in attesa.": "The sign-in is already waiting.",
+  "L'accesso non è stato completato entro 5 minuti: riprova.": "The sign-in was not completed within 5 minutes: try again.",
+  "Accesso annullato.": "Sign-in cancelled.",
+  "Salva il server e fai l'accesso prima di provarlo.": "Save the server and sign in before testing it.",
 };
 
 /** Testi con parti variabili: espressione → sostituzione, provate in ordine. */
@@ -144,6 +194,42 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Ripristinare le cartelle: (.*)$/s, "Restore the folders: $1"],
   [/^Affidare a (.*?): (.*)$/s, "Hand over to $1: $2"],
   [/^Cercare nei documenti: (.*)$/s, "Search the documents: $1"],
+  [/^Caricare la skill «(.*)»$/s, "Load the skill “$1”"],
+  [/^Server MCP «(.*)» saltato: usa il trasporto SSE, che l'app non supporta\.$/s, "MCP server “$1” skipped: it uses the SSE transport, which the app does not support."],
+  [/^Server MCP «(.*)» saltato: manca il comando o l'indirizzo\.$/s, "MCP server “$1” skipped: the command or address is missing."],
+  [/^Server MCP «(.*)»: completa nelle Impostazioni i valori di (.*)\.$/s, "MCP server “$1”: fill in the values of $2 in Settings."],
+  [
+    /^Comando \/(.*): le righe che eseguono comandi \(!`…`\) restano testo, l'app non le esegue\.$/s,
+    "Command /$1: the lines that run commands (!`…`) stay as text, the app does not run them.",
+  ],
+  [/^File del plugin illeggibile \((.*?)\): (.*)$/s, "Unreadable plugin file ($1): $2"],
+  [
+    /^Nome del plugin non valido: «(.*)»\. (.*)$/s,
+    "Invalid plugin name: “$1”. The manifest needs a name with only lowercase letters, digits and hyphens.",
+  ],
+  [
+    /^Il plugin contiene skill con lo stesso nome di skill già installate: (.*)\. Eliminale o rinominale prima di installarlo\.$/s,
+    "The plugin contains skills with the same name as installed skills: $1. Delete or rename them before installing it.",
+  ],
+  [/^Esiste già una skill di nome «(.*)»\.$/s, "A skill named “$1” already exists."],
+  [
+    /^Fai l'accesso al server MCP «(.*)»: Impostazioni → Server MCP → Modifica → Accedi\.$/s,
+    "Sign in to the MCP server “$1”: Settings → MCP servers → Edit → Sign in.",
+  ],
+  [/^Accesso non concesso dal servizio: (.*)$/s, "Access not granted by the service: $1"],
+  [/^Il servizio non ha dato i token \((.*?)\)\. (.*)$/s, "The service did not issue the tokens ($1). $2"],
+  [
+    /^Il servizio ha rifiutato la registrazione dell'app \((.*?)\)\. (.*)$/s,
+    "The service refused to register the app ($1). $2",
+  ],
+  [
+    /^Il server di autorizzazione indica un indirizzo non sicuro \(serve https:\/\/\): (.*)$/s,
+    "The authorization server gives an unsafe address (https:// is required): $1",
+  ],
+  [/^Leggere «(.*)» della skill «(.*)»$/s, "Read “$1” of the skill “$2”"],
+  [/^Nome della skill non valido: «(.*)»\. (.*)$/s, "Invalid skill name: “$1”. Use only lowercase letters, digits and hyphens (64 characters at most)."],
+  [/^Esiste già una skill di nome «(.*)»: scegline un altro\.$/s, "A skill named “$1” already exists: choose another name."],
+  [/^Il nome nello SKILL\.md \(«(.*)»\) non corrisponde alla cartella\.$/s, "The name in SKILL.md (“$1”) does not match the folder."],
   [/^Sessione (\d+) di (.*?), stato: (\w+)\.(.*)$/s, "Session $1 of $2, status: $3.$4"],
   [/^Ripristino non riuscito per:\n(.*)$/s, "Restore failed for:\n$1"],
   [/^Scrivere il file (.*) \((\d+) caratteri\)$/s, "Write the file $1 ($2 characters)"],

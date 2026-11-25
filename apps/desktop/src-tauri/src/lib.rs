@@ -19,9 +19,11 @@ use app_core::local::runtime::InstalledEngine;
 use app_core::local::runtime::LoadedModel;
 use app_core::local::{LoadParams, Preset, SamplingParams};
 use app_core::mcp::{McpServerConfig, McpToolInfo};
+use app_core::mcp_oauth::{LoginStart, OAuthStatus};
 use app_core::models::ModelInfo;
 use app_core::named_presets::NamedPreset;
 use app_core::providers::Provider;
+use app_core::skills::{ImportOutcome, Skill, SkillDraft};
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
@@ -454,6 +456,132 @@ async fn probe_mcp_server(
     server: McpServerConfig,
 ) -> CmdResult<Vec<McpToolInfo>> {
     core.probe_mcp_server(&server).await.map_err(text)
+}
+
+// ── Plugin (ADR 0026) ───────────────────────────────────────────────────
+
+#[tauri::command(async)]
+fn list_plugins(core: CoreState<'_>) -> CmdResult<Vec<app_core::plugins::PluginRecord>> {
+    core.list_plugins().map_err(text)
+}
+
+/// Importa un plugin da una cartella o da un `.zip`; senza `replace` non
+/// sostituisce un plugin con lo stesso nome e lo dice.
+#[tauri::command(async)]
+fn import_plugin(
+    core: CoreState<'_>,
+    path: String,
+    replace: bool,
+) -> CmdResult<app_core::plugins::PluginInstall> {
+    core.import_plugin(std::path::Path::new(&path), replace)
+        .map_err(text)
+}
+
+#[tauri::command(async)]
+fn uninstall_plugin(core: CoreState<'_>, name: String) -> CmdResult<()> {
+    core.uninstall_plugin(&name).map_err(text)
+}
+
+#[tauri::command(async)]
+fn plugin_commands(core: CoreState<'_>) -> CmdResult<Vec<app_core::PluginCommandInfo>> {
+    core.plugin_commands().map_err(text)
+}
+
+#[tauri::command(async)]
+fn plugin_command_text(
+    core: CoreState<'_>,
+    plugin: String,
+    name: String,
+    arguments: String,
+) -> CmdResult<String> {
+    core.plugin_command_text(&plugin, &name, &arguments)
+        .map_err(text)
+}
+
+/// I prompt dei server MCP della conversazione, per i comandi `/` (ADR 0025).
+#[tauri::command]
+async fn conversation_prompts(
+    core: CoreState<'_>,
+    conversation_id: i64,
+) -> CmdResult<Vec<app_core::mcp::McpPrompt>> {
+    core.conversation_prompts(conversation_id)
+        .await
+        .map_err(text)
+}
+
+/// Il testo di un prompt, con gli argomenti scritti dall'utente.
+#[tauri::command]
+async fn conversation_prompt(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    server: usize,
+    name: String,
+    arguments: std::collections::HashMap<String, String>,
+) -> CmdResult<String> {
+    core.conversation_prompt(conversation_id, server, &name, &arguments)
+        .await
+        .map_err(text)
+}
+
+/// Prepara l'accesso OAuth a un server salvato: la pagina da aprire nel browser.
+#[tauri::command]
+async fn mcp_oauth_start(core: CoreState<'_>, id: String) -> CmdResult<LoginStart> {
+    core.mcp_oauth_start(&id).await.map_err(text)
+}
+
+/// Aspetta che l'utente completi l'accesso nel browser.
+#[tauri::command]
+async fn mcp_oauth_finish(core: CoreState<'_>, id: String) -> CmdResult<OAuthStatus> {
+    core.mcp_oauth_finish(&id).await.map_err(text)
+}
+
+#[tauri::command]
+fn mcp_oauth_cancel(core: CoreState<'_>, id: String) {
+    core.mcp_oauth_cancel(&id);
+}
+
+#[tauri::command(async)]
+fn mcp_oauth_status(core: CoreState<'_>, id: String) -> CmdResult<OAuthStatus> {
+    core.mcp_oauth_status(&id).map_err(text)
+}
+
+#[tauri::command(async)]
+fn mcp_oauth_logout(core: CoreState<'_>, id: String) -> CmdResult<()> {
+    core.mcp_oauth_logout(&id).map_err(text)
+}
+
+// ── Skill (ADR 0023) ────────────────────────────────────────────────────
+
+#[tauri::command(async)]
+fn list_skills(core: CoreState<'_>) -> CmdResult<Vec<Skill>> {
+    core.list_skills().map_err(text)
+}
+
+/// Importa una cartella o un `.zip`; senza `replace` non sostituisce una skill
+/// con lo stesso nome e lo dice.
+#[tauri::command(async)]
+fn import_skill(core: CoreState<'_>, path: String, replace: bool) -> CmdResult<ImportOutcome> {
+    core.import_skill(std::path::Path::new(&path), replace)
+        .map_err(text)
+}
+
+#[tauri::command(async)]
+fn save_skill(
+    core: CoreState<'_>,
+    draft: SkillDraft,
+    original: Option<String>,
+) -> CmdResult<Skill> {
+    core.save_skill(&draft, original.as_deref()).map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_skill_enabled(core: CoreState<'_>, name: String, enabled: bool) -> CmdResult<()> {
+    core.set_skill_enabled(&name, enabled).map_err(text)
+}
+
+#[tauri::command(async)]
+fn delete_skill(core: CoreState<'_>, name: String) -> CmdResult<()> {
+    core.delete_skill(&name).map_err(text)
 }
 
 // ── Agenti ──────────────────────────────────────────────────────────────
@@ -1185,6 +1313,23 @@ pub fn run() {
             save_mcp_server,
             delete_mcp_server,
             probe_mcp_server,
+            conversation_prompts,
+            conversation_prompt,
+            list_plugins,
+            import_plugin,
+            uninstall_plugin,
+            plugin_commands,
+            plugin_command_text,
+            mcp_oauth_start,
+            mcp_oauth_finish,
+            mcp_oauth_cancel,
+            mcp_oauth_status,
+            mcp_oauth_logout,
+            list_skills,
+            import_skill,
+            save_skill,
+            set_skill_enabled,
+            delete_skill,
             list_agents,
             save_agent,
             duplicate_agent,

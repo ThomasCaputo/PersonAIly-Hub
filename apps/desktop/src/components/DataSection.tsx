@@ -67,7 +67,7 @@ export function DataSection() {
         <h2>{t("Backup dei dati")}</h2>
         <p className="dim note">
           {t(
-            "Il backup contiene conversazioni, agenti, impostazioni e preset. Non contiene le chiavi API e le variabili dei server MCP, che restano nel Gestore credenziali di Windows, né i modelli e llama.cpp: su un altro computer vanno inseriti e scaricati di nuovo.",
+            "Il backup contiene conversazioni, agenti, impostazioni, preset, skill e plugin. Non contiene le chiavi API e le variabili dei server MCP, che restano nel Gestore credenziali di Windows, né i modelli e llama.cpp: su un altro computer vanno inseriti e scaricati di nuovo.",
           )}
         </p>
         <div className="row">

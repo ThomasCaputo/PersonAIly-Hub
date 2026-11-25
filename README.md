@@ -67,8 +67,13 @@ chat, the same agents and the same tools whichever model you pick.
 - Undo everything an agent changed with one click (a snapshot is taken before each session).
 - Agents can hand parts of a task over to other agents.
 - Terminal commands and external tools through [MCP](https://modelcontextprotocol.io):
-  local servers (stdio) or remote ones over HTTP, their tools and resources, and a list of
-  well-known servers to add with one click. Always behind your permission rules.
+  local servers (stdio) or remote ones over HTTP (with browser sign-in for services such as
+  Notion or Linear), their tools and resources, in chats too, and a list of well-known servers
+  to add with one click. Always behind your permission rules.
+- **Skills:** ready-made instructions for certain tasks in the open `SKILL.md` format, loaded by
+  the model only when a request needs them.
+- **Plugins** in the Claude Code format: skills, MCP servers, agents and `/` commands installed
+  and removed as one package.
 - Per-step token limit: a small local model that gets stuck is stopped and asked to try again.
 
 **Integrations**

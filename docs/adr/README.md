@@ -27,3 +27,8 @@ ADR che sostituisce il precedente.
 | [0019](0019-rami-e-completamento-in-linea.md) | Rami della conversazione; completamento del codice in linea in VS Code (VS-6) | Accettata; completamento in linea da provare con un modello per il codice |
 | [0020](0020-aggiornamenti-backup-registro.md) | Aggiornamento automatico firmato, backup dei dati, registro diagnostico | Accettata; aggiornamento da provare con la prima release firmata |
 | [0021](0021-completamento-1-0-0.md) | Ultimi lavori per la 1.0.0: agenti con percorsi relativi, prompt caching, MCP via HTTP e risorse, primo avvio, accessibilità, divisione del nucleo, firma Authenticode | Accettata; da provare dal vivo |
+| [0022](0022-mcp-in-chat.md) | Server MCP anche in chat: scelta per conversazione, server accesi tra un messaggio e l'altro | Accettata e provata con un modello locale |
+| [0023](0023-skill.md) | Skill: cartelle con SKILL.md, caricate dal modello quando servono | Accettata e provata con un modello locale |
+| [0024](0024-oauth-mcp.md) | Accesso OAuth dal browser ai server MCP remoti (scoperta, registrazione dinamica, PKCE) | Accettata; da provare con un account vero |
+| [0025](0025-prompt-mcp.md) | Prompt dei server MCP come comandi `/` in chat | Accettata e provata con un server pubblicato |
+| [0026](0026-plugin.md) | Plugin nel formato di Claude Code: skill, server MCP, agenti e comandi in un pacchetto | Accettata; da provare con un plugin pubblicato |

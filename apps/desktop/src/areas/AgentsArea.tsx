@@ -828,6 +828,14 @@ function AgentEditor({
             />
             {t("Documenti")}
           </label>
+          <label title={t("Istruzioni preparate per certi compiti, in Impostazioni → Skill")}>
+            <input
+              type="checkbox"
+              checked={agent.tools.skills ?? false}
+              onChange={(e) => setTools({ skills: e.target.checked })}
+            />
+            {t("Skill")}
+          </label>
           <select
             aria-label={t("Permessi")}
             value={agent.tools.permission}

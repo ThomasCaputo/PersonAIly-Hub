@@ -21,6 +21,7 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ParamsPanel } from "../components/ParamsPanel";
 import { ToolRequestCard, ToolsBar } from "../components/ToolsBar";
+import { PromptMenu, type PromptMenuHandle } from "../components/PromptMenu";
 import { currentLanguage, msg, num, t, tc } from "../i18n";
 
 const attachmentFilters = () => [
@@ -88,6 +89,7 @@ export function ChatArea({
   const [stats, setStats] = useState<GenerationStats | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const promptMenu = useRef<PromptMenuHandle>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState<{ id: number; title: string } | null>(null);
@@ -658,6 +660,14 @@ export function ChatArea({
             ))}
           </div>
         )}
+        <PromptMenu
+          ref={promptMenu}
+          conversationId={activeId}
+          servers={toolSettings?.mcpServers ?? []}
+          draft={draft}
+          setDraft={setDraft}
+          onError={setError}
+        />
         <div className="composer">
           <button
             className="btn"
@@ -677,6 +687,11 @@ export function ChatArea({
             rows={3}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
+              // Con il menu dei comandi / aperto, frecce e Invio scelgono il prompt.
+              if (promptMenu.current?.handleKey(e)) {
+                e.preventDefault();
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 send();
@@ -774,6 +789,8 @@ export const TOOL_LABELS: Record<string, string> = {
   restore_point: msg("Ripristino delle cartelle"),
   delegate_task: msg("Lavoro affidato a un agente"),
   search_documents: msg("Ricerca nei documenti"),
+  load_skill: msg("Skill caricata"),
+  read_skill_file: msg("File di una skill"),
 };
 
 /** Nome leggibile di uno strumento dell'app o di un server MCP. */

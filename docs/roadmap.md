@@ -269,10 +269,25 @@ Indispensabile:
 Ciò che resta (certificato Authenticode, prove dal vivo, tag) è in
 [piano-1.0.0.md](piano-1.0.0.md).
 
+## Dopo la 1.2
+
+- [x] Server MCP anche in chat, scelti per conversazione e accesi tra un messaggio e l'altro
+      ([ADR 0022](adr/0022-mcp-in-chat.md)).
+- [x] Skill nel formato `SKILL.md`: create nell'app o importate, caricate dal modello quando
+      servono, anche nei backup ([ADR 0023](adr/0023-skill.md)).
+- [x] Accesso OAuth dal browser ai server MCP remoti, con registrazione dinamica e rinnovo del
+      token ([ADR 0024](adr/0024-oauth-mcp.md)). Scoperta provata su Notion e Linear; accesso
+      completo provato con un servizio finto.
+- [ ] Accesso OAuth provato con un account vero (Notion o Linear).
+- [x] Prompt dei server MCP come comandi `/` in chat ([ADR 0025](adr/0025-prompt-mcp.md)).
+- [x] Plugin nel formato di Claude Code: skill, server MCP, agenti e comandi `/` in un pacchetto
+      ([ADR 0026](adr/0026-plugin.md)).
+- [ ] Plugin provato con uno pubblicato (finora uno scritto per la prova).
+
 ## Dopo
 
 Linux e macOS (GE-2), Gemini (CL-3).
 
-Idee ancora da valutare: OAuth per i server MCP remoti, prompt MCP, più modelli locali
+Idee ancora da valutare: catalogo di plugin da installare con un clic, suggerimenti per gli argomenti dei prompt MCP, più modelli locali
 caricati insieme.
 

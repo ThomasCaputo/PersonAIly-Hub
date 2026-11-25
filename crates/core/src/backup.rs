@@ -1,7 +1,7 @@
 //! Backup e ripristino dei dati dell'utente.
 //!
 //! Un backup è un file `.zip` con l'archivio (`data.sqlite`, copiato in modo
-//! coerente anche mentre l'app lavora), i preset (`presets/`) e una
+//! coerente anche mentre l'app lavora), i preset (`presets/`), le skill (`skills/`), i plugin (`plugins/`) e una
 //! descrizione (`backup.json`). Chiavi API, token e variabili dei server MCP
 //! stanno nel Gestore credenziali di Windows e **non** sono inclusi; nemmeno
 //! i modelli e llama.cpp, che si riscaricano.
@@ -23,6 +23,8 @@ use crate::store::{self, Store};
 const DB_NAME: &str = "data.sqlite";
 const MANIFEST_NAME: &str = "backup.json";
 const PRESETS_DIR: &str = "presets";
+const SKILLS_DIR: &str = crate::skills::SKILLS_DIR;
+const PLUGINS_DIR: &str = crate::plugins::PLUGINS_DIR;
 const PENDING_DIR: &str = "restore-pending";
 
 /// Che cosa contiene un backup.
@@ -64,9 +66,15 @@ fn write_zip(snapshot: &Path, data_dir: &Path, dest: &Path) -> Result<BackupInfo
         zip.write_all(&serde_json::to_vec_pretty(&info)?)?;
         zip.start_file(DB_NAME, options).map_err(zip_error)?;
         std::io::copy(&mut File::open(snapshot)?, &mut zip)?;
-        for (name, path) in files_under(&data_dir.join(PRESETS_DIR), PRESETS_DIR) {
-            zip.start_file(name, options).map_err(zip_error)?;
-            std::io::copy(&mut File::open(path)?, &mut zip)?;
+        for folder in [PRESETS_DIR, SKILLS_DIR, PLUGINS_DIR] {
+            for (name, path) in files_under(&data_dir.join(folder), folder) {
+                // Le importazioni di skill a metà non si salvano.
+                if name.contains("/.import-") {
+                    continue;
+                }
+                zip.start_file(name, options).map_err(zip_error)?;
+                std::io::copy(&mut File::open(path)?, &mut zip)?;
+            }
         }
         zip.finish().map_err(zip_error)?;
     }
@@ -132,7 +140,10 @@ fn extract(source: &Path, pending: &Path) -> Result<BackupInfo> {
             continue;
         };
         // Solo i file che un backup contiene, e mai fuori dalla cartella.
-        let allowed = name == DB_NAME || name.starts_with(&format!("{PRESETS_DIR}/"));
+        let allowed = name == DB_NAME
+            || name.starts_with(&format!("{PRESETS_DIR}/"))
+            || name.starts_with(&format!("{SKILLS_DIR}/"))
+            || name.starts_with(&format!("{PLUGINS_DIR}/"));
         let relative = PathBuf::from(&name);
         let safe = relative
             .components()
@@ -192,6 +203,18 @@ pub fn apply_pending(data_dir: &Path) -> Result<bool> {
     if new_presets.exists() {
         std::fs::rename(&new_presets, &presets)?;
     }
+    // Skill e plugin si sostituiscono solo se il backup ne ha: uno fatto prima
+    // che esistessero non deve far sparire quelli installati dopo.
+    for folder in [SKILLS_DIR, PLUGINS_DIR] {
+        let incoming = pending.join(folder);
+        if incoming.exists() {
+            let current = data_dir.join(folder);
+            if current.exists() {
+                std::fs::rename(&current, aside.join(folder))?;
+            }
+            std::fs::rename(&incoming, &current)?;
+        }
+    }
     let _ = std::fs::remove_dir_all(&pending);
     crate::log::info(format!(
         "backup ripristinato; i dati di prima sono in {}",
@@ -218,6 +241,16 @@ mod tests {
         store.create_conversation("Prima del backup").unwrap();
         std::fs::create_dir_all(dir.join("presets/named")).unwrap();
         std::fs::write(dir.join("presets/named/a.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("skills/verbale")).unwrap();
+        std::fs::write(dir.join("skills/verbale/SKILL.md"), "prima").unwrap();
+        std::fs::create_dir_all(dir.join("skills/.import-1-0")).unwrap();
+        std::fs::write(dir.join("skills/.import-1-0/SKILL.md"), "a metà").unwrap();
+        std::fs::create_dir_all(dir.join("plugins/revisione/.claude-plugin")).unwrap();
+        std::fs::write(
+            dir.join("plugins/revisione/.claude-plugin/plugin.json"),
+            "{}",
+        )
+        .unwrap();
 
         let zip = dir.join("copia.zip");
         let info = create(&store, &dir, &zip).unwrap();
@@ -227,12 +260,22 @@ mod tests {
         // Dopo il backup cambia qualcosa: il ripristino deve riportarlo indietro.
         store.create_conversation("Dopo il backup").unwrap();
         std::fs::remove_file(dir.join("presets/named/a.json")).unwrap();
+        std::fs::write(dir.join("skills/verbale/SKILL.md"), "dopo").unwrap();
         drop(store);
 
         assert_eq!(stage(&dir, &zip).unwrap(), info);
         assert!(apply_pending(&dir).unwrap());
         assert!(!dir.join(PENDING_DIR).exists());
         assert!(dir.join("presets/named/a.json").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("skills/verbale/SKILL.md")).unwrap(),
+            "prima"
+        );
+        assert!(!dir.join("skills/.import-1-0").exists());
+        assert!(
+            dir.join("plugins/revisione/.claude-plugin/plugin.json")
+                .is_file()
+        );
 
         let restored = Store::open(&dir.join(DB_NAME)).unwrap();
         let titles: Vec<String> = restored

@@ -208,7 +208,7 @@ fn agent_fixture(name: &str, permission: PermissionLevel) -> (Core, PathBuf, Age
                 terminal: true,
                 documents: false,
                 permission,
-                allowed_tools: Vec::new(),
+                ..Default::default()
             },
             ..Default::default()
         })
@@ -626,6 +626,167 @@ async fn consenti_sempre_su_uno_strumento_mcp_vale_solo_per_quello() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Nucleo con il server MCP finto salvato tra quelli configurati e una conversazione.
+#[cfg(windows)]
+fn chat_mcp_fixture(name: &str) -> (Core, PathBuf, mcp::McpServerConfig, i64) {
+    let dir = std::env::temp_dir().join(format!("core-chat-mcp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut core = Core::new(&dir.join("dati")).unwrap();
+    core.env_vault = Arc::new(mcp::tests::MemoryVault::default());
+    let server = core.save_mcp_server(mcp::tests::fake_server(&dir)).unwrap();
+    let conversation = core.create_conversation().unwrap().id;
+    (core, dir, server, conversation)
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn i_server_mcp_della_chat_restano_accesi_tra_un_messaggio_e_l_altro() {
+    let (core, dir, server, conv) = chat_mcp_fixture("vita");
+    let ids = vec![server.id.clone()];
+
+    let first = core.chat_mcp_set(conv, &ids, None).await.unwrap().unwrap();
+    assert!(first.has("mcp__Finto__echo"));
+    // Stessa scelta e stessa configurazione: si riusano gli stessi processi.
+    let again = core.chat_mcp_set(conv, &ids, None).await.unwrap().unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
+
+    // La configurazione cambia: si riavviano.
+    let mut changed = server.clone();
+    changed.args.push("-Verbose".into());
+    core.save_mcp_server(changed).unwrap();
+    let restarted = core.chat_mcp_set(conv, &ids, None).await.unwrap().unwrap();
+    assert!(!Arc::ptr_eq(&first, &restarted));
+    drop((first, again));
+
+    // Un server eliminato si salta; senza server non resta nulla di acceso.
+    let missing = vec!["eliminato".to_string()];
+    assert!(
+        core.chat_mcp_set(conv, &missing, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(core.chat_mcp.lock().unwrap().is_empty());
+    drop(restarted);
+
+    // Dopo il riposo li chiude la manutenzione, ma non mentre la conversazione risponde.
+    core.chat_mcp_set(conv, &ids, None).await.unwrap().unwrap();
+    core.chat_mcp
+        .lock()
+        .unwrap()
+        .get_mut(&conv)
+        .unwrap()
+        .last_used = std::time::Instant::now() - CHAT_MCP_IDLE;
+    core.generation
+        .lock()
+        .unwrap()
+        .insert(conv, Arc::new(RunControl::new()));
+    assert_eq!(core.close_idle_chat_mcp(), 0);
+    core.generation.lock().unwrap().clear();
+    assert_eq!(core.close_idle_chat_mcp(), 1);
+
+    // Eliminare la conversazione li chiude.
+    core.chat_mcp_set(conv, &ids, None).await.unwrap().unwrap();
+    core.delete_conversation(conv).unwrap();
+    assert!(core.chat_mcp.lock().unwrap().is_empty());
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn in_chat_consenti_tutto_non_copre_gli_strumenti_mcp() {
+    let (core, dir, server, conv) = chat_mcp_fixture("conferme");
+    let set = core
+        .chat_mcp_set(conv, std::slice::from_ref(&server.id), None)
+        .await
+        .unwrap()
+        .unwrap();
+    let call = |id: &str, text: &str| {
+        let arguments = serde_json::json!({ "text": text }).to_string();
+        vec![serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0, "id": id,
+            "function": {"name": "mcp__Finto__echo", "arguments": arguments}
+        }]}, "finish_reason": "tool_calls"}]})]
+    };
+    let base = fake_service(vec![
+        call("c1", "uno"),
+        call("c2", "due"),
+        final_text("Fatto."),
+    ]);
+    let mut settings = ToolSettings {
+        permission: PermissionLevel::All,
+        mcp_servers: vec![server.id.clone()],
+        ..Default::default()
+    };
+    core.set_conversation_tools(conv, &settings).unwrap();
+    let provider = Provider {
+        id: "finto".into(),
+        name: "Finto".into(),
+        kind: providers::ProviderKind::OpenaiCompatible,
+        base_url: base,
+        models: Vec::new(),
+    };
+    let target = Target::Cloud(provider, "chiave".into(), "modello".into());
+    core.store()
+        .add_message(conv, "user", "Ripeti uno e due", None)
+        .unwrap();
+    let chat = chat_history(core.messages(conv).unwrap(), true);
+    let control = RunControl::new();
+    let scope = RunScope {
+        conversation_id: conv,
+        session_id: None,
+        source: "Chat".into(),
+        key_prefix: format!("c{conv}"),
+        control: &control,
+        max_rounds: 10,
+        limit_notice: "limite".into(),
+        mcp: Some(&set),
+        delegation: None,
+        step_tokens: None,
+    };
+    let mut asked = 0;
+    let outcome = core
+        .run_rounds(
+            &scope,
+            &target,
+            chat,
+            set.defs(),
+            &mut settings,
+            &[],
+            "",
+            &SamplingParams::default(),
+            &mut |event| {
+                if let ChatEvent::ToolRequest { id, .. } = event {
+                    asked += 1;
+                    core.answer_tool_request(&id, Approval::Always);
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(!outcome.cancelled);
+    // Chiesto anche con «Consenti tutto», poi più per quello strumento.
+    assert_eq!(asked, 1);
+    let saved = core.conversation_tools(conv).unwrap();
+    assert_eq!(saved.allowed_tools, ["mcp__Finto__echo"]);
+    assert_eq!(saved.mcp_servers, std::slice::from_ref(&server.id));
+    let approvals: Vec<String> = core
+        .actions(10, None)
+        .unwrap()
+        .into_iter()
+        .map(|a| a.approval)
+        .collect();
+    assert_eq!(approvals, ["auto", "user"]);
+
+    drop(set);
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn le_cartelle_dei_modelli_si_ricordano() {
     let dir = std::env::temp_dir().join(format!("core-folders-{}", std::process::id()));
@@ -773,4 +934,579 @@ fn i_prefissi_di_embedding_vengono_dal_nome_del_file() {
     );
     // "e5" dentro un'altra parola non conta.
     assert_eq!(Core::embedding_prefixes(r"C:\m\Qwe5-embed.gguf"), none);
+}
+
+#[tokio::test]
+async fn il_modello_carica_una_skill_senza_chiedere() {
+    let dir = std::env::temp_dir().join(format!("core-skill-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir).unwrap();
+    let draft = skills::SkillDraft {
+        name: "saluti".into(),
+        description: "Come salutare".into(),
+        instructions: "Saluta sempre in rima.".into(),
+    };
+    core.save_skill(&draft, None).unwrap();
+    let conv = core.create_conversation().unwrap().id;
+
+    // Strumento spento, o skill spenta: nulla da offrire.
+    assert!(core.skill_offer(&ToolSettings::default()).0.is_empty());
+    let mut settings = ToolSettings {
+        skills: true,
+        ..Default::default()
+    };
+    core.set_skill_enabled("saluti", false).unwrap();
+    assert!(core.skill_offer(&settings).0.is_empty());
+    core.set_skill_enabled("saluti", true).unwrap();
+    let (defs, prompt) = core.skill_offer(&settings);
+    assert_eq!(defs.len(), 2);
+    assert!(prompt.contains("- saluti: Come salutare"));
+
+    let arguments = serde_json::json!({ "name": "saluti" }).to_string();
+    let base = fake_service(vec![
+        vec![serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0, "id": "k1",
+            "function": {"name": "load_skill", "arguments": arguments}
+        }]}, "finish_reason": "tool_calls"}]})],
+        final_text("Ciao, che bel dì!"),
+    ]);
+    let provider = Provider {
+        id: "finto".into(),
+        name: "Finto".into(),
+        kind: providers::ProviderKind::OpenaiCompatible,
+        base_url: base,
+        models: Vec::new(),
+    };
+    let target = Target::Cloud(provider, "chiave".into(), "modello".into());
+    core.store()
+        .add_message(conv, "user", "Ciao", None)
+        .unwrap();
+    let chat = chat_history(core.messages(conv).unwrap(), true);
+    let control = RunControl::new();
+    let scope = RunScope {
+        conversation_id: conv,
+        session_id: None,
+        source: "Chat".into(),
+        key_prefix: format!("c{conv}"),
+        control: &control,
+        max_rounds: 10,
+        limit_notice: "limite".into(),
+        mcp: None,
+        delegation: None,
+        step_tokens: None,
+    };
+    let mut asked = 0;
+    core.run_rounds(
+        &scope,
+        &target,
+        chat,
+        &defs,
+        &mut settings,
+        &[],
+        "",
+        &SamplingParams::default(),
+        &mut |event| {
+            if matches!(event, ChatEvent::ToolRequest { .. }) {
+                asked += 1;
+            }
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(asked, 0);
+    let result = core
+        .messages(conv)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == "tool")
+        .unwrap();
+    assert!(
+        result.content.contains("Saluta sempre in rima."),
+        "{}",
+        result.content
+    );
+    let actions = core.actions(10, None).unwrap();
+    assert_eq!(actions[0].summary, "Caricare la skill «saluti»");
+    assert_eq!(actions[0].approval, "auto");
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un servizio finto con server MCP protetto e server di autorizzazione
+/// (ADR 0024). Restituisce l'indirizzo base e il registro delle richieste.
+fn fake_oauth_service() -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (server_base, server_log) = (base.clone(), log.clone());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let (base, log) = (server_base.clone(), server_log.clone());
+            std::thread::spawn(move || {
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().to_string())
+                            })
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length || n == 0 {
+                            break (text[..end].to_string(), text[end + 4..].to_string());
+                        }
+                    }
+                    if n == 0 {
+                        break (text.clone(), String::new());
+                    }
+                };
+                let first = head.lines().next().unwrap_or("").to_string();
+                let auth = head
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().to_string())
+                    })
+                    .unwrap_or_default();
+                log.lock()
+                    .unwrap()
+                    .push(format!("{first} | {auth} | {body}"));
+                let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let json = |status: &str, value: serde_json::Value, extra: &str| {
+                    let body = value.to_string();
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let response = match path.as_str() {
+                    "/mcp" if auth == "Bearer tok-1" || auth == "Bearer tok-2" => {
+                        let msg: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or_default();
+                        let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                        match msg.get("method").and_then(|m| m.as_str()) {
+                            Some("initialize") => json(
+                                "200 OK",
+                                serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                                    "protocolVersion": "2025-06-18",
+                                    "capabilities": {"tools": {}},
+                                    "serverInfo": {"name": "finto", "version": "1"}
+                                }}),
+                                "",
+                            ),
+                            Some("tools/list") => json(
+                                "200 OK",
+                                serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [
+                                    {"name": "segreto", "description": "Solo con accesso", "inputSchema": {"type": "object"}}
+                                ]}}),
+                                "",
+                            ),
+                            _ => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .to_string(),
+                        }
+                    }
+                    "/mcp" => {
+                        let header = format!(
+                            "WWW-Authenticate: Bearer resource_metadata=\"{base}/.well-known/oauth-protected-resource/mcp\", scope=\"leggi\"\r\n"
+                        );
+                        json(
+                            "401 Unauthorized",
+                            serde_json::json!({"error": "invalid_token"}),
+                            &header,
+                        )
+                    }
+                    "/.well-known/oauth-protected-resource/mcp" => json(
+                        "200 OK",
+                        serde_json::json!({
+                            "resource": format!("{base}/mcp"),
+                            "authorization_servers": [format!("{base}/auth")]
+                        }),
+                        "",
+                    ),
+                    "/.well-known/oauth-authorization-server/auth" => json(
+                        "200 OK",
+                        serde_json::json!({
+                            "issuer": format!("{base}/auth"),
+                            "authorization_endpoint": format!("{base}/auth/authorize"),
+                            "token_endpoint": format!("{base}/auth/token"),
+                            "registration_endpoint": format!("{base}/auth/register"),
+                            "code_challenge_methods_supported": ["S256"]
+                        }),
+                        "",
+                    ),
+                    "/auth/register" => {
+                        json("201 Created", serde_json::json!({"client_id": "cli-1"}), "")
+                    }
+                    "/auth/token"
+                        if body.contains("grant_type=authorization_code")
+                            && body.contains("code=code-1") =>
+                    {
+                        json(
+                            "200 OK",
+                            serde_json::json!({"access_token": "tok-1", "refresh_token": "ref-1", "expires_in": 3600, "token_type": "Bearer"}),
+                            "",
+                        )
+                    }
+                    "/auth/token"
+                        if body.contains("grant_type=refresh_token")
+                            && body.contains("refresh_token=ref-1") =>
+                    {
+                        json(
+                            "200 OK",
+                            serde_json::json!({"access_token": "tok-2", "expires_in": 3600, "token_type": "Bearer"}),
+                            "",
+                        )
+                    }
+                    "/auth/token" => json(
+                        "400 Bad Request",
+                        serde_json::json!({"error": "invalid_grant", "error_description": "codice sbagliato"}),
+                        "",
+                    ),
+                    _ => json("404 Not Found", serde_json::json!({}), ""),
+                };
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (base, log)
+}
+
+fn oauth_server(core: &Core, base: &str) -> mcp::McpServerConfig {
+    core.save_mcp_server(mcp::McpServerConfig {
+        name: "Remoto".into(),
+        transport: mcp::Transport::Http,
+        url: format!("{base}/mcp"),
+        auth: mcp::McpAuth::OAuth,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn accesso_oauth_a_un_server_mcp_remoto() {
+    let dir = std::env::temp_dir().join(format!("core-oauth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut core = Core::new(&dir).unwrap();
+    let vault = Arc::new(mcp::tests::MemoryVault::default());
+    core.env_vault = vault.clone();
+    let (base, log) = fake_oauth_service();
+    let server = oauth_server(&core, &base);
+
+    // Senza accesso il server non parte e l'errore dice cosa fare.
+    let error = core
+        .probe_mcp_server(&server)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Fai l'accesso"), "{error}");
+    assert!(!core.mcp_oauth_status(&server.id).unwrap().signed_in);
+
+    let start = core.mcp_oauth_start(&server.id).await.unwrap();
+    assert_eq!(start.host, "127.0.0.1");
+    let url = reqwest::Url::parse(&start.url).unwrap();
+    assert_eq!(url.path(), "/auth/authorize");
+    let param = |key: &str| {
+        url.query_pairs()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+            .unwrap()
+    };
+    assert_eq!(param("client_id"), "cli-1");
+    assert_eq!(param("code_challenge_method"), "S256");
+    assert_eq!(param("resource"), format!("{base}/mcp"));
+    assert_eq!(param("scope"), "leggi");
+    let redirect = param("redirect_uri");
+    assert!(redirect.starts_with("http://127.0.0.1:") && redirect.ends_with("/callback"));
+    // L'app si è registrata con lo stesso indirizzo di ritorno.
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /auth/register") && l.contains(&redirect))
+    );
+
+    // Il "browser": l'utente accede e il servizio rimanda al ritorno dell'app.
+    let state = param("state");
+    let challenge = param("code_challenge");
+    let browser = tokio::spawn(async move {
+        reqwest::get(format!("{redirect}?code=code-1&state={state}"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    });
+    let status = core.mcp_oauth_finish(&server.id).await.unwrap();
+    assert!(browser.await.unwrap().contains("Accesso completato"));
+    assert!(status.signed_in && status.refreshable);
+
+    // Il verificatore mandato con il codice corrisponde alla sfida.
+    let exchange = log
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|l| l.contains("grant_type=authorization_code"))
+        .cloned()
+        .unwrap();
+    let form = exchange.rsplit(" | ").next().unwrap().to_string();
+    let verifier = reqwest::Url::parse(&format!("http://x/?{form}"))
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "code_verifier")
+        .map(|(_, v)| v.into_owned())
+        .unwrap();
+    assert_eq!(mcp_oauth::challenge(&verifier), challenge);
+
+    // I token stanno nel portachiavi, non nell'archivio.
+    let stored = core.store().setting(SETTING_MCP_OAUTH).unwrap().unwrap();
+    assert!(!stored.contains("tok-1") && !stored.contains("ref-1"));
+    assert!(vault.0.lock().unwrap().values().any(|v| v == "tok-1"));
+
+    let tools = core.probe_mcp_server(&server).await.unwrap();
+    assert_eq!(tools[0].name, "segreto");
+
+    // Scaduto: si rinnova da solo prima di partire.
+    let mut records = core.oauth_records_for_tests();
+    records.get_mut(&server.id).unwrap().expires_at = Some(1);
+    core.store()
+        .set_setting(SETTING_MCP_OAUTH, &serde_json::to_string(&records).unwrap())
+        .unwrap();
+    core.probe_mcp_server(&server).await.unwrap();
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("Bearer tok-2"))
+    );
+    // Il token di rinnovo resta quello di prima.
+    assert!(core.mcp_oauth_status(&server.id).unwrap().refreshable);
+
+    // Uscire, poi eliminare il server, cancella token e segreti.
+    core.mcp_oauth_logout(&server.id).unwrap();
+    assert!(!core.mcp_oauth_status(&server.id).unwrap().signed_in);
+    core.delete_mcp_server(&server.id).unwrap();
+    assert!(vault.0.lock().unwrap().is_empty());
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn annullare_un_accesso_oauth_in_attesa() {
+    let dir = std::env::temp_dir().join(format!("core-oauth-annulla-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut core = Core::new(&dir).unwrap();
+    core.env_vault = Arc::new(mcp::tests::MemoryVault::default());
+    let (base, _) = fake_oauth_service();
+    let server = oauth_server(&core, &base);
+    core.mcp_oauth_start(&server.id).await.unwrap();
+    let core = Arc::new(core);
+    let waiting = {
+        let core = core.clone();
+        let id = server.id.clone();
+        tokio::spawn(async move { core.mcp_oauth_finish(&id).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    core.mcp_oauth_cancel(&server.id);
+    let error = waiting.await.unwrap().unwrap_err().to_string();
+    assert!(error.contains("annullato"), "{error}");
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn i_prompt_della_conversazione_usano_i_suoi_server() {
+    let dir = std::env::temp_dir().join(format!("core-prompt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut core = Core::new(&dir).unwrap();
+    core.env_vault = Arc::new(mcp::tests::MemoryVault::default());
+    let (url, _) = mcp::tests::fake_http_server();
+    let server = core
+        .save_mcp_server(mcp::McpServerConfig {
+            name: "Remoto".into(),
+            transport: mcp::Transport::Http,
+            url,
+            ..Default::default()
+        })
+        .unwrap();
+    let conv = core.create_conversation().unwrap().id;
+
+    // Senza server scelti non ci sono comandi /.
+    assert!(core.conversation_prompts(conv).await.unwrap().is_empty());
+    assert!(
+        core.conversation_prompt(conv, 0, "revisione", &HashMap::new())
+            .await
+            .is_err()
+    );
+
+    let settings = ToolSettings {
+        mcp_servers: vec![server.id.clone()],
+        ..Default::default()
+    };
+    core.set_conversation_tools(conv, &settings).unwrap();
+    let prompts = core.conversation_prompts(conv).await.unwrap();
+    assert_eq!(prompts.len(), 2);
+    let first = core
+        .chat_mcp
+        .lock()
+        .unwrap()
+        .get(&conv)
+        .unwrap()
+        .set
+        .clone();
+
+    let arguments = HashMap::from([("tono".to_string(), "allegro".to_string())]);
+    let text = core
+        .conversation_prompt(conv, prompts[0].server, &prompts[0].name, &arguments)
+        .await
+        .unwrap();
+    assert!(text.starts_with("Rivedi con tono allegro."), "{text}");
+    // Gli stessi server, non un nuovo avvio.
+    let again = core
+        .chat_mcp
+        .lock()
+        .unwrap()
+        .get(&conv)
+        .unwrap()
+        .set
+        .clone();
+    assert!(Arc::ptr_eq(&first, &again));
+
+    drop((first, again));
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn installare_e_disinstallare_un_plugin() {
+    let dir = std::env::temp_dir().join(format!("core-plugin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut core = Core::new(&dir.join("dati")).unwrap();
+    let vault = Arc::new(mcp::tests::MemoryVault::default());
+    core.env_vault = vault.clone();
+    let source = dir.join("sorgente");
+    plugins::tests::sample_plugin(&source);
+
+    let record = core
+        .import_plugin(&source, false)
+        .unwrap()
+        .installed
+        .unwrap();
+    assert_eq!(record.name, "revisione");
+    assert_eq!(record.skills, ["stile"]);
+    assert_eq!(record.mcp_servers.len(), 2);
+    assert_eq!(record.agents.len(), 1);
+    assert_eq!(record.commands.len(), 2);
+    // La cartella del plugin è al suo posto e i server la usano.
+    let installed = dir.join("dati").join("plugins").join("revisione");
+    assert!(
+        installed
+            .join(".claude-plugin")
+            .join("plugin.json")
+            .is_file()
+    );
+    let servers = core.mcp_servers().unwrap();
+    let locale = servers.iter().find(|s| s.name == "locale").unwrap();
+    assert!(locale.args[0].starts_with(&installed.to_string_lossy().into_owned()));
+    assert!(
+        core.list_skills()
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "stile" && s.enabled)
+    );
+    let agent = core.store().agent(record.agents[0]).unwrap();
+    assert_eq!(agent.name, "revisore");
+    assert!(agent.folders.is_empty());
+
+    // I comandi entrano nel menu / con il testo compilato.
+    let commands = core.plugin_commands().unwrap();
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.plugin == "revisione" && c.command.name == "rivedi")
+    );
+    let text = core
+        .plugin_command_text("revisione", "rivedi", "lib.rs")
+        .unwrap();
+    assert!(
+        text.starts_with("Rivedi il file lib.rs con attenzione."),
+        "{text}"
+    );
+
+    // Di nuovo: chiede di sostituire senza toccare nulla; sostituendo si rifà tutto.
+    let again = core.import_plugin(&source, false).unwrap();
+    assert_eq!(again.existing.as_deref(), Some("revisione"));
+    let replaced = core
+        .import_plugin(&source, true)
+        .unwrap()
+        .installed
+        .unwrap();
+    // Il vecchio agente è sparito: ce n'è uno solo.
+    assert_eq!(core.agents().unwrap().len(), 1);
+    assert_eq!(replaced.agents.len(), 1);
+    assert_eq!(core.mcp_servers().unwrap().len(), 2);
+    assert_eq!(core.list_plugins().unwrap().len(), 1);
+
+    // Disinstallare toglie tutto, anche dal portachiavi.
+    core.uninstall_plugin("revisione").unwrap();
+    assert!(core.list_plugins().unwrap().is_empty());
+    assert!(core.list_skills().unwrap().is_empty());
+    assert!(core.mcp_servers().unwrap().is_empty());
+    assert!(core.store().agent(replaced.agents[0]).is_err());
+    assert!(!installed.exists());
+    assert!(vault.0.lock().unwrap().is_empty());
+    assert!(core.uninstall_plugin("revisione").is_err());
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn un_plugin_che_non_si_installa_non_lascia_nulla() {
+    let dir = std::env::temp_dir().join(format!("core-plugin-guasto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut core = Core::new(&dir.join("dati")).unwrap();
+    core.env_vault = Arc::new(mcp::tests::MemoryVault::default());
+    let source = dir.join("sorgente");
+    plugins::tests::sample_plugin(&source);
+
+    // Una skill dell'utente con lo stesso nome: si ferma prima di cambiare qualcosa.
+    let draft = skills::SkillDraft {
+        name: "stile".into(),
+        description: "La mia".into(),
+        instructions: "Mie regole.".into(),
+    };
+    core.save_skill(&draft, None).unwrap();
+    let error = core.import_plugin(&source, false).unwrap_err().to_string();
+    assert!(error.contains("stile"), "{error}");
+    assert!(core.mcp_servers().unwrap().is_empty());
+    assert!(core.list_plugins().unwrap().is_empty());
+    core.delete_skill("stile").unwrap();
+
+    // Un server senza comando fa fallire l'installazione a metà: si torna indietro.
+    std::fs::write(
+        source.join(".mcp.json"),
+        r#"{"mcpServers": {"rotto": {"command": "${PROVA_VARIABILE_ASSENTE}"}}}"#,
+    )
+    .unwrap();
+    assert!(core.import_plugin(&source, false).is_err());
+    assert!(core.list_skills().unwrap().is_empty());
+    assert!(core.agents().unwrap().is_empty());
+    assert!(core.list_plugins().unwrap().is_empty());
+    assert!(!dir.join("dati").join("plugins").join("revisione").exists());
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
 }

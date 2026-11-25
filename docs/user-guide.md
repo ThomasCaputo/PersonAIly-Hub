@@ -10,6 +10,8 @@ The Italian version is in [guida-utente.md](guida-utente.md).
 - [Chat](#chat)
 - [Agents and permissions](#agents-and-permissions)
 - [MCP servers](#mcp-servers)
+- [Skills](#skills)
+- [Plugins](#plugins)
 - [Searchable documents](#searchable-documents)
 - [VS Code](#vs-code)
 - [Backup, updates and bug reports](#backup-updates-and-bug-reports)
@@ -125,19 +127,73 @@ its own folders and permissions.
 
 ## MCP servers
 
-[MCP](https://modelcontextprotocol.io) servers add tools to agents (GitHub, a browser,
-databases…). Set them up in **Settings → MCP servers**:
+[MCP](https://modelcontextprotocol.io) servers add tools to chats and agents (GitHub, a
+browser, databases…). Set them up in **Settings → MCP servers**:
 
 - **Known servers:** a list of popular servers to add with one click (some ask you to fill in a
   path or a token);
 - **Program on this computer (stdio):** a command such as `npx -y @name/server`;
-- **Server at an address (HTTP):** the `https://…` address of a remote server, with the headers
-  it needs (usually `Authorization: Bearer <token>`).
+- **Server at an address (HTTP):** the `https://…` address of a remote server. To identify
+  yourself choose:
+  - **Headers**, with a token you write (usually `Authorization: Bearer <token>`);
+  - **Sign in from the browser (OAuth)**, for services such as Notion or Linear: save, press
+    **Sign in**, then **Open in browser** and complete the sign-in on the service's page. The app
+    renews the token by itself; **Sign out** deletes it. Services that do not let the app
+    register itself (for example GitHub) ask you to register your own OAuth app, with redirect
+    address `http://127.0.0.1/callback`, and to enter its Client ID in the form.
 
-Environment variables and headers are stored in the Credential Manager. **Test** starts the
+Environment variables, headers and sign-in tokens are stored in the Credential Manager. **Test** starts the
 server and lists its tools. Then tick the servers to use in the agent editor. If the server
 offers resources (documents, files), the agent can list and read them. MCP tools always ask for
 confirmation unless the agent has "Allow everything".
+
+**In chat:** open the **MCP servers** menu in the tools bar above the messages and tick the
+servers for that conversation. They start with the next message and stay running while you
+chat; after 10 minutes without messages they close and start again when needed. In chat each
+MCP tool asks for confirmation until you choose **Always allow in this conversation** for that
+tool: "Allow everything in the folders" does not cover them.
+
+**`/` commands:** if the conversation's servers offer prompts (ready-made texts, sometimes with
+arguments), type `/` at the start of the message: the list appears and narrows as you type.
+Choose with the arrows and Enter (or a click), fill in any arguments, and the prompt's text
+lands in the message box, to review and send.
+
+## Skills
+
+A skill is a set of ready-made instructions for a certain task (writing minutes, reviewing a
+text with your rules…), in the open `SKILL.md` format, the same one Claude uses: skills
+already written for other programs work here too. Manage them in **Settings → Skills**:
+
+- **New skill:** write a name (lowercase letters, digits and hyphens), when to use it and the
+  instructions;
+- **Import a folder** or **Import a .zip:** a skill with its `SKILL.md` and any supporting files
+  (templates, examples);
+- the checkbox next to each skill turns it on or off; **Edit** changes its `SKILL.md`.
+
+Then, in a chat or an agent, turn on the **Skills** tool: the model sees only the name and
+description of the skills that are on and, when a request matches, loads the instructions and
+the files it needs. Reading a skill asks for no confirmation; everything else (files, web,
+terminal) follows the usual permissions. Import only skills you trust: the model follows their
+instructions as if you had written them. Skills are included in backups.
+
+## Plugins
+
+A plugin is a package with skills, MCP servers, agents and `/` commands, in the Claude Code plugin
+format: plugins already published install as they are. In **Settings → Plugins** choose **Import
+a folder** or **Import a .zip**. The app copies the plugin, creates its parts and shows any notes,
+for example server variables to fill in or parts it does not support (such as *hooks*).
+
+- **Skills** appear among the skills, turned on.
+- **MCP servers** appear among the servers: none starts until you choose it in a conversation or
+  an agent.
+- **Agents** appear on the Agents page, without folders: choose them before using the agents.
+- **Commands** appear in the `/` menu of every conversation: pick one, write any arguments and the
+  text lands in the message box.
+
+A plugin's skills and servers carry a "plugin …" tag and are removed only with **Uninstall**, which
+deletes everything the plugin created. Reinstalling a plugin that is already there replaces it:
+changes made to its servers and agents are lost. Trust a plugin as you would a program: install
+only the ones you trust. Plugins are included in backups.
 
 ## Searchable documents
 
@@ -162,7 +218,7 @@ OpenAI-compatible programs can use them too.
 
 ## Backup, updates and bug reports
 
-- **Settings → Data backup:** saves conversations, agents, settings and presets in a `.zip`;
+- **Settings → Data backup:** saves conversations, agents, settings, presets, skills and plugins in a `.zip`;
   **Restore from a backup** puts it back at the next start. API keys stay in the Credential
   Manager.
 - **Settings → Updates:** at startup the app checks for a new version, downloads it, verifies

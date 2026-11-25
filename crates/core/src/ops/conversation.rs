@@ -153,6 +153,7 @@ impl Core {
     }
 
     pub fn delete_conversation(&self, id: i64) -> Result<()> {
+        self.close_chat_mcp(id);
         self.store().delete_conversation(id)
     }
 
@@ -414,12 +415,8 @@ impl Core {
         if settings.documents && self.rag_ready() {
             defs.push(rag::tool_def());
         }
-        let system = join_prompt(&[
-            system_prompt,
-            &self.language_instruction(),
-            &tools::system_preamble(&defs, &folders),
-        ]);
-
+        let (skill_defs, skill_prompt) = self.skill_offer(&settings);
+        defs.extend(skill_defs);
         let (chat, title) = {
             let store = self.store();
             match replace {
@@ -447,6 +444,40 @@ impl Core {
             )
         };
 
+        // I server MCP della conversazione (ADR 0022): partono dopo il messaggio,
+        // così intanto si vede l'attesa, e «Interrompi» ferma anche l'avvio.
+        let mcp_set = if settings.mcp_servers.is_empty() {
+            self.close_chat_mcp(conversation_id);
+            None
+        } else {
+            let start = self.chat_mcp_set(
+                conversation_id,
+                &settings.mcp_servers,
+                folders.first().map(PathBuf::as_path),
+            );
+            tokio::select! {
+                set = start => set?,
+                _ = control.cancel.notified() => {
+                    return Ok(SendOutcome {
+                        conversation: self.store().conversation(conversation_id)?,
+                        assistant_message: None,
+                        stats: GenerationStats::default(),
+                        cancelled: true,
+                        notice: None,
+                    });
+                }
+            }
+        };
+        if let Some(set) = &mcp_set {
+            defs.extend(set.defs().iter().cloned());
+        }
+        let system = join_prompt(&[
+            system_prompt,
+            &self.language_instruction(),
+            &tools::system_preamble(&defs, &folders),
+            &skill_prompt,
+        ]);
+
         let scope = RunScope {
             conversation_id,
             session_id: None,
@@ -455,7 +486,7 @@ impl Core {
             control: &control,
             max_rounds: MAX_TOOL_ROUNDS,
             limit_notice: NOTICE_TOO_MANY_TOOLS.to_string(),
-            mcp: None,
+            mcp: mcp_set.as_deref(),
             delegation: None,
             step_tokens: None,
         };
@@ -474,6 +505,10 @@ impl Core {
             .await;
 
         self.forget_approvals(&scope.key_prefix);
+        // Il riposo dei server si conta dalla fine della risposta, non dall'inizio.
+        if mcp_set.is_some() {
+            self.touch_chat_mcp(conversation_id);
+        }
         result
     }
 

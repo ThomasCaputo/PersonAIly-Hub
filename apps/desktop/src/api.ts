@@ -152,17 +152,38 @@ export type AttachmentInfo = { name: string; kind: "text" | "image" };
 /** Quanto chiedere prima di lasciar agire il modello. */
 export type PermissionLevel = "ask" | "edits" | "all";
 
-/** Strumenti e permessi di una conversazione o di un agente. Il terminale vale solo per gli agenti. */
+/** Strumenti e permessi di una conversazione o di un agente. Il terminale vale solo per gli agenti, `mcpServers` solo in chat. */
 export type ToolSettings = {
   files: boolean;
   web: boolean;
   terminal: boolean;
   /** Ricerca nei documenti consultabili (RAG locale). */
   documents?: boolean;
+  /** Skill da caricare quando servono (ADR 0023). */
+  skills?: boolean;
   permission: PermissionLevel;
   /** Strumenti MCP con "Consenti sempre". */
   allowedTools?: string[];
+  /** Solo in chat: i server MCP scelti per la conversazione (ADR 0022). */
+  mcpServers?: string[];
 };
+
+/** Una skill installata (ADR 0023). `error` se il suo SKILL.md non si legge. */
+export type Skill = {
+  name: string;
+  description: string;
+  instructions: string;
+  enabled: boolean;
+  /** Gli altri file della skill, relativi alla sua cartella. */
+  files: string[];
+  path: string;
+  error?: string;
+};
+
+export type SkillDraft = { name: string; description: string; instructions: string };
+
+/** La skill importata, oppure il nome di quella già presente da sostituire. */
+export type SkillImport = { installed?: Skill; existing?: string };
 
 /** Un server MCP configurato. `id` vuoto per uno non ancora salvato. */
 export type McpServer = {
@@ -177,9 +198,54 @@ export type McpServer = {
   url: string;
   /** Intestazioni HTTP, coppie [nome, valore] (di solito Authorization). */
   headers: [string, string][];
+  /** Solo HTTP: intestazioni scritte a mano o accesso dal browser (ADR 0024). */
+  auth?: "headers" | "oauth";
+  /** Solo OAuth: client registrato dall'utente, per i servizi senza registrazione dinamica. */
+  clientId?: string;
+  clientSecret?: string;
 };
 
+/** Stato dell'accesso OAuth a un server. `expiresAt` in secondi dal 1970. */
+export type OAuthStatus = { signedIn: boolean; expiresAt: number | null; refreshable: boolean };
+export type OAuthStart = { url: string; host: string };
+
 export type McpToolInfo = { name: string; description: string };
+
+/** Un comando `/` di un plugin (ADR 0026). */
+export type PluginCommand = {
+  name: string;
+  description: string;
+  argumentHint: string;
+  file: string;
+  takesArguments: boolean;
+};
+export type PluginCommandInfo = PluginCommand & { plugin: string };
+
+/** Un plugin installato e ciò che ha creato. */
+export type PluginRecord = {
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  path: string;
+  skills: string[];
+  mcpServers: string[];
+  agents: number[];
+  commands: PluginCommand[];
+  /** Avvisi dell'installazione: parti saltate, valori da completare. */
+  notes: string[];
+};
+export type PluginInstall = { installed?: PluginRecord; existing?: string };
+
+/** Un prompt di un server MCP, offerto in chat come comando `/` (ADR 0025). */
+export type McpPrompt = {
+  /** Posizione del server tra quelli della conversazione. */
+  server: number;
+  serverName: string;
+  name: string;
+  description: string;
+  arguments: { name: string; description: string; required: boolean }[];
+};
 
 /** Nome leggibile di uno strumento MCP (`mcp__server__strumento`), oppure null. */
 export function mcpToolLabel(name: string): string | null {
@@ -524,6 +590,26 @@ export const api = {
   saveMcpServer: (server: McpServer) => invoke<McpServer>("save_mcp_server", { server }),
   deleteMcpServer: (id: string) => invoke<void>("delete_mcp_server", { id }),
   probeMcpServer: (server: McpServer) => invoke<McpToolInfo[]>("probe_mcp_server", { server }),
+  listPlugins: () => invoke<PluginRecord[]>("list_plugins"),
+  importPlugin: (path: string, replace: boolean) => invoke<PluginInstall>("import_plugin", { path, replace }),
+  uninstallPlugin: (name: string) => invoke<void>("uninstall_plugin", { name }),
+  pluginCommands: () => invoke<PluginCommandInfo[]>("plugin_commands"),
+  pluginCommandText: (plugin: string, name: string, args: string) =>
+    invoke<string>("plugin_command_text", { plugin, name, arguments: args }),
+  conversationPrompts: (conversationId: number) => invoke<McpPrompt[]>("conversation_prompts", { conversationId }),
+  conversationPrompt: (conversationId: number, server: number, name: string, args: Record<string, string>) =>
+    invoke<string>("conversation_prompt", { conversationId, server, name, arguments: args }),
+  mcpOauthStart: (id: string) => invoke<OAuthStart>("mcp_oauth_start", { id }),
+  mcpOauthFinish: (id: string) => invoke<OAuthStatus>("mcp_oauth_finish", { id }),
+  mcpOauthCancel: (id: string) => invoke<void>("mcp_oauth_cancel", { id }),
+  mcpOauthStatus: (id: string) => invoke<OAuthStatus>("mcp_oauth_status", { id }),
+  mcpOauthLogout: (id: string) => invoke<void>("mcp_oauth_logout", { id }),
+
+  listSkills: () => invoke<Skill[]>("list_skills"),
+  importSkill: (path: string, replace: boolean) => invoke<SkillImport>("import_skill", { path, replace }),
+  saveSkill: (draft: SkillDraft, original: string | null) => invoke<Skill>("save_skill", { draft, original }),
+  setSkillEnabled: (name: string, enabled: boolean) => invoke<void>("set_skill_enabled", { name, enabled }),
+  deleteSkill: (name: string) => invoke<void>("delete_skill", { name }),
 
   listAgents: () => invoke<Agent[]>("list_agents"),
   saveAgent: (agent: Agent) => invoke<Agent>("save_agent", { agent }),

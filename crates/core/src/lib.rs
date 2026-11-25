@@ -7,6 +7,7 @@
 pub mod agents;
 pub mod attachments;
 pub mod backup;
+pub mod bundle;
 pub mod chat;
 pub mod error;
 mod export;
@@ -16,17 +17,21 @@ pub mod instance;
 pub mod local;
 pub mod log;
 pub mod mcp;
+pub mod mcp_oauth;
 pub mod models;
 pub mod named_presets;
+pub mod plugins;
 pub mod providers;
 pub mod rag;
 pub mod secrets;
+pub mod skills;
 pub mod snapshots;
 pub mod store;
 pub mod tools;
 
 /// I metodi di [`Core`], divisi per argomento.
 mod ops;
+pub use ops::plugins::PluginCommandInfo;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -59,15 +64,25 @@ const SETTING_PROVIDERS: &str = "providers";
 const SETTING_GRANTED_FOLDERS: &str = "granted_folders";
 const SETTING_TOOL_DEFAULTS: &str = "tool_defaults";
 const SETTING_MCP_SERVERS: &str = "mcp_servers";
+/// Dati non segreti degli accessi OAuth ai server MCP (ADR 0024).
+const SETTING_MCP_OAUTH: &str = "mcp_oauth";
 const SETTING_ACTION_LOG_DAYS: &str = "action_log_days";
 const SETTING_SECURITY: &str = "security";
 const SETTING_SPEND_LIMITS: &str = "spend_limits";
 const SETTING_RAG: &str = "rag";
+/// I nomi delle skill spente (ADR 0023).
+const SETTING_SKILLS_DISABLED: &str = "skills_disabled";
+/// I plugin installati e ciò che hanno creato (ADR 0026).
+const SETTING_PLUGINS: &str = "plugins";
 /// Il modello di embedding si chiude dopo questo tempo senza ricerche.
 const EMBEDDER_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const SETTING_LANGUAGE: &str = "language";
 const SETTING_PREFERENCES: &str = "preferences";
 const SETTING_ENGINE_VARIANT: &str = "engine_variant";
+/// I server MCP di una conversazione si chiudono dopo questo tempo senza messaggi (ADR 0022).
+const CHAT_MCP_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Quante conversazioni possono tenere accesi i loro server MCP insieme.
+const CHAT_MCP_MAX: usize = 4;
 /// Ogni quanto si controlla se il modello locale è inattivo da scaricare.
 const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -353,6 +368,19 @@ pub struct Core {
     /// Il numero cresce a ogni modifica: una copia costruita mentre l'indice
     /// cambiava non si conserva.
     rag_vectors: Mutex<(u64, Option<Arc<rag::VectorIndex>>)>,
+    /// I server MCP accesi per le conversazioni in chat, per identificatore
+    /// della conversazione (ADR 0022).
+    chat_mcp: Mutex<HashMap<i64, ChatMcp>>,
+    /// Gli accessi OAuth aperti nel browser, per identificatore del server.
+    oauth_logins: Mutex<HashMap<String, ops::mcp_oauth::LoginSlot>>,
+}
+
+/// I server MCP di una conversazione, accesi tra un messaggio e l'altro.
+struct ChatMcp {
+    /// Impronta della configurazione con cui sono partiti: se cambia si riavviano.
+    key: u64,
+    set: Arc<mcp::McpSet>,
+    last_used: std::time::Instant,
 }
 
 /// Dove gira un ciclo modello → strumenti: una risposta in chat o una sessione.
@@ -367,7 +395,7 @@ struct RunScope<'a> {
     max_rounds: usize,
     /// Avviso quando i giri finiscono.
     limit_notice: String,
-    /// I server MCP avviati per questo ciclo (solo nelle sessioni degli agenti).
+    /// I server MCP di questo ciclo: quelli dell'agente o della conversazione.
     mcp: Option<&'a mcp::McpSet>,
     /// Gli agenti a cui si può affidare lavoro (solo nelle sessioni degli agenti).
     delegation: Option<&'a Delegation>,
@@ -537,6 +565,8 @@ impl Core {
             rag_progress: Mutex::new(rag::RagStatus::default()),
             mean_pooling_model: Mutex::new(None),
             rag_vectors: Mutex::new((0, None)),
+            chat_mcp: Mutex::new(HashMap::new()),
+            oauth_logins: Mutex::new(HashMap::new()),
         })
     }
 

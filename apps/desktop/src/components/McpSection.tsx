@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type McpServer, type McpToolInfo } from "../api";
+import { api, type McpServer, type McpToolInfo, type OAuthStatus } from "../api";
 import { msg, t, tc } from "../i18n";
 
 const EMPTY: McpServer = {
@@ -11,6 +11,9 @@ const EMPTY: McpServer = {
   env: [],
   url: "",
   headers: [],
+  auth: "headers",
+  clientId: "",
+  clientSecret: "",
 };
 
 /**
@@ -73,6 +76,18 @@ const CATALOG: CatalogEntry[] = [
     },
     todo: msg("Completa l'intestazione Authorization con un tuo token di accesso personale di GitHub."),
   },
+  {
+    name: "Notion",
+    what: msg("Pagine e database del tuo spazio Notion (server remoto, accesso dal browser)."),
+    server: { transport: "http", url: "https://mcp.notion.com/mcp", auth: "oauth" },
+    todo: msg("Salva, poi premi Accedi e completa l'accesso nel browser."),
+  },
+  {
+    name: "Linear",
+    what: msg("Issue e progetti di Linear (server remoto, accesso dal browser)."),
+    server: { transport: "http", url: "https://mcp.linear.app/mcp", auth: "oauth" },
+    todo: msg("Salva, poi premi Accedi e completa l'accesso nel browser."),
+  },
 ];
 
 /** Testo del modulo: argomenti uno per riga, variabili e intestazioni come NOME=valore. */
@@ -99,13 +114,17 @@ function fromDraft(draft: Draft): McpServer {
     return at < 0 ? [line, ""] : [line.slice(0, at).trim(), line.slice(at + 1).trim()];
   };
   const http = draft.server.transport === "http";
+  const oauth = http && draft.server.auth === "oauth";
   return {
     ...draft.server,
     args: http ? [] : lines(draft.args),
     env: http ? [] : lines(draft.env).map(split("=")),
     command: http ? "" : draft.server.command,
     url: http ? draft.server.url.trim() : "",
-    headers: http ? lines(draft.headers).map(split(":")) : [],
+    headers: http && !oauth ? lines(draft.headers).map(split(":")) : [],
+    auth: oauth ? "oauth" : "headers",
+    clientId: oauth ? (draft.server.clientId ?? "").trim() : "",
+    clientSecret: oauth ? (draft.server.clientSecret ?? "") : "",
   };
 }
 
@@ -122,8 +141,23 @@ export function McpSection() {
     error: null,
   });
   const [error, setError] = useState<string | null>(null);
+  /** Accesso OAuth del server in modifica: stato e accesso in corso. */
+  const [oauth, setOauth] = useState<{ status: OAuthStatus | null; host: string | null; url: string | null; busy: boolean }>({
+    status: null,
+    host: null,
+    url: null,
+    busy: false,
+  });
 
-  const refresh = () => api.listMcpServers().then(setServers).catch((e) => setError(String(e)));
+  /** I server dei plugin: identificatore → nome del plugin. */
+  const [owners, setOwners] = useState<Record<string, string>>({});
+  const refresh = () => {
+    api
+      .listPlugins()
+      .then((list) => setOwners(Object.fromEntries(list.flatMap((p) => p.mcpServers.map((id) => [id, p.name])))))
+      .catch(() => {});
+    return api.listMcpServers().then(setServers).catch((e) => setError(String(e)));
+  };
   useEffect(() => {
     refresh();
   }, []);
@@ -133,6 +167,38 @@ export function McpSection() {
     setCatalog(false);
     setProbe({ busy: false, tools: null, error: null });
     setError(null);
+    setOauth({ status: null, host: null, url: null, busy: false });
+    if (server.id && server.auth === "oauth") {
+      api
+        .mcpOauthStatus(server.id)
+        .then((status) => setOauth((o) => ({ ...o, status })))
+        .catch(() => {});
+    }
+  };
+
+  /** Salva il server (serve un identificatore) e prepara l'accesso; la pagina si apre con un clic in più. */
+  const signIn = async () => {
+    if (!draft) return;
+    setError(null);
+    setOauth((o) => ({ ...o, busy: true }));
+    try {
+      const saved = await api.saveMcpServer(fromDraft(draft));
+      setDraft({ ...draft, server: { ...draft.server, id: saved.id } });
+      refresh();
+      const start = await api.mcpOauthStart(saved.id);
+      setOauth((o) => ({ ...o, host: start.host, url: start.url }));
+      const status = await api.mcpOauthFinish(saved.id);
+      setOauth({ status, host: null, url: null, busy: false });
+    } catch (e) {
+      setOauth((o) => ({ ...o, host: null, url: null, busy: false }));
+      setError(String(e));
+    }
+  };
+
+  const signOut = async () => {
+    if (!draft?.server.id) return;
+    await api.mcpOauthLogout(draft.server.id).catch((e) => setError(String(e)));
+    setOauth({ status: { signedIn: false, expiresAt: null, refreshable: false }, host: null, url: null, busy: false });
   };
 
   const save = async () => {
@@ -167,6 +233,7 @@ export function McpSection() {
 
   const setServer = (change: Partial<McpServer>) => draft && setDraft({ ...draft, server: { ...draft.server, ...change } });
   const http = draft?.server.transport === "http";
+  const usesOauth = http && draft?.server.auth === "oauth";
 
   return (
     <section className="section" aria-labelledby="mcp-title">
@@ -185,7 +252,7 @@ export function McpSection() {
       </div>
       <p className="dim note">
         {t(
-          "Programmi che aggiungono strumenti agli agenti (Model Context Protocol). Partono sul tuo computer con i tuoi permessi: aggiungi solo server di cui ti fidi. Ogni agente sceglie quali usare, e i loro strumenti chiedono conferma salvo che l'agente abbia «Consenti tutto».",
+          "Programmi che aggiungono strumenti alle chat e agli agenti (Model Context Protocol). Partono sul tuo computer con i tuoi permessi: aggiungi solo server di cui ti fidi. Ogni conversazione e ogni agente sceglie quali usare; i loro strumenti chiedono conferma (negli agenti non con «Consenti tutto»).",
         )}
       </p>
 
@@ -213,14 +280,17 @@ export function McpSection() {
         <div key={s.id} className="folder">
           <span>
             <strong>{s.name}</strong> <span className="mono dim">{describe(s)}</span>
+            {owners[s.id] && <span className="dim"> · {t("plugin {name}", { name: owners[s.id] })}</span>}
           </span>
           <span className="row">
             <button className="btn-link" aria-label={t("Modifica {name}", { name: s.name })} onClick={() => edit(s)}>
               {t("Modifica")}
             </button>
-            <button className="btn-link" aria-label={t("Elimina {name}", { name: s.name })} onClick={() => remove(s)}>
-              {t("Elimina")}
-            </button>
+            {!owners[s.id] && (
+              <button className="btn-link" aria-label={t("Elimina {name}", { name: s.name })} onClick={() => remove(s)}>
+                {t("Elimina")}
+              </button>
+            )}
           </span>
         </div>
       ))}
@@ -271,18 +341,102 @@ export function McpSection() {
                   onChange={(e) => setServer({ url: e.target.value })}
                 />
               </div>
-              <div className="field">
-                <label htmlFor="mcp-headers">{t("Intestazioni, una per riga (Nome: valore)")}</label>
-                <textarea
-                  id="mcp-headers"
-                  className="mono"
-                  rows={2}
-                  value={draft.headers}
-                  placeholder="Authorization: Bearer …"
-                  onChange={(e) => setDraft({ ...draft, headers: e.target.value })}
-                  aria-describedby="mcp-secret-note"
-                />
-              </div>
+              <fieldset className="field">
+                <legend>{t("Accesso")}</legend>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="mcp-auth"
+                    checked={!usesOauth}
+                    onChange={() => setServer({ auth: "headers" })}
+                  />
+                  <span>{t("Intestazioni (un token scritto qui, o nessuna)")}</span>
+                </label>
+                <label className="check">
+                  <input type="radio" name="mcp-auth" checked={usesOauth} onChange={() => setServer({ auth: "oauth" })} />
+                  <span>{t("Accesso dal browser (OAuth)")}</span>
+                </label>
+              </fieldset>
+              {usesOauth ? (
+                <>
+                  <div className="row oauth-row" aria-live="polite">
+                    {oauth.url ? (
+                      <>
+                        <span>{t("Pagina di accesso di {host}: aprila e completa l'accesso.", { host: oauth.host ?? "" })}</span>
+                        <button
+                          className="btn primary"
+                          onClick={() => oauth.url && api.openExternal(oauth.url).catch((e) => setError(String(e)))}
+                        >
+                          {t("Apri nel browser")}
+                        </button>
+                        <button className="btn" onClick={() => draft.server.id && api.mcpOauthCancel(draft.server.id)}>
+                          {t("Annulla")}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className={oauth.status?.signedIn ? "" : "dim"}>
+                          {oauth.busy
+                            ? t("Preparazione dell'accesso…")
+                            : oauth.status?.signedIn
+                              ? t("Accesso fatto.")
+                              : t("Accesso non ancora fatto.")}
+                        </span>
+                        <button className="btn" disabled={oauth.busy} onClick={signIn}>
+                          {oauth.status?.signedIn ? t("Accedi di nuovo") : t("Accedi")}
+                        </button>
+                        {oauth.status?.signedIn && (
+                          <button className="btn" onClick={signOut}>
+                            {t("Esci")}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <details className="advanced">
+                    <summary>{t("Client registrato da te (solo se il servizio lo chiede)")}</summary>
+                    <p className="dim note">
+                      {t(
+                        "Di solito l'app si registra da sola. Per i servizi che non lo permettono (per esempio GitHub) registra un'app OAuth con indirizzo di ritorno http://127.0.0.1/callback e scrivi qui i suoi dati.",
+                      )}
+                    </p>
+                    <div className="field">
+                      <label htmlFor="mcp-client-id">{t("Client ID")}</label>
+                      <input
+                        id="mcp-client-id"
+                        type="text"
+                        className="mono"
+                        value={draft.server.clientId ?? ""}
+                        onChange={(e) => setServer({ clientId: e.target.value })}
+                      />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="mcp-client-secret">{t("Segreto del client (facoltativo)")}</label>
+                      <input
+                        id="mcp-client-secret"
+                        type="password"
+                        className="mono"
+                        value={draft.server.clientSecret ?? ""}
+                        onChange={(e) => setServer({ clientSecret: e.target.value })}
+                        aria-describedby="mcp-secret-note"
+                      />
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <div className="field">
+                  <label htmlFor="mcp-headers">{t("Intestazioni, una per riga (Nome: valore)")}</label>
+                  <textarea
+                    id="mcp-headers"
+                    className="mono"
+                    rows={2}
+                    value={draft.headers}
+                    placeholder="Authorization: Bearer …"
+                    onChange={(e) => setDraft({ ...draft, headers: e.target.value })}
+                    aria-describedby="mcp-secret-note"
+                  />
+                </div>
+              )}
             </>
           ) : (
             <>

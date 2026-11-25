@@ -322,11 +322,20 @@ terminal: boolean,
 /**
  * Ricerca nei documenti consultabili (RAG locale, ADR 0017).
  */
-documents: boolean, permission: PermissionLevel, 
+documents: boolean, 
+/**
+ * Skill da caricare quando servono (ADR 0023).
+ */
+skills: boolean, permission: PermissionLevel, 
 /**
  * Strumenti MCP per cui l'utente ha scelto "Consenti sempre".
  */
-allowedTools: Array<string>, };
+allowedTools: Array<string>, 
+/**
+ * Solo in chat: i server MCP (identificatori) scelti per la conversazione
+ * (ADR 0022). Nelle sessioni contano quelli dell'agente.
+ */
+mcpServers: Array<string>, };
 
 export type PermissionLevel = "ask" | "edits" | "all";
 

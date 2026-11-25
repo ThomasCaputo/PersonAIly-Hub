@@ -33,6 +33,9 @@ pub(crate) fn summary_of(run: &RunScope<'_>, call: &ToolCall) -> String {
             .unwrap_or("?");
         return format!("Cercare nei documenti: {query}");
     }
+    if call.name == skills::LOAD_SKILL || call.name == skills::READ_SKILL_FILE {
+        return skills::summary(&call.name, &call.arguments);
+    }
     if call.name == agents::DELEGATE_TOOL {
         let get = |key: &str| {
             call.arguments
@@ -96,7 +99,10 @@ impl Core {
             .filter(|_| call.name == agents::DELEGATE_TOOL);
         // La ricerca nei documenti consultabili.
         let documents = call.name == rag::DOCUMENTS_TOOL && settings.documents;
-        let risk = if documents {
+        // Le skill installate dall'utente (ADR 0023): sola lettura.
+        let skill = settings.skills
+            && (call.name == skills::LOAD_SKILL || call.name == skills::READ_SKILL_FILE);
+        let risk = if documents || skill {
             Risk::Read
         } else if delegation.is_some() {
             Risk::Execute
@@ -134,8 +140,13 @@ impl Core {
             && self.exfiltration_guard()
             && tools::needs_exfiltration_check(call, settings, folders, known_urls);
 
+        // In chat il livello parla delle cartelle concesse: non copre gli
+        // strumenti MCP, che agiscono altrove (ADR 0022).
+        let mcp_in_chat = external.is_some() && run.session_id.is_none();
         let mut approval = "auto";
-        if guarded || (!allowed_always && tools::decide(settings.permission, risk) == Decision::Ask)
+        if guarded
+            || (!allowed_always
+                && (mcp_in_chat || tools::decide(settings.permission, risk) == Decision::Ask))
         {
             let key = format!("{}:{}", run.key_prefix, call.id);
             let (sender, receiver) = oneshot::channel();
@@ -195,6 +206,13 @@ impl Core {
         if let Some(delegation) = delegation {
             let output = self.delegate(run, delegation, call).await;
             return CallResult { output, approval };
+        }
+        if skill {
+            let output = skills::run(&self.enabled_skills(), &call.name, &call.arguments);
+            return CallResult {
+                output: Some(output),
+                approval,
+            };
         }
         if documents {
             let query = call

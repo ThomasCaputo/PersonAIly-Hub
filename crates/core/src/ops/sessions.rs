@@ -406,9 +406,12 @@ Ultima risposta:
         if settings.documents && self.rag_ready() {
             defs.push(rag::tool_def());
         }
+        let (skill_defs, skill_prompt) = self.skill_offer(&settings);
+        defs.extend(skill_defs);
 
         // I server MCP dell'agente partono con la sessione e si chiudono con lei.
-        let servers = self.mcp_servers_for(&agent.mcp_servers)?;
+        let mut servers = self.mcp_servers_for(&agent.mcp_servers)?;
+        self.authorize_mcp(&mut servers).await?;
         let mcp_set = if servers.is_empty() {
             None
         } else {
@@ -449,6 +452,7 @@ Ultima risposta:
             &agent.instructions,
             &self.language_instruction(),
             &tools::system_preamble(&defs, &folders),
+            &skill_prompt,
         ]);
         let chat = chat_history(
             self.store().messages(session.conversation_id)?,

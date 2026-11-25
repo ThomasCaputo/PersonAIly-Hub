@@ -10,6 +10,8 @@ La versione inglese è in [user-guide.md](user-guide.md).
 - [Chat](#chat)
 - [Agenti e permessi](#agenti-e-permessi)
 - [Server MCP](#server-mcp)
+- [Skill](#skill)
+- [Plugin](#plugin)
 - [Documenti consultabili](#documenti-consultabili)
 - [VS Code](#vs-code)
 - [Backup, aggiornamenti e segnalazioni](#backup-aggiornamenti-e-segnalazioni)
@@ -129,19 +131,74 @@ lavora con le sue cartelle e i suoi permessi.
 
 ## Server MCP
 
-I server [MCP](https://modelcontextprotocol.io) aggiungono strumenti agli agenti (GitHub,
-browser, database…). Si configurano in **Impostazioni → Server MCP**:
+I server [MCP](https://modelcontextprotocol.io) aggiungono strumenti alle chat e agli agenti
+(GitHub, browser, database…). Si configurano in **Impostazioni → Server MCP**:
 
 - **Server noti:** un elenco di server diffusi da aggiungere con un clic (alcuni chiedono di
   completare un percorso o un token);
 - **Programma su questo computer (stdio):** un comando come `npx -y @nome/server`;
-- **Server a un indirizzo (HTTP):** l'indirizzo `https://…` di un server remoto, con le
-  intestazioni che servono (di solito `Authorization: Bearer <token>`).
+- **Server a un indirizzo (HTTP):** l'indirizzo `https://…` di un server remoto. Per farti
+  riconoscere scegli:
+  - **Intestazioni**, con un token scritto da te (di solito `Authorization: Bearer <token>`);
+  - **Accesso dal browser (OAuth)**, per i servizi come Notion o Linear: salva, premi
+    **Accedi**, poi **Apri nel browser** e completa l'accesso nella pagina del servizio. L'app
+    rinnova il token da sola; **Esci** lo cancella. I servizi che non permettono all'app di
+    registrarsi da sola (per esempio GitHub) chiedono di registrare un'app OAuth tua, con
+    indirizzo di ritorno `http://127.0.0.1/callback`, e di scriverne il Client ID nel modulo.
 
-Variabili d'ambiente e intestazioni stanno nel Gestore credenziali. **Prova** avvia il
+Variabili d'ambiente, intestazioni e token di accesso stanno nel Gestore credenziali. **Prova** avvia il
 server e mostra i suoi strumenti. Poi, nell'editor dell'agente, spunta i server da usare. Se il
 server offre delle risorse (documenti, file), l'agente le può elencare e leggere. Gli strumenti
 MCP chiedono sempre conferma, salvo con «Consenti tutto».
+
+**In chat:** apri il menu **Server MCP** nella barra degli strumenti sopra i messaggi e spunta
+i server di quella conversazione. Partono con il messaggio successivo e restano accesi mentre
+chatti; dopo 10 minuti senza messaggi si chiudono e ripartono quando servono. In chat ogni
+strumento MCP chiede conferma finché non scegli **Consenti sempre in questa conversazione** per
+quello strumento: «Consenti tutto nelle cartelle» non li copre.
+
+**Comandi `/`:** se i server della conversazione offrono dei prompt (testi pronti, a volte con
+argomenti), scrivi `/` all'inizio del messaggio: compare l'elenco, che si restringe mentre
+scrivi. Scegli con le frecce e Invio (o con un clic), compila gli eventuali argomenti e il
+testo del prompt finisce nella casella del messaggio, da rivedere e inviare.
+
+## Skill
+
+Una skill è un insieme di istruzioni pronte per un certo compito (scrivere un verbale, rivedere
+un testo con le tue regole…), nel formato aperto `SKILL.md`, lo stesso di Claude: le skill
+già scritte per altri programmi funzionano anche qui. Si gestiscono in **Impostazioni → Skill**:
+
+- **Nuova skill:** scrivi nome (lettere minuscole, cifre e trattini), quando usarla e le
+  istruzioni;
+- **Importa una cartella** o **Importa un .zip:** una skill con il suo `SKILL.md` ed eventuali
+  file di supporto (modelli, esempi);
+- la casella accanto a ogni skill la accende o la spegne; **Modifica** cambia lo `SKILL.md`.
+
+Poi, in chat o negli agenti, accendi lo strumento **Skill**: il modello vede solo nome e
+descrizione delle skill accese e, quando la richiesta corrisponde, carica le istruzioni e i
+file che gli servono. Leggere una skill non chiede conferma; tutto il resto (file, web,
+terminale) segue i permessi di sempre. Importa solo skill di cui ti fidi: il modello segue
+le loro istruzioni come se le avessi scritte tu. Le skill entrano nei backup.
+
+## Plugin
+
+Un plugin è un pacchetto con skill, server MCP, agenti e comandi `/`, nel formato dei plugin di
+Claude Code: quelli già pubblicati si installano così come sono. In **Impostazioni → Plugin**
+scegli **Importa una cartella** o **Importa un .zip**. L'app copia il plugin, crea le sue parti e
+mostra gli avvisi, per esempio le variabili di un server da completare o le parti che non supporta
+(come gli *hooks*).
+
+- Le **skill** compaiono tra le skill, accese.
+- I **server MCP** compaiono tra i server: nessuno parte finché non lo scegli in una conversazione
+  o in un agente.
+- Gli **agenti** compaiono nella pagina Agenti, senza cartelle: sceglile prima di usarli.
+- I **comandi** compaiono nel menu `/` di ogni conversazione: scegline uno, scrivi gli eventuali
+  argomenti e il testo finisce nella casella del messaggio.
+
+Skill e server di un plugin portano il segno «plugin …» e si tolgono solo con **Disinstalla**,
+che elimina tutto ciò che il plugin aveva creato. Reinstallare un plugin già presente lo sostituisce:
+le modifiche fatte ai suoi server e agenti si perdono. Un plugin si fida come un programma:
+installa solo quelli di cui ti fidi. I plugin entrano nei backup.
 
 ## Documenti consultabili
 
@@ -167,7 +224,7 @@ altri programmi compatibili con OpenAI.
 
 ## Backup, aggiornamenti e segnalazioni
 
-- **Impostazioni → Backup dei dati:** salva conversazioni, agenti, impostazioni e preset in un
+- **Impostazioni → Backup dei dati:** salva conversazioni, agenti, impostazioni, preset, skill e plugin in un
   `.zip`; **Ripristina da un backup** lo rimette al riavvio. Le chiavi API restano nel Gestore credenziali.
 - **Impostazioni → Aggiornamenti:** l'app controlla all'avvio se c'è una versione nuova, la
   scarica, ne verifica la firma e la installa. Il controllo si può spegnere.

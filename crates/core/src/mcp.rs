@@ -66,6 +66,20 @@ pub enum Transport {
     Http,
 }
 
+/// Come l'app si fa riconoscere da un server HTTP.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpAuth {
+    /// Con le intestazioni scritte dall'utente (o senza nulla).
+    #[default]
+    Headers,
+    /// Con un accesso dal browser (ADR 0024).
+    OAuth,
+}
+
+/// Nel portachiavi, il segreto del client OAuth indicato dall'utente.
+pub(crate) const CLIENT_SECRET_KEY: &str = "oauth:client_secret";
+
 /// Un server MCP configurato dall'utente.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -84,9 +98,21 @@ pub struct McpServerConfig {
     /// Solo HTTP: intestazioni aggiunte a ogni richiesta, di solito
     /// `Authorization`. I valori stanno nel portachiavi, come le variabili.
     pub headers: Vec<(String, String)>,
+    /// Solo HTTP: intestazioni o accesso OAuth.
+    pub auth: McpAuth,
+    /// Solo OAuth: il client registrato dall'utente presso il servizio, per i
+    /// servizi senza registrazione dinamica. Vuoto: l'app si registra da sola.
+    pub client_id: String,
+    /// Solo OAuth, facoltativo: il segreto di quel client. Sta nel portachiavi.
+    pub client_secret: String,
 }
 
 impl McpServerConfig {
+    /// `true` se il server si raggiunge con un accesso OAuth.
+    pub fn uses_oauth(&self) -> bool {
+        self.transport == Transport::Http && self.auth == McpAuth::OAuth
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(Error::msg("Dai un nome al server MCP."));
@@ -133,7 +159,8 @@ impl McpServerConfig {
             .headers
             .iter_mut()
             .map(|(name, value)| (format!("{HEADER_KEY}{}", name.trim()), value));
-        env.chain(headers)
+        let secret = std::iter::once((CLIENT_SECRET_KEY.to_string(), &mut self.client_secret));
+        env.chain(headers).chain(secret)
     }
 
     fn secret_names(&self) -> Vec<String> {
@@ -145,13 +172,14 @@ impl McpServerConfig {
                     .iter()
                     .map(|(name, _)| format!("{HEADER_KEY}{}", name.trim())),
             )
+            .chain(std::iter::once(CLIENT_SECRET_KEY.to_string()))
             .collect()
     }
 }
 
 /// Un indirizzo accettabile per un server MCP: cifrato, oppure su questo
 /// computer (dove la cifratura non serve).
-fn check_url(url: &str) -> Result<()> {
+pub(crate) fn check_url(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| Error::msg("Indica l'indirizzo completo del server MCP (https://…)."))?;
     let local = matches!(
@@ -225,6 +253,30 @@ pub fn forget_env(vault: &dyn EnvVault, config: &McpServerConfig) -> Result<()> 
     Ok(())
 }
 
+/// Un argomento di un prompt MCP.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptArg {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+}
+
+/// Un prompt offerto da un server (ADR 0025): in chat diventa un comando `/`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPrompt {
+    /// Posizione del server nell'insieme della conversazione.
+    pub server: usize,
+    pub server_name: String,
+    pub name: String,
+    pub description: String,
+    pub arguments: Vec<McpPromptArg>,
+}
+
+/// Caratteri massimi del testo di un prompt.
+const PROMPT_CHARS: usize = 30_000;
+
 /// Uno strumento dichiarato da un server, per l'interfaccia.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +327,8 @@ pub struct McpClient {
     next_id: u64,
     /// Il server offre delle risorse (`resources/list`, `resources/read`).
     resources: bool,
+    /// Il server offre dei prompt (`prompts/list`, `prompts/get`).
+    prompts: bool,
 }
 
 impl McpClient {
@@ -304,6 +358,7 @@ impl McpClient {
             link,
             next_id: 1,
             resources: false,
+            prompts: false,
         };
         let result = client
             .request(
@@ -317,6 +372,7 @@ impl McpClient {
             )
             .await?;
         client.resources = result.pointer("/capabilities/resources").is_some();
+        client.prompts = result.pointer("/capabilities/prompts").is_some();
         if let Link::Http(http) = &mut client.link {
             http.protocol = Some(
                 result
@@ -334,6 +390,15 @@ impl McpClient {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// `false` se il processo di un server stdio si è chiuso. Di un server
+    /// HTTP non si sa finché non si prova a parlargli.
+    fn is_alive(&mut self) -> bool {
+        match &mut self.link {
+            Link::Stdio(stdio) => matches!(stdio.child.try_wait(), Ok(None)),
+            Link::Http(_) => true,
+        }
     }
 
     /// Spiega un guasto: il messaggio e, se c'è, ciò che il server ha scritto sugli errori.
@@ -488,7 +553,9 @@ impl McpClient {
         let body = response.text().await.unwrap_or_default();
         let detail: String = body.trim().chars().take(300).collect();
         let hint = match status.as_u16() {
-            401 | 403 => " Controlla le intestazioni (per esempio il token in Authorization).",
+            401 | 403 => {
+                " Controlla le intestazioni (per esempio il token in Authorization), oppure scegli «Accesso dal browser (OAuth)» e fai l'accesso."
+            }
             404 => " Controlla l'indirizzo.",
             _ => "",
         };
@@ -644,6 +711,71 @@ impl McpClient {
     }
 
     /// Le risorse del server, una per riga: indirizzo, nome e descrizione.
+    /// I prompt del server, senza ancora il loro testo.
+    async fn list_prompts(&mut self) -> Result<Vec<(String, String, Vec<McpPromptArg>)>> {
+        let mut prompts = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let params = match &cursor {
+                Some(cursor) => json!({ "cursor": cursor }),
+                None => json!({}),
+            };
+            let result = self.request("prompts/list", params, LIST_TIMEOUT).await?;
+            for prompt in result
+                .get("prompts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let text = |v: &Value, key: &str| {
+                    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+                };
+                let name = text(prompt, "name");
+                if name.is_empty() {
+                    continue;
+                }
+                let arguments = prompt
+                    .get("arguments")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|a| !text(a, "name").is_empty())
+                    .map(|a| McpPromptArg {
+                        name: text(a, "name"),
+                        description: text(a, "description"),
+                        required: a.get("required").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                    .collect();
+                let description = match text(prompt, "description") {
+                    d if d.is_empty() => text(prompt, "title"),
+                    d => d,
+                };
+                prompts.push((name, description, arguments));
+            }
+            cursor = next_cursor(&result);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(prompts)
+    }
+
+    /// Il testo di un prompt con i suoi argomenti: i messaggi uniti, in ordine.
+    async fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: &std::collections::HashMap<String, String>,
+    ) -> Result<String> {
+        let result = self
+            .request(
+                "prompts/get",
+                json!({ "name": name, "arguments": arguments }),
+                CALL_TIMEOUT,
+            )
+            .await?;
+        Ok(prompt_text(&result))
+    }
+
     async fn list_resources(&mut self) -> Result<ToolOutput> {
         let mut lines = Vec::new();
         let mut cursor: Option<String> = None;
@@ -782,6 +914,56 @@ fn reply_to_server(message: &Value) -> Option<Value> {
         json!({ "jsonrpc": "2.0", "id": request_id,
                 "error": { "code": -32601, "message": "Metodo non supportato" } })
     })
+}
+
+/// Il testo dei messaggi di un prompt. Quelli dell'assistente sono segnati,
+/// immagini e audio solo nominati.
+fn prompt_text(result: &Value) -> String {
+    let mut parts = Vec::new();
+    for message in result
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let content = message.get("content").cloned().unwrap_or(Value::Null);
+        let text = match content.get("type").and_then(Value::as_str) {
+            Some("text") => content
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            Some("resource") => content
+                .pointer("/resource/text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!(
+                        "[risorsa {}]",
+                        content
+                            .pointer("/resource/uri")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                    )
+                }),
+            Some("image") => "[immagine]".to_string(),
+            Some("audio") => "[audio]".to_string(),
+            _ => String::new(),
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        if message.get("role").and_then(Value::as_str) == Some("assistant") {
+            parts.push(format!("[assistente] {text}"));
+        } else {
+            parts.push(text);
+        }
+    }
+    let mut text = parts.join("\n\n");
+    if text.chars().count() > PROMPT_CHARS {
+        text = text.chars().take(PROMPT_CHARS).collect();
+    }
+    text
 }
 
 fn next_cursor(result: &Value) -> Option<String> {
@@ -1031,6 +1213,56 @@ impl McpSet {
 
     pub fn defs(&self) -> &[ToolDef] {
         &self.defs
+    }
+
+    /// I prompt di tutti i server dell'insieme. Un server che non li sa
+    /// elencare viene saltato: gli altri restano utilizzabili.
+    pub async fn prompts(&self) -> Vec<McpPrompt> {
+        let mut out = Vec::new();
+        for (index, client) in self.clients.iter().enumerate() {
+            let mut client = client.lock().await;
+            if !client.prompts {
+                continue;
+            }
+            match client.list_prompts().await {
+                Ok(list) => {
+                    out.extend(
+                        list.into_iter()
+                            .map(|(name, description, arguments)| McpPrompt {
+                                server: index,
+                                server_name: client.name().to_string(),
+                                name,
+                                description,
+                                arguments,
+                            }),
+                    )
+                }
+                Err(e) => crate::log::error(format!("prompt MCP non elencati: {e}")),
+            }
+        }
+        out
+    }
+
+    /// Il testo di un prompt di uno dei server.
+    pub async fn get_prompt(
+        &self,
+        server: usize,
+        name: &str,
+        arguments: &std::collections::HashMap<String, String>,
+    ) -> Result<String> {
+        let client = self
+            .clients
+            .get(server)
+            .ok_or_else(|| Error::msg("Il server di questo prompt non è più attivo."))?;
+        client.lock().await.get_prompt(name, arguments).await
+    }
+
+    /// `true` se tutti i server stdio sono ancora in esecuzione. Un server al
+    /// lavoro in questo momento conta come vivo.
+    pub fn is_alive(&self) -> bool {
+        self.clients
+            .iter()
+            .all(|client| client.try_lock().map_or(true, |mut c| c.is_alive()))
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -1341,7 +1573,7 @@ while ($true) {
     /// Un server MCP HTTP finto: risponde in JSON alla presentazione, con un
     /// flusso di eventi a `tools/list` (con un `ping` in mezzo) e offre una
     /// risorsa. Restituisce l'indirizzo e le intestazioni ricevute.
-    fn fake_http_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    pub(crate) fn fake_http_server() -> (String, Arc<Mutex<Vec<String>>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1394,7 +1626,7 @@ while ($true) {
                     }
                     ("initialize", _) => json_reply(json!({
                         "protocolVersion": "2025-06-18",
-                        "capabilities": {"tools": {}, "resources": {}},
+                        "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                         "serverInfo": {"name": "finto", "version": "1"}
                     })),
                     ("notifications/initialized", _) => {
@@ -1424,6 +1656,23 @@ while ($true) {
                     ("resources/read", _) => json_reply(json!({"contents": [
                         {"uri": "doc://guida", "text": "Contenuto della guida"}
                     ]})),
+                    ("prompts/list", _) => json_reply(json!({"prompts": [
+                        {"name": "revisione", "description": "Rivedi un testo",
+                         "arguments": [{"name": "tono", "description": "Che tono usare", "required": true}]},
+                        {"name": "senza-descrizione", "title": "Titolo al posto della descrizione"}
+                    ]})),
+                    ("prompts/get", _) => {
+                        let tono = message
+                            .pointer("/params/arguments/tono")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?");
+                        json_reply(json!({"messages": [
+                            {"role": "user", "content": {"type": "text", "text": format!("Rivedi con tono {tono}.")}},
+                            {"role": "assistant", "content": {"type": "text", "text": "Certo."}},
+                            {"role": "user", "content": {"type": "resource", "resource": {"uri": "doc://regole", "text": "Regole di stile"}}},
+                            {"role": "user", "content": {"type": "image", "data": "AA==", "mimeType": "image/png"}}
+                        ]}))
+                    }
                     _ => json_reply(json!({})),
                 };
                 let _ = stream.write_all(reply.as_bytes());
@@ -1487,6 +1736,41 @@ while ($true) {
             seen.iter()
                 .any(|h| h.contains("mcp-protocol-version: 2025-06-18"))
         );
+    }
+
+    #[tokio::test]
+    async fn i_prompt_del_server_si_elencano_e_si_compilano() {
+        let (url, _) = fake_http_server();
+        let config = McpServerConfig {
+            name: "Remoto".into(),
+            transport: Transport::Http,
+            url,
+            ..Default::default()
+        };
+        let set = McpSet::start(std::slice::from_ref(&config), None)
+            .await
+            .unwrap();
+        let prompts = set.prompts().await;
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].server_name, "Remoto");
+        assert_eq!(prompts[0].name, "revisione");
+        assert_eq!(
+            prompts[0].arguments,
+            [McpPromptArg {
+                name: "tono".into(),
+                description: "Che tono usare".into(),
+                required: true
+            }]
+        );
+        assert_eq!(prompts[1].description, "Titolo al posto della descrizione");
+
+        let arguments = [("tono".to_string(), "formale".to_string())].into();
+        let text = set.get_prompt(0, "revisione", &arguments).await.unwrap();
+        assert_eq!(
+            text,
+            "Rivedi con tono formale.\n\n[assistente] Certo.\n\nRegole di stile\n\n[immagine]"
+        );
+        assert!(set.get_prompt(5, "revisione", &arguments).await.is_err());
     }
 
     #[tokio::test]
