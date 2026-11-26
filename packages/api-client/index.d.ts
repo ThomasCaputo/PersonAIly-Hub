@@ -274,6 +274,8 @@ export type TextEvent = { text: string, };
 
 export type ToolRequestEvent = { id: string, name: string, summary: string, arguments: JsonValue, };
 
+export type ModelSwitchEvent = { from: string, to: string, reason: string, };
+
 export type ErrorEvent = { message: string, };
 
 export type SendOutcome = { conversation: Conversation, 
@@ -335,7 +337,12 @@ allowedTools: Array<string>,
  * Solo in chat: i server MCP (identificatori) scelti per la conversazione
  * (ADR 0022). Nelle sessioni contano quelli dell'agente.
  */
-mcpServers: Array<string>, };
+mcpServers: Array<string>, 
+/**
+ * Solo in chat: la coda di riserva propria della conversazione (ADR 0027).
+ * `None` segue quella delle Impostazioni; una coda vuota non ne usa nessuna.
+ */
+fallbackModels?: Array<ModelRef>, };
 
 export type PermissionLevel = "ask" | "edits" | "all";
 
@@ -391,7 +398,12 @@ restorePoints: boolean,
 /**
  * Gli agenti (id) a cui questo può affidare parte del lavoro (AG-8).
  */
-delegates: Array<number>, };
+delegates: Array<number>, 
+/**
+ * La coda di riserva propria dell'agente (ADR 0027). `None` segue quella
+ * delle Impostazioni; una coda vuota non ne usa nessuna.
+ */
+fallbackModels?: Array<ModelRef>, };
 
 export type AgentSession = { id: number, 
 /**

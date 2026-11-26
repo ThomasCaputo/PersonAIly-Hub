@@ -394,6 +394,16 @@ pub(crate) struct ToolRequestEvent {
     pub arguments: serde_json::Value,
 }
 
+/// Dati dell'evento `modelSwitch`: il modello cloud scelto ha dato errore e la
+/// risposta riparte da un modello della coda di riserva. Il testo arrivato prima
+/// è già stato scartato da un evento `saved`.
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct ModelSwitchEvent {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
 /// Dati dell'evento `error`, che chiude il flusso. (L'evento `done` porta un
 /// `SendOutcome`; `saved` nessun dato.)
 #[derive(Serialize, ts_rs::TS)]
@@ -420,6 +430,9 @@ fn chat_event(event: ChatEvent) -> axum::response::sse::Event {
                 arguments,
             },
         ),
+        ChatEvent::ModelSwitch { from, to, reason } => {
+            sse_json(Some("modelSwitch"), &ModelSwitchEvent { from, to, reason })
+        }
     }
 }
 

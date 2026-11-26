@@ -250,6 +250,12 @@ enum StreamEvent {
         summary: String,
         arguments: serde_json::Value,
     },
+    /// Il modello cloud ha dato errore: risponde un modello di riserva.
+    ModelSwitch {
+        from: String,
+        to: String,
+        reason: String,
+    },
 }
 
 impl From<ChatEvent> for StreamEvent {
@@ -269,6 +275,9 @@ impl From<ChatEvent> for StreamEvent {
                 summary,
                 arguments,
             },
+            ChatEvent::ModelSwitch { from, to, reason } => {
+                StreamEvent::ModelSwitch { from, to, reason }
+            }
         }
     }
 }
@@ -903,6 +912,17 @@ fn set_spend_limits(core: CoreState<'_>, limits: SpendLimits) -> CmdResult<()> {
     core.set_spend_limits(&limits).map_err(text)
 }
 
+/// La coda dei modelli cloud di riserva, in ordine.
+#[tauri::command]
+fn fallback_models(core: CoreState<'_>) -> Vec<ModelRef> {
+    core.fallback_models()
+}
+
+#[tauri::command]
+fn set_fallback_models(core: CoreState<'_>, models: Vec<ModelRef>) -> CmdResult<()> {
+    core.set_fallback_models(&models).map_err(text)
+}
+
 #[tauri::command(async)]
 fn language(core: CoreState<'_>) -> CmdResult<Option<String>> {
     core.language().map_err(text)
@@ -1396,6 +1416,8 @@ pub fn run() {
             index_documents,
             search_documents,
             set_spend_limits,
+            fallback_models,
+            set_fallback_models,
             language,
             set_language,
             preferences,
@@ -1506,6 +1528,15 @@ mod tests {
             }),
             serde_json::json!({"type": "toolRequest", "id": "c1:x", "name": "write_file",
                                "summary": "Scrivere", "arguments": {"path": "a.txt"}})
+        );
+        assert_eq!(
+            json(ChatEvent::ModelSwitch {
+                from: "gemini-pro".into(),
+                to: "gemini-flash".into(),
+                reason: "occupato".into(),
+            }),
+            serde_json::json!({"type": "modelSwitch", "from": "gemini-pro",
+                               "to": "gemini-flash", "reason": "occupato"})
         );
     }
 

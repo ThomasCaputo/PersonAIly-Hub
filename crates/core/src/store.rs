@@ -447,6 +447,15 @@ impl Store {
         self.conversation(self.conn.last_insert_rowid())
     }
 
+    /// `true` se la conversazione è temporanea (confronto tra modelli).
+    pub fn is_temporary(&self, id: i64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT temporary FROM conversations WHERE id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    }
+
     /// Rende normale una conversazione temporanea: entra nella cronologia, in
     /// cima.
     pub fn keep_conversation(&self, id: i64) -> Result<()> {

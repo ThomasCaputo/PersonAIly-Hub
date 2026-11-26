@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Approval, type McpServer, type PermissionLevel, type ToolRequest, type ToolSettings } from "../api";
 import { msg, t, tc } from "../i18n";
+import { FallbackPicker } from "./FallbackSection";
 
 const LEVELS: { value: PermissionLevel; label: string; hint: string }[] = [
   { value: "ask", label: msg("Chiedi sempre"), hint: msg("Ogni modifica ai file chiede la tua conferma") },
@@ -23,10 +24,12 @@ type BarProps = {
   disabled: boolean;
   onChange: (settings: ToolSettings) => void;
   onOpenSettings: () => void;
+  /** Solo in chat: il menu della coda di riserva della conversazione. */
+  fallback?: boolean;
 };
 
 /** Strumenti e permessi della conversazione aperta. */
-export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSettings }: BarProps) {
+export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSettings, fallback = false }: BarProps) {
   const hint = LEVELS.find((l) => l.value === settings.permission)?.hint;
   return (
     <div className="tools-bar">
@@ -72,6 +75,13 @@ export function ToolsBar({ settings, folderCount, disabled, onChange, onOpenSett
         {t("Skill")}
       </label>
       <McpPicker settings={settings} disabled={disabled} onChange={onChange} />
+      {fallback && (
+        <FallbackPicker
+          own={settings.fallbackModels}
+          disabled={disabled}
+          onChange={(own) => onChange({ ...settings, fallbackModels: own })}
+        />
+      )}
       <select
         aria-label={t("Permessi")}
         value={settings.permission}

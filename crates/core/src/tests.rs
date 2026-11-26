@@ -299,6 +299,7 @@ async fn drive(
         mcp: None,
         delegation: None,
         step_tokens: Some(agent.max_step_tokens),
+        fallback: Fallback::Global,
     };
     core.run_rounds(
         &scope,
@@ -471,6 +472,7 @@ async fn il_limite_di_spesa_ferma_i_modelli_cloud() {
         mcp: None,
         delegation: None,
         step_tokens: None,
+        fallback: Fallback::Global,
     };
     let result = core
         .run_rounds(
@@ -627,6 +629,7 @@ async fn consenti_sempre_su_uno_strumento_mcp_vale_solo_per_quello() {
         mcp: Some(&set),
         delegation: None,
         step_tokens: None,
+        fallback: Fallback::Global,
     };
     let mut asked = Vec::new();
     let outcome = core
@@ -797,6 +800,7 @@ async fn in_chat_consenti_tutto_non_copre_gli_strumenti_mcp() {
         mcp: Some(&set),
         delegation: None,
         step_tokens: None,
+        fallback: Fallback::Global,
     };
     let mut asked = 0;
     let outcome = core
@@ -1045,6 +1049,7 @@ async fn il_modello_carica_una_skill_senza_chiedere() {
         mcp: None,
         delegation: None,
         step_tokens: None,
+        fallback: Fallback::Global,
     };
     let mut asked = 0;
     core.run_rounds(
@@ -1602,6 +1607,503 @@ fn un_plugin_che_non_si_installa_non_lascia_nulla() {
     assert!(core.agents().unwrap().is_empty());
     assert!(core.list_plugins().unwrap().is_empty());
     assert!(!dir.join("dati").join("plugins").join("revisione").exists());
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── Modelli di riserva ──────────────────────────────────────────────────
+
+/// Un servizio che risponde sempre con `status` e conta le richieste ricevute.
+fn fake_busy_service(status: u16) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = count.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 65536];
+            let _ = stream.read(&mut buf);
+            let body =
+                r#"{"error": {"message": "The model is overloaded. Please try again later."}}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Busy\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (format!("http://127.0.0.1:{port}/v1"), count)
+}
+
+/// Salva un provider finto con una chiave finta (mai nel portachiavi vero).
+fn fake_provider(core: &Core, name: &str, base_url: String) -> Provider {
+    let saved = core
+        .save_provider(
+            Provider {
+                id: String::new(),
+                name: name.into(),
+                kind: providers::ProviderKind::OpenaiCompatible,
+                base_url,
+                models: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+    secrets::TEST_KEYS
+        .lock()
+        .unwrap()
+        .push((saved.provider.id.clone(), "chiave-finta".into()));
+    saved.provider
+}
+
+fn cloud(provider: &Provider, model: &str) -> ModelRef {
+    ModelRef::Cloud {
+        provider_id: provider.id.clone(),
+        model: model.into(),
+    }
+}
+
+/// Una risposta con il modello `primary` e i suoi eventi.
+async fn answer_with(
+    core: &Core,
+    conv: i64,
+    primary: &Provider,
+    model: &str,
+    permission: PermissionLevel,
+) -> (Result<SendOutcome>, Vec<ChatEvent>) {
+    let mut settings = ToolSettings {
+        terminal: true,
+        permission,
+        ..Default::default()
+    };
+    let dir = std::env::temp_dir();
+    let folders = vec![dir.clone()];
+    let defs = tools::available(&settings, &folders);
+    let target = Target::Cloud(primary.clone(), "chiave-finta".into(), model.into());
+    let control = RunControl::new();
+    let scope = RunScope {
+        conversation_id: conv,
+        session_id: None,
+        source: "prova".into(),
+        key_prefix: format!("c{conv}"),
+        control: &control,
+        max_rounds: 10,
+        limit_notice: "limite".into(),
+        mcp: None,
+        delegation: None,
+        step_tokens: None,
+        fallback: Fallback::Global,
+    };
+    let mut events = Vec::new();
+    let chat = vec![ChatMessage::new("user", "Ciao")];
+    let result = core
+        .run_rounds(
+            &scope,
+            &target,
+            chat,
+            &defs,
+            &mut settings,
+            &folders,
+            "",
+            &SamplingParams::default(),
+            &mut |event| events.push(event),
+        )
+        .await;
+    (result, events)
+}
+
+#[test]
+fn la_coda_di_riserva_accetta_solo_modelli_cloud() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-coda-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    assert!(core.fallback_models().is_empty());
+
+    let a = ModelRef::Cloud {
+        provider_id: "p1".into(),
+        model: "m1".into(),
+    };
+    let b = ModelRef::Cloud {
+        provider_id: "p2".into(),
+        model: "m2".into(),
+    };
+    // I doppioni si tolgono, l'ordine resta.
+    core.set_fallback_models(&[b.clone(), a.clone(), b.clone()])
+        .unwrap();
+    assert_eq!(core.fallback_models(), [b.clone(), a.clone()]);
+
+    assert!(core.set_fallback_models(&[ModelRef::Local]).is_err());
+    let empty = ModelRef::Cloud {
+        provider_id: " ".into(),
+        model: "m".into(),
+    };
+    assert!(core.set_fallback_models(&[empty]).is_err());
+    let many: Vec<ModelRef> = (0..=MAX_FALLBACK_MODELS)
+        .map(|i| ModelRef::Cloud {
+            provider_id: "p".into(),
+            model: format!("m{i}"),
+        })
+        .collect();
+    assert!(core.set_fallback_models(&many).is_err());
+    // Un errore non tocca la coda salvata.
+    assert_eq!(core.fallback_models(), [b, a]);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn un_modello_occupato_passa_la_mano_al_primo_di_riserva_che_funziona() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-passa-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let conv = core.create_conversation().unwrap().id;
+
+    let (busy_url, busy_hits) = fake_busy_service(503);
+    let primary = fake_provider(&core, "Occupato", busy_url);
+    // Un provider senza chiave si salta; poi uno che risponde: prima chiede un
+    // comando, poi conclude. Il modello scelto non si riprova al secondo giro.
+    let no_key = core
+        .save_provider(
+            Provider {
+                id: String::new(),
+                name: "Senza chiave".into(),
+                kind: providers::ProviderKind::OpenaiCompatible,
+                base_url: "https://esempio.invalid/v1".into(),
+                models: Vec::new(),
+            },
+            None,
+        )
+        .unwrap()
+        .provider;
+    let good = fake_provider(
+        &core,
+        "Funziona",
+        fake_service(vec![command_call("echo 'fatto'"), final_text("Ho finito.")]),
+    );
+    core.set_fallback_models(&[
+        cloud(&primary, "grande"),
+        cloud(&no_key, "x"),
+        cloud(&good, "riserva"),
+    ])
+    .unwrap();
+
+    let (result, events) = answer_with(&core, conv, &primary, "grande", PermissionLevel::All).await;
+    let outcome = result.unwrap();
+    assert!(!outcome.cancelled);
+    assert_eq!(outcome.assistant_message.unwrap().content, "Ho finito.");
+    // Una sola richiesta al modello occupato: il secondo giro resta sulla riserva.
+    assert_eq!(busy_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let switches: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::ModelSwitch { from, to, reason } => Some((from, to, reason)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(switches.len(), 1);
+    assert_eq!(switches[0].0, "grande");
+    assert_eq!(switches[0].1, "riserva");
+    assert!(switches[0].2.contains("503"), "{}", switches[0].2);
+
+    // Ogni risposta porta il nome del modello che l'ha scritta.
+    let messages = core.messages(conv).unwrap();
+    let models: Vec<Option<&str>> = messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .map(|m| m.model.as_deref())
+        .collect();
+    assert_eq!(models, [Some("riserva"), Some("riserva")]);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn il_testo_a_meta_del_primo_modello_si_scarta() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-meta-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let conv = core.create_conversation().unwrap().id;
+
+    let broken = vec![
+        serde_json::json!({"choices": [{"delta": {"content": "Inizio a rispon"}}]}),
+        serde_json::json!({"error": {"message": "Overloaded"}}),
+    ];
+    let primary = fake_provider(&core, "Si interrompe", fake_service(vec![broken]));
+    let good = fake_provider(
+        &core,
+        "Completo",
+        fake_service(vec![final_text("Risposta intera.")]),
+    );
+    core.set_fallback_models(&[cloud(&good, "riserva")])
+        .unwrap();
+
+    let (result, events) = answer_with(&core, conv, &primary, "grande", PermissionLevel::Ask).await;
+    let outcome = result.unwrap();
+    assert_eq!(
+        outcome.assistant_message.unwrap().content,
+        "Risposta intera."
+    );
+    // Prima l'interfaccia scarta il testo arrivato, poi sa del cambio.
+    let switch = events
+        .iter()
+        .position(|e| matches!(e, ChatEvent::ModelSwitch { .. }))
+        .unwrap();
+    assert_eq!(events[switch - 1], ChatEvent::Saved);
+    let messages = core.messages(conv).unwrap();
+    assert!(
+        messages
+            .iter()
+            .all(|m| !m.content.contains("Inizio a rispon"))
+    );
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn senza_riserva_o_quando_finisce_la_coda_resta_l_errore() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-fine-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let conv = core.create_conversation().unwrap().id;
+
+    let (busy_url, _) = fake_busy_service(429);
+    let primary = fake_provider(&core, "Limite", busy_url);
+    let (result, events) = answer_with(&core, conv, &primary, "grande", PermissionLevel::Ask).await;
+    assert!(result.unwrap_err().to_string().contains("429"));
+    assert!(events.is_empty());
+
+    // Anche la riserva è occupata: l'errore è quello dell'ultimo modello provato.
+    let (other_url, other_hits) = fake_busy_service(503);
+    let other = fake_provider(&core, "Anche occupato", other_url);
+    core.set_fallback_models(&[cloud(&other, "riserva")])
+        .unwrap();
+    let (result, events) = answer_with(&core, conv, &primary, "grande", PermissionLevel::Ask).await;
+    assert!(result.unwrap_err().to_string().contains("503"));
+    assert_eq!(other_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, ChatEvent::ModelSwitch { .. }))
+            .count(),
+        1
+    );
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn nel_confronto_tra_modelli_la_riserva_non_si_usa() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-confronto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let (busy_url, _) = fake_busy_service(503);
+    let primary = fake_provider(&core, "Confronto occupato", busy_url);
+    let (good_url_hits, good) = {
+        let (url, hits) = fake_busy_service(500);
+        (hits, fake_provider(&core, "Riserva del confronto", url))
+    };
+    core.set_fallback_models(&[cloud(&good, "riserva")])
+        .unwrap();
+    let model = cloud(&primary, "grande");
+    let mut events = Vec::new();
+
+    // Una colonna del confronto: l'errore resta, la riserva non riceve nulla.
+    let temporary = core.create_temporary_conversation().unwrap().id;
+    core.set_conversation_tools(temporary, &ToolSettings::default())
+        .unwrap();
+    let result = core
+        .send_message(
+            temporary,
+            "Ciao",
+            &[],
+            &SamplingParams::default(),
+            "",
+            &model,
+            |event| events.push(event),
+        )
+        .await;
+    assert!(result.unwrap_err().to_string().contains("503"));
+    assert_eq!(good_url_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(events.is_empty());
+
+    // Una chat normale invece prova la coda.
+    let normal = core.create_conversation().unwrap().id;
+    let result = core
+        .send_message(
+            normal,
+            "Ciao",
+            &[],
+            &SamplingParams::default(),
+            "",
+            &model,
+            |event| events.push(event),
+        )
+        .await;
+    assert!(result.unwrap_err().to_string().contains("500"));
+    assert_eq!(good_url_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn ogni_conversazione_puo_avere_la_sua_coda_di_riserva() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-propria-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let (busy_url, _) = fake_busy_service(503);
+    let primary = fake_provider(&core, "Principale occupato", busy_url);
+    let (global_url, global_hits) = fake_busy_service(500);
+    let global = fake_provider(&core, "Riserva globale", global_url);
+    let own = fake_provider(
+        &core,
+        "Riserva propria",
+        fake_service(vec![final_text("Risponde la coda della chat.")]),
+    );
+    core.set_fallback_models(&[cloud(&global, "globale")])
+        .unwrap();
+    let model = cloud(&primary, "grande");
+    let send = |conv: i64| {
+        let core = &core;
+        let model = model.clone();
+        async move {
+            core.send_message(
+                conv,
+                "Ciao",
+                &[],
+                &SamplingParams::default(),
+                "",
+                &model,
+                |_| {},
+            )
+            .await
+        }
+    };
+
+    // Una chat con la sua coda: quella delle Impostazioni non si tocca.
+    let with_own = core.create_conversation().unwrap().id;
+    core.set_conversation_tools(
+        with_own,
+        &ToolSettings {
+            fallback_models: Some(vec![cloud(&own, "propria"), cloud(&own, "propria")]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // I doppioni si tolgono anche qui.
+    assert_eq!(
+        core.conversation_tools(with_own).unwrap().fallback_models,
+        Some(vec![cloud(&own, "propria")])
+    );
+    let outcome = send(with_own).await.unwrap();
+    assert_eq!(
+        outcome.assistant_message.unwrap().model.as_deref(),
+        Some("propria")
+    );
+    assert_eq!(global_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Una coda propria vuota: nessuna riserva, resta l'errore.
+    let without = core.create_conversation().unwrap().id;
+    core.set_conversation_tools(
+        without,
+        &ToolSettings {
+            fallback_models: Some(Vec::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(send(without).await.unwrap_err().to_string().contains("503"));
+    assert_eq!(global_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Senza coda propria si segue quella delle Impostazioni.
+    let default = core.create_conversation().unwrap().id;
+    assert_eq!(
+        core.conversation_tools(default).unwrap().fallback_models,
+        None
+    );
+    assert!(send(default).await.unwrap_err().to_string().contains("500"));
+    assert_eq!(global_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Una coda non valida non si salva.
+    assert!(
+        core.set_conversation_tools(
+            default,
+            &ToolSettings {
+                fallback_models: Some(vec![ModelRef::Local]),
+                ..Default::default()
+            },
+        )
+        .is_err()
+    );
+    // Gli strumenti predefiniti delle nuove conversazioni non portano una coda:
+    // le nuove chat seguono quella delle Impostazioni.
+    core.set_tool_defaults(&ToolSettings {
+        fallback_models: Some(vec![cloud(&own, "propria")]),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(core.tool_defaults().unwrap().fallback_models, None);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn la_coda_di_riserva_di_un_agente() {
+    let dir = std::env::temp_dir().join(format!("core-riserva-agente-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    let a = ModelRef::Cloud {
+        provider_id: "p".into(),
+        model: "a".into(),
+    };
+
+    let plain = core
+        .save_agent(Agent {
+            name: "Segue le Impostazioni".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(plain.fallback_models, None);
+    assert!(matches!(
+        Fallback::from_setting(&plain.fallback_models),
+        Fallback::Global
+    ));
+
+    let own = core
+        .save_agent(Agent {
+            name: "Con la sua coda".into(),
+            fallback_models: Some(vec![a.clone(), a.clone()]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(own.fallback_models, Some(vec![a.clone()]));
+    assert!(matches!(
+        Fallback::from_setting(&own.fallback_models),
+        Fallback::Own(models) if models == [a.clone()]
+    ));
+    // Copiando l'agente si copia anche la coda.
+    let copy = core.duplicate_agent(own.id).unwrap();
+    assert_eq!(copy.fallback_models, Some(vec![a]));
+
+    assert!(
+        core.save_agent(Agent {
+            name: "Coda sbagliata".into(),
+            fallback_models: Some(vec![ModelRef::Local]),
+            ..Default::default()
+        })
+        .is_err()
+    );
 
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);

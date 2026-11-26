@@ -19,8 +19,22 @@ pub fn set_api_key(provider_id: &str, key: &str) -> Result<()> {
     entry(provider_id)?.set_password(key).map_err(to_error)
 }
 
+/// Solo nelle prove: chiavi finte, per non toccare il portachiavi vero.
+#[cfg(test)]
+pub(crate) static TEST_KEYS: std::sync::Mutex<Vec<(String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// La chiave salvata per un provider, se c'è.
 pub fn api_key(provider_id: &str) -> Result<Option<String>> {
+    #[cfg(test)]
+    if let Some((_, key)) = TEST_KEYS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(id, _)| id == provider_id)
+    {
+        return Ok(Some(key.clone()));
+    }
     match entry(provider_id)?.get_password() {
         Ok(key) => Ok(Some(key)),
         Err(keyring::Error::NoEntry) => Ok(None),

@@ -32,3 +32,4 @@ ADR che sostituisce il precedente.
 | [0024](0024-oauth-mcp.md) | Accesso OAuth dal browser ai server MCP remoti (scoperta, registrazione dinamica, PKCE) | Accettata; da provare con un account vero |
 | [0025](0025-prompt-mcp.md) | Prompt dei server MCP come comandi `/` in chat | Accettata e provata con un server pubblicato |
 | [0026](0026-plugin.md) | Plugin nel formato di Claude Code: skill, server MCP, agenti e comandi in un pacchetto | Accettata; da provare con un plugin pubblicato |
+| [0027](0027-modelli-di-riserva.md) | Modelli di riserva: code di modelli cloud (predefinita e per chat o agente) da provare quando quello scelto dà errore | Accettata; da provare con un servizio vero |

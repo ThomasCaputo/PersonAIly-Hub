@@ -285,6 +285,10 @@ Ciò che resta (certificato Authenticode, prove dal vivo, tag) è in
 - [ ] Plugin provato con uno pubblicato (finora uno scritto per la prova).
 - [x] Suggerimenti del server per gli argomenti dei prompt MCP (`completion/complete`;
       [ADR 0025](adr/0025-prompt-mcp.md)).
+- [x] Modelli di riserva: una coda di modelli cloud da provare quando quello scelto dà errore,
+      predefinita nelle Impostazioni e propria per ogni chat o agente
+      ([ADR 0027](adr/0027-modelli-di-riserva.md)).
+- [ ] Modelli di riserva provati con un servizio vero (Google AI Studio gratuito).
 
 ## Dopo
 

@@ -751,4 +751,28 @@ export const EN: Record<string, string> = {
   "Contesto occupato": "Context used",
   "Messaggio per entrambi i modelli": "Message for both models",
   "Cerca un comando o una conversazione": "Search for a command or a conversation",
+  "«{from}» non ha risposto: risponde «{to}», dalla coda di riserva.":
+    "“{from}” did not answer: “{to}” from the fallback queue is answering.",
+  "Modelli di riserva": "Fallback models",
+  "Se il modello cloud scelto dà un errore (occupato, troppe richieste, credito o chiamate finite…), la risposta riparte dal primo modello della coda, poi dal secondo, e così via. Questa è la coda predefinita: ogni chat e ogni agente la segue finché non gliene dai una propria. Non vale nel confronto tra modelli. Ogni risposta mostra il nome del modello che l'ha scritta.":
+    "If the chosen cloud model returns an error (busy, too many requests, credit or calls used up…), the reply starts again with the first model in the queue, then the second, and so on. This is the default queue: every chat and every agent follows it until you give it its own. It does not apply to model comparison. Every reply shows the name of the model that wrote it.",
+  "Coda vuota: se il modello scelto non risponde, compare l'errore.":
+    "Empty queue: if the chosen model does not answer, the error is shown.",
+  "Quella delle Impostazioni": "The one in Settings",
+  "vuota": "empty",
+  "Una propria per questa chat": "Its own for this chat",
+  "Una propria per questo agente": "Its own for this agent",
+  "Riserva: Impostazioni": "Fallback: Settings",
+  "Riserva: nessuna": "Fallback: none",
+  "Riserva: propria ({n})": "Fallback: own ({n})",
+  "Modelli cloud da provare, in ordine, se quello scelto dà un errore.":
+    "Cloud models to try, in order, if the chosen one returns an error.",
+  "provider eliminato: verrà saltato": "provider deleted: it will be skipped",
+  "manca la chiave API: verrà saltato": "API key missing: it will be skipped",
+  "Sposta su {name}": "Move {name} up",
+  "Sposta giù {name}": "Move {name} down",
+  "Togli {name} dalla coda": "Remove {name} from the queue",
+  "Modello da aggiungere alla coda di riserva": "Model to add to the fallback queue",
+  "Nessun altro modello cloud con chiave API": "No other cloud model with an API key",
+  "Scegli un modello…": "Choose a model…",
 };

@@ -78,6 +78,13 @@ OpenRouter, Groq, Mistral, Google AI Studio…). Paste the API key and press **R
 - For models with a known price the app estimates the cost of every reply. With Anthropic it
   uses the service's prompt caching, so long conversations and agents cost much less.
 - In **Settings → Cloud spending** you can set a monthly and a per-conversation limit.
+- **Fallback models:** a queue of cloud models to try, in order, when the chosen one returns an
+  error (for example "model overloaded" or "too many requests" on free plans). The reply starts
+  again with the first model in the queue that works; a note above the reply says who answered
+  instead of whom, and every message carries the name of its model. In **Settings → Fallback
+  models** you set up the default queue; every chat ("Fallback" menu above the messages) and
+  every agent with a cloud model (in its form) follows it, or has its own, which starts as a
+  copy of the default one. It does not apply to model comparison.
 
 ## Chat
 

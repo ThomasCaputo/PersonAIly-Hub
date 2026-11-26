@@ -69,6 +69,10 @@ const SETTING_MCP_OAUTH: &str = "mcp_oauth";
 const SETTING_ACTION_LOG_DAYS: &str = "action_log_days";
 const SETTING_SECURITY: &str = "security";
 const SETTING_SPEND_LIMITS: &str = "spend_limits";
+/// La coda dei modelli cloud da provare quando quello scelto non risponde.
+const SETTING_FALLBACK_MODELS: &str = "fallback_models";
+/// Modelli al massimo nella coda di riserva.
+const MAX_FALLBACK_MODELS: usize = 10;
 const SETTING_RAG: &str = "rag";
 /// I nomi delle skill spente (ADR 0023).
 const SETTING_SKILLS_DISABLED: &str = "skills_disabled";
@@ -403,6 +407,55 @@ struct RunScope<'a> {
     /// troncato non ferma la sessione: il modello viene invitato a riprovare
     /// in breve (al massimo [`MAX_TRUNCATED_RETRIES`] volte di seguito).
     step_tokens: Option<u32>,
+    /// Quale coda di riserva provare se un modello cloud non risponde (ADR 0027).
+    fallback: Fallback,
+}
+
+/// La coda di riserva di una risposta.
+enum Fallback {
+    /// Nessuna: nel confronto tra modelli ogni colonna risponde con il suo.
+    Off,
+    /// Quella delle Impostazioni.
+    Global,
+    /// Quella propria della conversazione o dell'agente.
+    Own(Vec<ModelRef>),
+}
+
+impl Fallback {
+    /// `None` della conversazione o dell'agente vuol dire "quella delle Impostazioni".
+    fn from_setting(own: &Option<Vec<ModelRef>>) -> Self {
+        match own {
+            Some(models) => Fallback::Own(models.clone()),
+            None => Fallback::Global,
+        }
+    }
+}
+
+/// Controlla una coda di riserva: solo modelli cloud, senza doppioni (l'ordine
+/// resta), al massimo [`MAX_FALLBACK_MODELS`].
+fn normalize_fallbacks(models: &[ModelRef]) -> Result<Vec<ModelRef>> {
+    let mut queue: Vec<ModelRef> = Vec::new();
+    for model in models {
+        let ModelRef::Cloud {
+            provider_id,
+            model: id,
+        } = model
+        else {
+            return Err(Error::msg("La coda di riserva accetta solo modelli cloud."));
+        };
+        if provider_id.trim().is_empty() || id.trim().is_empty() {
+            return Err(Error::msg("La coda di riserva accetta solo modelli cloud."));
+        }
+        if !queue.contains(model) {
+            queue.push(model.clone());
+        }
+    }
+    if queue.len() > MAX_FALLBACK_MODELS {
+        return Err(Error::msg(format!(
+            "La coda di riserva può avere al massimo {MAX_FALLBACK_MODELS} modelli."
+        )));
+    }
+    Ok(queue)
 }
 
 /// Quante volte di seguito un agente può riprovare un passo troncato.

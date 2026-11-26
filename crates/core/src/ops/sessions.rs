@@ -18,9 +18,12 @@ impl Core {
 
     /// Crea (con `id` 0) o aggiorna un agente.
     pub fn save_agent(&self, agent: Agent) -> Result<Agent> {
-        let agent = agent.normalized();
+        let mut agent = agent.normalized();
         if agent.name.is_empty() {
             return Err(Error::msg("Dai un nome all'agente."));
+        }
+        if let Some(models) = &agent.fallback_models {
+            agent.fallback_models = Some(normalize_fallbacks(models)?);
         }
         self.store().save_agent(&agent)
     }
@@ -474,6 +477,7 @@ Ultima risposta:
             mcp: mcp_set.as_ref(),
             delegation: delegation.as_ref(),
             step_tokens: Some(agent.max_step_tokens),
+            fallback: Fallback::from_setting(&agent.fallback_models),
         };
         let mut on_event = |event| {
             let mut state = live.state();
@@ -499,6 +503,9 @@ Ultima risposta:
                         arguments,
                     });
                 }
+                // Il cambio resta visibile nel nome del modello su ogni messaggio
+                // dell'agente e nel registro diagnostico.
+                ChatEvent::ModelSwitch { .. } => {}
             }
         };
         self.run_rounds(

@@ -18,6 +18,7 @@ import {
 } from "../api";
 import { Markdown } from "../components/Markdown";
 import { ToolRequestCard } from "../components/ToolsBar";
+import { FallbackChoice } from "../components/FallbackSection";
 import { ModelPicker, ToolResult, toolLabel } from "./ChatArea";
 import { locale, msg, t, tc } from "../i18n";
 
@@ -766,6 +767,17 @@ function AgentEditor({
             {t("Vai ai modelli")}
           </button>
         </p>
+      )}
+      {agent.model.kind === "cloud" && (
+        <fieldset className="field fallback-field">
+          <legend>{t("Modelli di riserva")}</legend>
+          <p className="dim note">{t("Modelli cloud da provare, in ordine, se quello scelto dà un errore.")}</p>
+          <FallbackChoice
+            own={agent.fallbackModels}
+            scope="agent"
+            onChange={(own) => set({ fallbackModels: own })}
+          />
+        </fieldset>
       )}
 
       <div className="field">

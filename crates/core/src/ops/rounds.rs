@@ -284,6 +284,46 @@ impl Core {
             .retain(|key, _| !key.starts_with(&prefix));
     }
 
+    /// La coda di riserva per una risposta di `primary`, senza `primary` stesso.
+    fn fallback_queue(
+        &self,
+        fallback: &Fallback,
+        primary: &Target,
+    ) -> std::collections::VecDeque<ModelRef> {
+        let skip = match primary {
+            Target::Cloud(provider, _, id) => Some((provider.id.as_str(), id.as_str())),
+            Target::Local(_) => None,
+        };
+        let models = match fallback {
+            Fallback::Off => Vec::new(),
+            Fallback::Global => self.fallback_models(),
+            Fallback::Own(models) => models.clone(),
+        };
+        models
+            .into_iter()
+            .filter(|model| match model {
+                ModelRef::Cloud {
+                    provider_id,
+                    model: id,
+                } => skip != Some((provider_id.as_str(), id.as_str())),
+                ModelRef::Local => false,
+            })
+            .collect()
+    }
+
+    /// Il prossimo modello della coda che si può usare. Quelli irraggiungibili
+    /// (provider tolto, chiave mancante) si saltano.
+    fn next_fallback(&self, queue: &mut std::collections::VecDeque<ModelRef>) -> Option<Target> {
+        while let Some(model) = queue.pop_front() {
+            match self.target(&model) {
+                Ok(target @ Target::Cloud(..)) => return Some(target),
+                Ok(Target::Local(_)) => {}
+                Err(e) => log::info(format!("modello di riserva saltato: {e}")),
+            }
+        }
+        None
+    }
+
     /// Il ciclo modello → strumenti → modello di una risposta.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_rounds(
@@ -315,6 +355,10 @@ impl Core {
             None => sampling,
         };
         let mut truncated_retries = 0;
+        // Il modello di riserva che ha preso il posto di quello scelto: resta
+        // fino alla fine di questa risposta. La coda si legge al primo errore.
+        let mut switched: Option<Target> = None;
+        let mut fallbacks: Option<std::collections::VecDeque<ModelRef>> = None;
 
         for round in 1..=run.max_rounds {
             // Una pausa chiesta dall'utente ferma il lavoro qui, tra un passo e l'altro.
@@ -347,8 +391,13 @@ impl Core {
                     self.touch_local();
                     (result, loaded.model_name.clone())
                 }
-                Target::Cloud(provider, key, id) => {
+                Target::Cloud(..) => loop {
                     self.check_spend(conversation_id)?;
+                    let active = switched.as_ref().unwrap_or(target);
+                    let Target::Cloud(provider, key, id) = active else {
+                        unreachable!("i modelli di riserva sono cloud");
+                    };
+                    let mut started = false;
                     let result = providers::stream(
                         &self.cloud_http,
                         provider,
@@ -359,12 +408,45 @@ impl Core {
                         system,
                         sampling,
                         cancel.clone(),
-                        &mut *on_event,
+                        |event| {
+                            if matches!(event, ChatEvent::Text(_) | ChatEvent::Reasoning(_)) {
+                                started = true;
+                            }
+                            on_event(event)
+                        },
                     )
                     .await;
-                    (result, id.clone())
-                }
+                    let error = match result {
+                        Err(error) if !run.control.is_stopped() => error,
+                        other => break (other, id.clone()),
+                    };
+                    let from = id.clone();
+                    let queue =
+                        fallbacks.get_or_insert_with(|| self.fallback_queue(&run.fallback, target));
+                    let Some(next) = self.next_fallback(queue) else {
+                        break (Err(error), from);
+                    };
+                    let Target::Cloud(_, _, to) = &next else {
+                        unreachable!("i modelli di riserva sono cloud");
+                    };
+                    let reason: String = error.to_string().chars().take(300).collect();
+                    log::info(format!(
+                        "{from} non ha risposto in {}: si passa a {to} ({reason})",
+                        run.source
+                    ));
+                    // Il testo arrivato dal primo modello non vale: l'interfaccia lo scarta.
+                    if started {
+                        on_event(ChatEvent::Saved);
+                    }
+                    on_event(ChatEvent::ModelSwitch {
+                        from,
+                        to: to.clone(),
+                        reason,
+                    });
+                    switched = Some(next);
+                },
             };
+            let target = switched.as_ref().unwrap_or(target);
             let mut outcome = result?;
             stats = outcome.stats.clone();
             cancelled = outcome.cancelled || run.control.is_stopped();

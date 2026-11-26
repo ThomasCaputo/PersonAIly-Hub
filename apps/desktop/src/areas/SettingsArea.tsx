@@ -6,6 +6,7 @@ import { McpSection } from "../components/McpSection";
 import { SkillsSection } from "../components/SkillsSection";
 import { PluginsSection } from "../components/PluginsSection";
 import { SpendSection } from "../components/SpendSection";
+import { FallbackSection } from "../components/FallbackSection";
 import { DocumentsSection } from "../components/DocumentsSection";
 import { DataSection } from "../components/DataSection";
 import { UpdateSection } from "../components/UpdateSection";
@@ -220,6 +221,8 @@ export function SettingsArea() {
       <DocumentsSection grantedFolders={folders} />
 
       <SpendSection />
+
+      <FallbackSection />
 
       <McpSection key={`mcp-${pluginsRev}`} />
 

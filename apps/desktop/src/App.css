@@ -615,6 +615,39 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* Menu della coda di riserva sopra i messaggi: più largo, per i nomi dei modelli. */
+.tools-mcp-menu.fallback-menu {
+  min-width: 320px;
+  max-width: 440px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.fallback-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Impostazioni → Modelli di riserva: la coda, numerata. */
+.fallback-list {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.fallback-list .folder {
+  display: list-item;
+}
+
+.fallback-list .folder > span:first-child {
+  display: inline;
+}
+
+.fallback-actions {
+  float: right;
+  gap: 4px;
+}
+
 .folder .btn-link {
   flex: none;
   align-self: flex-start;

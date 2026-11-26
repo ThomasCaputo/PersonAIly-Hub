@@ -27,7 +27,8 @@ use ts_rs::{Config, TS};
 
 use crate::api::{
     AnswerBody, BranchBody, ErrorEvent, InfillBody, InfillReply, Info, LoadBody, LocalModels,
-    Models, RenameBody, ReplyBody, SendBody, TaskBody, TextEvent, ToolRequestEvent,
+    ModelSwitchEvent, Models, RenameBody, ReplyBody, SendBody, TaskBody, TextEvent,
+    ToolRequestEvent,
 };
 
 const HEADER: &str = "\
@@ -79,6 +80,7 @@ pub fn typescript() -> String {
         BranchBody::decl(&cfg),
         TextEvent::decl(&cfg),
         ToolRequestEvent::decl(&cfg),
+        ModelSwitchEvent::decl(&cfg),
         ErrorEvent::decl(&cfg),
         SendOutcome::decl(&cfg),
         GenerationStats::decl(&cfg),

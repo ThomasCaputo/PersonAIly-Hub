@@ -81,6 +81,13 @@ premi **Aggiorna modelli**.
   Anthropic usa la memoria temporanea del servizio (prompt caching): le conversazioni lunghe
   e gli agenti costano molto meno.
 - In **Impostazioni → Spesa cloud** puoi fissare un limite al mese e per conversazione.
+- **Modelli di riserva:** una coda di modelli cloud da provare, in ordine, quando quello scelto
+  dà un errore (per esempio "modello occupato" o "troppe richieste" con i piani gratuiti). La
+  risposta riparte dal primo modello della coda che funziona; sopra la risposta un avviso dice
+  chi ha risposto al posto di chi, e ogni messaggio porta il nome del suo modello. In
+  **Impostazioni → Modelli di riserva** prepari la coda predefinita; ogni chat (menu "Riserva"
+  sopra i messaggi) e ogni agente con un modello cloud (nel suo modulo) la segue, oppure ne ha
+  una propria, che parte come copia di quella predefinita. Non vale nel confronto tra modelli.
 
 ## Chat
 

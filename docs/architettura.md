@@ -218,7 +218,7 @@ Due famiglie di endpoint, solo su `127.0.0.1` (porta preferita 41241), con token
 - `/api/...` — API propria: conversazioni, invio di messaggi con strumenti e conferme
   (`POST /api/tool-requests`), modelli, caricamento e scaricamento, agenti e sessioni,
   registro delle azioni, chiusura del nucleo senza interfaccia. Le risposte in corso
-  arrivano via Server-Sent Events (`text`, `reasoning`, `saved`, `toolRequest`, `done`,
+  arrivano via Server-Sent Events (`text`, `reasoning`, `saved`, `toolRequest`, `modelSwitch`, `done`,
   `error`); lo stato degli agenti si legge con `GET /api/sessions/{id}/live`.
 
 Sono respinte le richieste senza token, quelle con intestazione `Origin` (pagine web) e

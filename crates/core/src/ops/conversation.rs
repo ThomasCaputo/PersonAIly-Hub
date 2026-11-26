@@ -489,6 +489,12 @@ impl Core {
             mcp: mcp_set.as_deref(),
             delegation: None,
             step_tokens: None,
+            // Le conversazioni temporanee sono quelle del confronto tra modelli.
+            fallback: if self.store().is_temporary(conversation_id)? {
+                Fallback::Off
+            } else {
+                Fallback::from_setting(&settings.fallback_models)
+            },
         };
         let result = self
             .run_rounds(

@@ -87,6 +87,15 @@ pub enum ChatEvent {
         summary: String,
         arguments: Value,
     },
+    /// Il modello cloud non ha risposto: la risposta riparte da un modello di
+    /// riserva. Il testo già arrivato dal primo è scartato (segue `Saved`).
+    ModelSwitch {
+        /// Il modello che ha dato errore e quello che ora risponde.
+        from: String,
+        to: String,
+        /// L'errore del primo modello, accorciato.
+        reason: String,
+    },
 }
 
 /// Esito di una generazione.

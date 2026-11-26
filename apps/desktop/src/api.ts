@@ -166,6 +166,8 @@ export type ToolSettings = {
   allowedTools?: string[];
   /** Solo in chat: i server MCP scelti per la conversazione (ADR 0022). */
   mcpServers?: string[];
+  /** Solo in chat: la coda di riserva propria (ADR 0027); assente o null segue le Impostazioni. */
+  fallbackModels?: ModelRef[] | null;
 };
 
 /** Una skill installata (ADR 0023). `error` se il suo SKILL.md non si legge. */
@@ -274,6 +276,8 @@ export type Agent = {
   restorePoints: boolean;
   /** Agenti (id) a cui questo può affidare parte del lavoro. */
   delegates: number[];
+  /** La coda di riserva propria (ADR 0027); assente o null segue le Impostazioni. */
+  fallbackModels?: ModelRef[] | null;
 };
 
 /** Una cartella fotografata prima che l'agente lavorasse. */
@@ -457,7 +461,9 @@ export type StreamEvent =
   | { type: "reasoning"; text: string }
   /** Nuovi messaggi in archivio (risposta parziale, risultato di uno strumento). */
   | { type: "saved" }
-  | ({ type: "toolRequest" } & ToolRequest);
+  | ({ type: "toolRequest" } & ToolRequest)
+  /** Il modello cloud ha dato errore: risponde un modello della coda di riserva. */
+  | { type: "modelSwitch"; from: string; to: string; reason: string };
 
 export type CoreInfo = { version: string; schemaVersion: number };
 
@@ -678,6 +684,8 @@ export const api = {
   /** Brani trovati: [file, testo, somiglianza]. */
   searchDocuments: (query: string) => invoke<[string, string, number][]>("search_documents", { query }),
   setSpendLimits: (limits: SpendLimits) => invoke<void>("set_spend_limits", { limits }),
+  fallbackModels: () => invoke<ModelRef[]>("fallback_models"),
+  setFallbackModels: (models: ModelRef[]) => invoke<void>("set_fallback_models", { models }),
   /** Apre un indirizzo web nel browser di sistema. */
   openExternal: (url: string) => invoke<void>("open_external", { url }),
   createBackup: (path: string) => invoke<BackupInfo>("create_backup", { path }),

@@ -182,6 +182,8 @@ export const CORE_EN: Record<string, string> = {
   "L'accesso non è stato completato entro 5 minuti: riprova.": "The sign-in was not completed within 5 minutes: try again.",
   "Accesso annullato.": "Sign-in cancelled.",
   "Salva il server e fai l'accesso prima di provarlo.": "Save the server and sign in before testing it.",
+  // Modelli di riserva
+  "La coda di riserva accetta solo modelli cloud.": "The fallback queue accepts only cloud models.",
 };
 
 /** Testi con parti variabili: espressione → sostituzione, provate in ordine. */
@@ -281,6 +283,7 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
     "The service replied with an error ($1): $2. Too many requests or credit used up: try again later.",
   ],
   [/^Il servizio ha risposto con un errore \((.*?)\): (.*)\.$/s, "The service replied with an error ($1): $2."],
+  [/^La coda di riserva può avere al massimo (\d+) modelli\.$/, "The fallback queue can hold at most $1 models."],
   [/^Il servizio ha interrotto la risposta: (.*)$/s, "The service interrupted the reply: $1"],
   [/^nessuna risposta a «(.*?)» entro (\d+) secondi\.$/s, "no reply to “$1” within $2 seconds."],
   [/^nessuna risposta a «(.*?)»\.$/s, "no reply to “$1”."],

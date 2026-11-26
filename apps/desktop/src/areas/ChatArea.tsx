@@ -88,6 +88,8 @@ export function ChatArea({
   const [reasoning, setReasoning] = useState("");
   const [stats, setStats] = useState<GenerationStats | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Il modello scelto non ha risposto e ha risposto uno della coda di riserva.
+  const [switches, setSwitches] = useState<{ from: string; to: string; reason: string }[]>([]);
   const [draft, setDraft] = useState("");
   const promptMenu = useRef<PromptMenuHandle>(null);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +183,7 @@ export function ChatArea({
   useEffect(() => {
     setStats(null);
     setNotice(null);
+    setSwitches([]);
     setEditing(null);
     setExported(null);
     if (activeId === null) {
@@ -271,6 +274,9 @@ export function ChatArea({
       // Prima di chiedere conferma si mostra tutto ciò che il modello ha scritto.
       flushStream();
       setToolRequest(event);
+    } else if (event.type === "modelSwitch") {
+      const { from, to, reason } = event;
+      setSwitches((list) => [...list, { from, to, reason }]);
     } else {
       discardStream();
       // Il nucleo ha salvato un pezzo di risposta o il risultato di uno
@@ -333,6 +339,7 @@ export function ChatArea({
     setError(null);
     setStats(null);
     setNotice(null);
+    setSwitches([]);
     setExported(null);
     setPendingUser(shownText);
     setStreaming("");
@@ -530,6 +537,7 @@ export function ChatArea({
             disabled={generating}
             onChange={changeTools}
             onOpenSettings={onOpenSettings}
+            fallback
           />
         )}
 
@@ -633,6 +641,12 @@ export function ChatArea({
           )}
           {toolRequest && <ToolRequestCard request={toolRequest} onAnswer={answer} />}
           {stats && !generating && <StatsLine stats={stats} cost={lastCost} />}
+          {switches.map((s, i) => (
+            <p key={i} className="notice" role="status">
+              {t("«{from}» non ha risposto: risponde «{to}», dalla coda di riserva.", { from: s.from, to: s.to })}
+              <span className="dim note block">{tc(s.reason)}</span>
+            </p>
+          ))}
           {notice && !generating && <p className="notice">{tc(notice)}</p>}
           {exported && <p className="dim note">{t("Conversazione salvata in {path}", { path: exported })}</p>}
           {error && <p className="error pre" role="alert">{tc(error)}</p>}

@@ -156,6 +156,11 @@ pub struct ToolSettings {
     /// (ADR 0022). Nelle sessioni contano quelli dell'agente.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<String>,
+    /// Solo in chat: la coda di riserva propria della conversazione (ADR 0027).
+    /// `None` segue quella delle Impostazioni; una coda vuota non ne usa nessuna.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fallback_models: Option<Vec<crate::ModelRef>>,
 }
 
 impl Default for ToolSettings {
@@ -169,6 +174,7 @@ impl Default for ToolSettings {
             permission: PermissionLevel::Ask,
             allowed_tools: Vec::new(),
             mcp_servers: Vec::new(),
+            fallback_models: None,
         }
     }
 }

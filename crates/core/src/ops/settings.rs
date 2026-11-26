@@ -67,8 +67,13 @@ impl Core {
     }
 
     pub fn set_tool_defaults(&self, settings: &ToolSettings) -> Result<()> {
+        // Le nuove conversazioni seguono la coda di riserva delle Impostazioni.
+        let settings = ToolSettings {
+            fallback_models: None,
+            ..settings.clone()
+        };
         self.store()
-            .set_setting(SETTING_TOOL_DEFAULTS, &serde_json::to_string(settings)?)
+            .set_setting(SETTING_TOOL_DEFAULTS, &serde_json::to_string(&settings)?)
     }
 
     /// Strumenti e permessi di una conversazione; quelli predefiniti finché
@@ -86,8 +91,12 @@ impl Core {
         conversation_id: i64,
         settings: &ToolSettings,
     ) -> Result<()> {
+        let mut settings = settings.clone();
+        if let Some(models) = &settings.fallback_models {
+            settings.fallback_models = Some(normalize_fallbacks(models)?);
+        }
         self.store()
-            .set_conversation_tools(conversation_id, &serde_json::to_string(settings)?)
+            .set_conversation_tools(conversation_id, &serde_json::to_string(&settings)?)
     }
 
     /// Lingua dell'interfaccia scelta dall'utente (`it`, `en`); `None` finché
@@ -175,6 +184,24 @@ impl Core {
         }
         self.store()
             .set_setting(SETTING_SPEND_LIMITS, &serde_json::to_string(limits)?)
+    }
+
+    /// La coda dei modelli di riserva: modelli cloud da provare, in ordine, quando
+    /// quello scelto dà un errore (occupato, troppe richieste, credito finito…).
+    pub fn fallback_models(&self) -> Vec<ModelRef> {
+        self.store()
+            .setting(SETTING_FALLBACK_MODELS)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    /// Salva la coda di riserva delle Impostazioni (vedi [`normalize_fallbacks`]).
+    pub fn set_fallback_models(&self, models: &[ModelRef]) -> Result<()> {
+        let queue = normalize_fallbacks(models)?;
+        self.store()
+            .set_setting(SETTING_FALLBACK_MODELS, &serde_json::to_string(&queue)?)
     }
 
     pub fn spending(&self) -> Result<Spending> {

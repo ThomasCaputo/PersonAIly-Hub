@@ -3,6 +3,18 @@
 All notable changes to PersonAIly Hub. Versions follow [Semantic Versioning](https://semver.org).
 The section of each version is also used as the release notes shown by the in-app updater.
 
+## [Unreleased]
+
+### Added
+- **Fallback models:** a queue of cloud models to try, in order, when the chosen one returns an
+  error (busy, too many requests, credit used up…). Settings → Fallback models holds the default
+  queue; each chat (the "Fallback" menu above the messages) and each agent with a cloud model
+  follows it or gets its own, starting as a copy of the default one. The reply starts again with
+  the first model in the queue that answers, and stays with it until the end; any text the
+  failing model had already written is discarded. A note above the reply says which model
+  answered instead of which, and every message shows the name of its model. Model comparison
+  keeps using exactly the models you picked.
+
 ## [1.3.0] — 2026-11-26
 
 ### Added

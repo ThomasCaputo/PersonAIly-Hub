@@ -104,6 +104,11 @@ pub struct Agent {
     pub restore_points: bool,
     /// Gli agenti (id) a cui questo può affidare parte del lavoro (AG-8).
     pub delegates: Vec<i64>,
+    /// La coda di riserva propria dell'agente (ADR 0027). `None` segue quella
+    /// delle Impostazioni; una coda vuota non ne usa nessuna.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fallback_models: Option<Vec<ModelRef>>,
 }
 
 impl Default for Agent {
@@ -126,6 +131,7 @@ impl Default for Agent {
             max_step_tokens: DEFAULT_MAX_STEP_TOKENS,
             restore_points: true,
             delegates: Vec::new(),
+            fallback_models: None,
         }
     }
 }

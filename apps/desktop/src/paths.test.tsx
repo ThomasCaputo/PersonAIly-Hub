@@ -37,6 +37,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 const { ChatArea } = await import("./areas/ChatArea");
 const { ModelsArea } = await import("./areas/ModelsArea");
 const { AgentsArea } = await import("./areas/AgentsArea");
+const { FallbackSection } = await import("./components/FallbackSection");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -339,5 +340,210 @@ describe("agenti", () => {
     expect(calls("answer_tool_request")[0].args).toEqual({ id: "s7:call_9", approval: "always" });
     await settle(200);
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+});
+
+// ── Modelli di riserva ──────────────────────────────────────────────────
+
+describe("modelli di riserva", () => {
+  it("in chat il testo del primo modello si scarta e si dice chi risponde", async () => {
+    const saved: ReturnType<typeof message>[] = [];
+    Object.assign(backend.handlers, {
+      list_conversations: () => [{ id: 1, title: "Prova", createdAt: "", updatedAt: "" }],
+      get_messages: () => saved,
+      conversation_tools: () => TOOLS,
+      tool_defaults: () => TOOLS,
+      send_message: async ({ text: sent, onEvent }: Record<string, unknown>) => {
+        const channel = onEvent as { onmessage: (e: unknown) => void };
+        saved.push(message(1, "user", String(sent)));
+        channel.onmessage({ type: "text", text: "Testo a metà del primo" });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        channel.onmessage({ type: "saved" });
+        channel.onmessage({
+          type: "modelSwitch",
+          from: "gemini-pro",
+          to: "gemini-flash",
+          reason: "Il servizio ha risposto con un errore (503 Service Unavailable): The model is overloaded.",
+        });
+        channel.onmessage({ type: "text", text: "Risposta della riserva" });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        saved.push(message(1, "assistant", "Risposta della riserva", { model: "gemini-flash" }));
+        return {
+          conversation: { id: 1, title: "Prova", createdAt: "", updatedAt: "" },
+          assistantMessage: saved[saved.length - 1],
+          stats: { promptTokens: 10, completionTokens: 5, tokensPerSecond: null, cacheReadTokens: null, cacheWriteTokens: null },
+          cancelled: false,
+          notice: null,
+        };
+      },
+    });
+    await render(
+      <ChatArea
+        status={STATUS as never}
+        providers={[]}
+        activeModel={{ kind: "local" }}
+        onModelChange={() => {}}
+        preset={PRESET as never}
+        onPresetChange={() => {}}
+        onOpenModels={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    const box = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Messaggio"]')!;
+    await type(box, "Ciao");
+    await click(button("Invia"));
+    await settle(300);
+
+    expect(text()).not.toContain("Testo a metà del primo");
+    expect(text()).toContain("Risposta della riserva");
+    const status = [...container.querySelectorAll('[role="status"]')].map((s) => s.textContent).join(" ");
+    expect(status).toContain("«gemini-pro» non ha risposto: risponde «gemini-flash», dalla coda di riserva.");
+    expect(status).toContain("503");
+    // L'etichetta della risposta è il modello che l'ha scritta.
+    expect(container.querySelector('[aria-label="gemini-flash"]')).not.toBeNull();
+  }, 30_000);
+
+  it("in Impostazioni si aggiungono, si ordinano e si tolgono, e un errore non cambia la coda", async () => {
+    const MODELS = [
+      { id: "gemini-pro", name: "gemini-pro", contextLength: null, maxOutputTokens: null, inputPrice: null, outputPrice: null },
+      { id: "gemini-flash", name: "Gemini Flash", contextLength: null, maxOutputTokens: null, inputPrice: null, outputPrice: null },
+    ];
+    let stored: unknown[] = [{ kind: "cloud", providerId: "google", model: "gemini-pro" }];
+    let fail = false;
+    Object.assign(backend.handlers, {
+      fallback_models: () => stored,
+      list_providers: () => [
+        { id: "google", name: "Google AI Studio", kind: "openai_compatible", baseUrl: "", models: MODELS, hasKey: true, supportedParams: [] },
+        { id: "vecchio", name: "Senza chiave", kind: "openai_compatible", baseUrl: "", models: MODELS, hasKey: false, supportedParams: [] },
+      ],
+      set_fallback_models: ({ models }: Record<string, unknown>) => {
+        if (fail) throw new Error("La coda di riserva accetta solo modelli cloud.");
+        stored = models as unknown[];
+      },
+    });
+    await render(<FallbackSection />);
+    const items = () => [...container.querySelectorAll(".fallback-list li .mono")].map((e) => e.textContent);
+    expect(items()).toEqual(["gemini-pro"]);
+
+    // Si offrono solo i modelli dei provider con chiave, non quelli già in coda.
+    const select = container.querySelector<HTMLSelectElement>("select")!;
+    const offered = [...select.querySelectorAll("option")].map((o) => o.textContent);
+    expect(offered).toEqual(["Scegli un modello…", "Gemini Flash (gemini-flash)"]);
+    await act(async () => {
+      select.value = JSON.stringify(["google", "gemini-flash"]);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await click(button("Aggiungi"));
+    expect(items()).toEqual(["gemini-pro", "Gemini Flash (gemini-flash)"]);
+    expect(stored).toEqual([
+      { kind: "cloud", providerId: "google", model: "gemini-pro" },
+      { kind: "cloud", providerId: "google", model: "gemini-flash" },
+    ]);
+
+    await click(container.querySelector<HTMLButtonElement>('[aria-label="Sposta su Gemini Flash (gemini-flash)"]')!);
+    expect(items()).toEqual(["Gemini Flash (gemini-flash)", "gemini-pro"]);
+    expect((stored[0] as { model: string }).model).toBe("gemini-flash");
+
+    fail = true;
+    await click(container.querySelector<HTMLButtonElement>('[aria-label="Togli gemini-pro dalla coda"]')!);
+    expect(items()).toEqual(["Gemini Flash (gemini-flash)", "gemini-pro"]);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("solo modelli cloud");
+  });
+});
+
+describe("coda di riserva di una chat o di un agente", () => {
+  const MODELS = [
+    { id: "gemini-pro", name: "gemini-pro", contextLength: null, maxOutputTokens: null, inputPrice: null, outputPrice: null },
+    { id: "gemini-flash", name: "gemini-flash", contextLength: null, maxOutputTokens: null, inputPrice: null, outputPrice: null },
+  ];
+  const GLOBAL = [{ kind: "cloud", providerId: "google", model: "gemini-flash" }];
+  const PROVIDERS = [
+    { id: "google", name: "Google AI Studio", kind: "openai_compatible", baseUrl: "", models: MODELS, hasKey: true, supportedParams: [] },
+  ];
+
+  it("parte da quella delle Impostazioni, se ne fa una copia propria e si può tornare indietro", async () => {
+    const { FallbackChoice } = await import("./components/FallbackSection");
+    Object.assign(backend.handlers, {
+      fallback_models: () => GLOBAL,
+      list_providers: () => PROVIDERS,
+    });
+    const changes: unknown[] = [];
+    let own: unknown = undefined;
+    const draw = () =>
+      root.render(
+        <FallbackChoice
+          own={own as never}
+          scope="chat"
+          onChange={(next) => {
+            changes.push(next);
+            own = next;
+            draw();
+          }}
+        />,
+      );
+    await render(<FallbackChoice own={undefined} scope="chat" onChange={() => {}} />);
+    await act(async () => draw());
+    await settle();
+
+    const radios = () => [...container.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    // Segue le Impostazioni, e mostra quali modelli sono.
+    expect(radios()[0].checked).toBe(true);
+    expect(text()).toContain("gemini-flash");
+    expect(container.querySelector(".fallback-list")).toBeNull();
+
+    // Una coda propria nasce come copia di quella delle Impostazioni, da cambiare.
+    await click(radios()[1]);
+    expect(changes.at(-1)).toEqual(GLOBAL);
+    const items = () => [...container.querySelectorAll(".fallback-list li .mono")].map((e) => e.textContent);
+    expect(items()).toEqual(["gemini-flash"]);
+    await click(container.querySelector<HTMLButtonElement>('[aria-label="Togli gemini-flash dalla coda"]')!);
+    // Vuota vuol dire "nessuna riserva", non "quella delle Impostazioni".
+    expect(changes.at(-1)).toEqual([]);
+    expect(radios()[1].checked).toBe(true);
+
+    await click(radios()[0]);
+    expect(changes.at(-1)).toBeNull();
+  });
+
+  it("in chat il menu sopra i messaggi salva la coda nella conversazione", async () => {
+    let saved: Record<string, unknown> = { ...TOOLS };
+    Object.assign(backend.handlers, {
+      list_conversations: () => [{ id: 1, title: "Prova", createdAt: "", updatedAt: "" }],
+      get_messages: () => [],
+      conversation_tools: () => saved,
+      tool_defaults: () => TOOLS,
+      set_conversation_tools: ({ settings }: Record<string, unknown>) => {
+        saved = settings as Record<string, unknown>;
+      },
+      fallback_models: () => GLOBAL,
+      list_providers: () => PROVIDERS,
+    });
+    await render(
+      <ChatArea
+        status={STATUS as never}
+        providers={[]}
+        activeModel={{ kind: "local" }}
+        onModelChange={() => {}}
+        preset={PRESET as never}
+        onPresetChange={() => {}}
+        onOpenModels={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    const summary = () => [...container.querySelectorAll("summary")].find((s) => s.textContent?.startsWith("Riserva"))!;
+    expect(summary().textContent).toBe("Riserva: Impostazioni");
+    const details = summary().parentElement as HTMLDetailsElement;
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    await settle();
+    const own = [...details.querySelectorAll<HTMLInputElement>('input[type="radio"]')][1];
+    await click(own);
+    expect(calls("set_conversation_tools").at(-1)?.args).toMatchObject({
+      conversationId: 1,
+      settings: { fallbackModels: GLOBAL },
+    });
+    expect(summary().textContent).toBe("Riserva: propria (1)");
   });
 });

@@ -425,7 +425,9 @@ async fn chat_completions(
                     ChatEvent::Reasoning(text) => {
                         send(chunk(json!({ "reasoning_content": text }), None))
                     }
-                    ChatEvent::Saved | ChatEvent::ToolRequest { .. } => {}
+                    ChatEvent::Saved
+                    | ChatEvent::ToolRequest { .. }
+                    | ChatEvent::ModelSwitch { .. } => {}
                 },
             )
             .await;
