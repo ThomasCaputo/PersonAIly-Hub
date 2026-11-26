@@ -524,11 +524,13 @@ pub async fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.into_owned())
         };
+        // Una richiesta con un altro `state` non viene dall'accesso avviato:
+        // un'altra scheda rimasta aperta, o un programma qualsiasi di questo
+        // computer. Si rifiuta e si continua ad aspettare quella giusta, così
+        // nessuno può far fallire l'accesso solo aprendo questo indirizzo.
         if get("state").as_deref() != Some(state) {
             reply(&mut stream, "400 Bad Request", FAILED_PAGE).await;
-            return Err(Error::msg(
-                "La risposta del servizio non corrisponde all'accesso avviato (state diverso): riprova.",
-            ));
+            continue;
         }
         if let Some(error) = get("error") {
             reply(&mut stream, "200 OK", FAILED_PAGE).await;
@@ -791,17 +793,31 @@ mod tests {
                 .get(format!("http://127.0.0.1:{port}/favicon.ico"))
                 .send()
                 .await;
-            http.get(format!(
-                "http://127.0.0.1:{port}/callback?code=c&state=altro"
-            ))
-            .send()
-            .await
-            .unwrap()
-            .status()
+            // Un ritorno estraneo, anche con un errore: rifiutato, senza
+            // interrompere l'accesso.
+            let foreign = http
+                .get(format!(
+                    "http://127.0.0.1:{port}/callback?error=access_denied&state=altro"
+                ))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            let right = http
+                .get(format!(
+                    "http://127.0.0.1:{port}/callback?code=buono&state=giusto"
+                ))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            (foreign, right)
         });
         let result = wait_for_code(&listener, "giusto").await;
-        assert!(result.unwrap_err().to_string().contains("state diverso"));
-        assert_eq!(browser.await.unwrap(), 400);
+        assert_eq!(result.unwrap(), "buono");
+        let (foreign, right) = browser.await.unwrap();
+        assert_eq!(foreign, 400);
+        assert_eq!(right, 200);
     }
 
     /// Scoperta contro servizi veri: solo letture di metadati pubblici, nessuna

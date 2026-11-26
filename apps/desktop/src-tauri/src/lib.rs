@@ -749,11 +749,17 @@ async fn regenerate_api_token(api: ApiState<'_>) -> CmdResult<String> {
     handle.regenerate_token()
 }
 
-/// Avvia l'API locale dentro l'app. Se l'estensione VS Code aveva avviato il
-/// nucleo senza interfaccia, gli chiede di chiudersi: resta un nucleo solo.
-fn spawn_local_api(core: Arc<Core>, data_dir: std::path::PathBuf, api: Arc<LocalApi>) {
+/// Avvia l'API locale dentro l'app. `replaced` è l'esito della richiesta di
+/// chiusura al nucleo senza interfaccia, fatta prima di aprire il nucleo
+/// dell'app: se non si è chiuso, l'API resta la sua.
+fn spawn_local_api(
+    core: Arc<Core>,
+    data_dir: std::path::PathBuf,
+    api: Arc<LocalApi>,
+    replaced: Result<(), String>,
+) {
     tauri::async_runtime::spawn(async move {
-        let result = match app_server::replace_server(&data_dir).await {
+        let result = match replaced {
             Ok(()) => {
                 app_server::start(core, &data_dir, InstanceKind::App, app_server::DEFAULT_PORT)
                     .await
@@ -1251,13 +1257,18 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app_core::log::init(&data_dir, "app");
             app_core::log::install_panic_hook();
+            // Il nucleo senza interfaccia (avviato da VS Code) va chiuso prima
+            // di aprire il nucleo dell'app: `Core::new` applica un ripristino in
+            // sospeso, segna come interrotte le sessioni e toglie le conversazioni
+            // temporanee, e lo farebbe sotto i piedi di un nucleo ancora al lavoro.
+            let replaced = tauri::async_runtime::block_on(app_server::replace_server(&data_dir));
             let core = Arc::new(Core::new(&data_dir).inspect_err(|e| {
                 app_core::log::error(format!("avvio del nucleo non riuscito: {e}"));
             })?);
             let api = Arc::new(LocalApi::default());
             let lifecycle = Arc::new(Lifecycle::default());
             record_server_path(&data_dir);
-            spawn_local_api(core.clone(), data_dir, api.clone());
+            spawn_local_api(core.clone(), data_dir, api.clone(), replaced);
             tauri::async_runtime::spawn(core.clone().maintenance());
             // Senza icona la finestra resta l'unico modo di usare l'app:
             // chiuderla chiude tutto, come prima.

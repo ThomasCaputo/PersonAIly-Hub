@@ -18,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::store::{self, Store};
+use crate::store;
 
 const DB_NAME: &str = "data.sqlite";
 const MANIFEST_NAME: &str = "backup.json";
@@ -26,6 +26,11 @@ const PRESETS_DIR: &str = "presets";
 const SKILLS_DIR: &str = crate::skills::SKILLS_DIR;
 const PLUGINS_DIR: &str = crate::plugins::PLUGINS_DIR;
 const PENDING_DIR: &str = "restore-pending";
+/// Quanto può occupare, estratto, un backup da ripristinare: molto più di un
+/// archivio vero, ma uno zip costruito apposta non riempie il disco.
+const MAX_RESTORE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+/// La descrizione `backup.json` è di poche righe.
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 
 /// Che cosa contiene un backup.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ts_rs::TS)]
@@ -39,10 +44,20 @@ pub struct BackupInfo {
     pub created: String,
 }
 
-/// Scrive il backup in `dest` (un `.zip`).
-pub fn create(store: &Store, data_dir: &Path, dest: &Path) -> Result<BackupInfo> {
-    let snapshot = data_dir.join(format!("backup-{}.sqlite.tmp", std::process::id()));
-    store.vacuum_into(&snapshot)?;
+/// Scrive il backup in `dest` (un `.zip`). `copy_db` scrive la copia coerente
+/// dell'archivio nel percorso che riceve: è l'unico momento in cui serve
+/// l'archivio, che resta così libero mentre lo zip si comprime (secondi, per
+/// un archivio grande).
+pub fn create(
+    copy_db: impl FnOnce(&Path) -> Result<()>,
+    data_dir: &Path,
+    dest: &Path,
+) -> Result<BackupInfo> {
+    // Un nome per backup: due backup insieme non si toccano la copia.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let snapshot = data_dir.join(format!("backup-{}-{seq}.sqlite.tmp", std::process::id()));
+    copy_db(&snapshot)?;
     let result = write_zip(&snapshot, data_dir, dest);
     let _ = std::fs::remove_file(&snapshot);
     result
@@ -125,10 +140,19 @@ fn extract(source: &Path, pending: &Path) -> Result<BackupInfo> {
     let info: BackupInfo = {
         let mut manifest = zip.by_name(MANIFEST_NAME).map_err(|_| not_a_backup())?;
         let mut text = String::new();
-        manifest.read_to_string(&mut text)?;
+        (&mut manifest)
+            .take(MAX_MANIFEST_BYTES)
+            .read_to_string(&mut text)?;
         serde_json::from_str(&text).map_err(|_| not_a_backup())?
     };
     std::fs::create_dir_all(pending)?;
+    let too_big = || {
+        Error::msg(format!(
+            "Il backup è troppo grande da ripristinare (più di {} GB estratto).",
+            MAX_RESTORE_BYTES / (1024 * 1024 * 1024)
+        ))
+    };
+    let mut total = 0u64;
     for index in 0..zip.len() {
         let mut entry = zip
             .by_index(index)
@@ -155,7 +179,17 @@ fn extract(source: &Path, pending: &Path) -> Result<BackupInfo> {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::io::copy(&mut entry, &mut File::create(&target)?)?;
+        // Si contano i byte che escono davvero: la dimensione dichiarata
+        // dallo zip può mentire.
+        let room = MAX_RESTORE_BYTES - total;
+        let written = std::io::copy(
+            &mut (&mut entry).take(room + 1),
+            &mut File::create(&target)?,
+        )?;
+        total += written;
+        if total > MAX_RESTORE_BYTES {
+            return Err(too_big());
+        }
     }
     let db = pending.join(DB_NAME);
     if !db.is_file() {
@@ -188,32 +222,49 @@ pub fn apply_pending(data_dir: &Path) -> Result<bool> {
         .join("backups")
         .join(format!("before-restore-{}", crate::log::file_stamp()));
     std::fs::create_dir_all(&aside)?;
-    for name in [DB_NAME, "data.sqlite-wal", "data.sqlite-shm"] {
-        let current = data_dir.join(name);
-        if current.exists() {
-            std::fs::rename(&current, aside.join(name))?;
-        }
-    }
-    let presets = data_dir.join(PRESETS_DIR);
-    if presets.exists() {
-        std::fs::rename(&presets, aside.join(PRESETS_DIR))?;
-    }
-    std::fs::rename(&db, data_dir.join(DB_NAME))?;
-    let new_presets = pending.join(PRESETS_DIR);
-    if new_presets.exists() {
-        std::fs::rename(&new_presets, &presets)?;
-    }
-    // Skill e plugin si sostituiscono solo se il backup ne ha: uno fatto prima
-    // che esistessero non deve far sparire quelli installati dopo.
-    for folder in [SKILLS_DIR, PLUGINS_DIR] {
-        let incoming = pending.join(folder);
-        if incoming.exists() {
-            let current = data_dir.join(folder);
-            if current.exists() {
-                std::fs::rename(&current, aside.join(folder))?;
+
+    // Gli spostamenti fatti, per tornare indietro se uno fallisce a metà:
+    // altrimenti l'app ripartirebbe con un archivio vuoto (i dati veri sarebbero
+    // in `backups/`, ma l'utente li vedrebbe spariti).
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let result = (|| -> Result<()> {
+        let mut step = |from: PathBuf, to: PathBuf| -> Result<()> {
+            if from.exists() {
+                std::fs::rename(&from, &to)?;
+                done.push((from, to));
             }
-            std::fs::rename(&incoming, &current)?;
+            Ok(())
+        };
+        for name in [DB_NAME, "data.sqlite-wal", "data.sqlite-shm"] {
+            step(data_dir.join(name), aside.join(name))?;
         }
+        step(data_dir.join(PRESETS_DIR), aside.join(PRESETS_DIR))?;
+        step(db.clone(), data_dir.join(DB_NAME))?;
+        step(pending.join(PRESETS_DIR), data_dir.join(PRESETS_DIR))?;
+        // Skill e plugin si sostituiscono solo se il backup ne ha: uno fatto
+        // prima che esistessero non deve far sparire quelli installati dopo.
+        for folder in [SKILLS_DIR, PLUGINS_DIR] {
+            if pending.join(folder).exists() {
+                step(data_dir.join(folder), aside.join(folder))?;
+                step(pending.join(folder), data_dir.join(folder))?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        // Si rimette tutto com'era, in ordine inverso; il ripristino resta in
+        // sospeso e si riprova al prossimo avvio.
+        for (from, to) in done.iter().rev() {
+            if let Err(undo) = std::fs::rename(to, from) {
+                crate::log::error(format!(
+                    "ripristino annullato a metà: {} non è tornato in {} ({undo})",
+                    to.display(),
+                    from.display()
+                ));
+            }
+        }
+        let _ = std::fs::remove_dir(&aside);
+        return Err(e);
     }
     let _ = std::fs::remove_dir_all(&pending);
     crate::log::info(format!(
@@ -226,6 +277,7 @@ pub fn apply_pending(data_dir: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pa-backup-{name}-{}", std::process::id()));
@@ -253,7 +305,7 @@ mod tests {
         .unwrap();
 
         let zip = dir.join("copia.zip");
-        let info = create(&store, &dir, &zip).unwrap();
+        let info = create(|copy| store.vacuum_into(copy), &dir, &zip).unwrap();
         assert_eq!(info.schema, store::LATEST_SCHEMA);
         assert!(!dir.join("copia.zip.part").exists());
 
@@ -290,6 +342,49 @@ mod tests {
         assert_eq!(aside, 1);
         // Senza nulla da ripristinare l'avvio non cambia niente.
         assert!(!apply_pending(&dir).unwrap());
+        drop(restored);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Se un passaggio del ripristino fallisce (qui: un file dei plugin
+    /// aperto da un altro programma), tutto torna com'era e il ripristino
+    /// resta in sospeso per il prossimo avvio.
+    #[cfg(windows)]
+    #[test]
+    fn un_ripristino_interrotto_rimette_tutto_a_posto() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir("rollback");
+        let store = Store::open(&dir.join(DB_NAME)).unwrap();
+        store.create_conversation("Nel backup").unwrap();
+        std::fs::create_dir_all(dir.join("presets")).unwrap();
+        std::fs::write(dir.join("presets/a.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("plugins/p")).unwrap();
+        std::fs::write(dir.join("plugins/p/plugin.json"), "{}").unwrap();
+        let zip = dir.join("copia.zip");
+        create(|copy| store.vacuum_into(copy), &dir, &zip).unwrap();
+        store.create_conversation("Dopo il backup").unwrap();
+        drop(store);
+        stage(&dir, &zip).unwrap();
+
+        // Aperto senza condivisione: la cartella dei plugin non si può spostare.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join("plugins/p/plugin.json"))
+            .unwrap();
+        assert!(apply_pending(&dir).is_err());
+        drop(lock);
+
+        assert!(dir.join("presets/a.json").is_file());
+        assert!(dir.join(PENDING_DIR).join(DB_NAME).is_file());
+        let current = Store::open(&dir.join(DB_NAME)).unwrap();
+        assert_eq!(current.list_conversations("").unwrap().len(), 2);
+        drop(current);
+
+        // Al prossimo avvio il ripristino riesce.
+        assert!(apply_pending(&dir).unwrap());
+        let restored = Store::open(&dir.join(DB_NAME)).unwrap();
+        assert_eq!(restored.list_conversations("").unwrap().len(), 1);
         drop(restored);
         let _ = std::fs::remove_dir_all(&dir);
     }

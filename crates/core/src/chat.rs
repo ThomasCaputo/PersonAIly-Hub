@@ -527,6 +527,11 @@ impl SseParser {
         }
         out
     }
+
+    /// Byte ricevuti che non formano ancora una riga intera.
+    pub(crate) fn pending(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 #[cfg(test)]

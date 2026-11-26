@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::chat::SseParser;
@@ -42,6 +42,8 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const RESULT_CHARS: usize = 30_000;
 /// Righe degli errori del server conservate per spiegare un guasto.
 const STDERR_LINES: usize = 20;
+/// Byte conservati di ciascuna di quelle righe.
+const STDERR_LINE_BYTES: usize = 2_000;
 /// Inizio dei nomi degli strumenti MCP come li vede il modello.
 pub const PREFIX: &str = "mcp__";
 /// Lunghezza massima dei nomi degli strumenti accettata dai servizi.
@@ -54,6 +56,82 @@ const MAX_RESOURCES: usize = 200;
 /// Nel portachiavi le intestazioni HTTP stanno accanto alle variabili
 /// d'ambiente, con questo prefisso nel nome.
 const HEADER_KEY: &str = "header:";
+/// Dimensione massima di un messaggio di un server (una riga stdio, un corpo
+/// HTTP, un evento): un server guasto non deve poter riempire la memoria.
+const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Del corpo di una risposta di errore basta l'inizio.
+const MAX_ERROR_BYTES: usize = 64 * 1024;
+
+fn too_big_message() -> String {
+    format!(
+        "ha mandato un messaggio più grande di {} MB.",
+        MAX_MESSAGE_BYTES / (1024 * 1024)
+    )
+}
+
+/// Legge una riga (senza `\n` e `\r` finali) di al massimo
+/// [`MAX_MESSAGE_BYTES`] byte; `None` a flusso finito. Una riga più lunga è
+/// un errore `InvalidData`: i byte letti fin lì sono scartati, il resto
+/// della riga arriva con le letture successive.
+///
+/// `line` conserva la parte di riga già letta: se il futuro viene abbandonato
+/// a metà (tempo scaduto, utente che interrompe) quei byte non si perdono e la
+/// lettura successiva riprende da lì, come con `Lines::next_line`.
+async fn read_line_limited<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+) -> std::io::Result<Option<String>> {
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let (used, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(end) => (end + 1, true),
+            None => (available.len(), false),
+        };
+        let room = MAX_MESSAGE_BYTES - line.len();
+        let take = used.min(room);
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if done && take == used {
+            break;
+        }
+        if line.len() >= MAX_MESSAGE_BYTES {
+            line.clear();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                too_big_message(),
+            ));
+        }
+    }
+    let mut line = std::mem::take(line);
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&line).into_owned()))
+}
+
+/// Legge il corpo di una risposta fino a `limit` byte. Il secondo valore è
+/// `false` se il corpo era più lungo ed è stato tagliato.
+async fn read_body(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> reqwest::Result<(Vec<u8>, bool)> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let room = limit - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            return Ok((body, false));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, true))
+}
 
 /// Come l'app parla con il server.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,7 +375,9 @@ struct ServerTool {
 struct StdioLink {
     child: Child,
     stdin: ChildStdin,
-    stdout: Lines<BufReader<ChildStdout>>,
+    stdout: BufReader<ChildStdout>,
+    /// La riga dell'uscita letta solo in parte (vedi [`read_line_limited`]).
+    partial: Vec<u8>,
     /// Ultime righe scritte dal server sugli errori.
     stderr: Arc<Mutex<Vec<String>>>,
     #[cfg(windows)]
@@ -476,7 +556,12 @@ impl McpClient {
             let Link::Stdio(stdio) = &mut self.link else {
                 unreachable!("collegamento stdio");
             };
-            let line = match tokio::time::timeout_at(deadline, stdio.stdout.next_line()).await {
+            let stdio = &mut **stdio;
+            let reading = read_line_limited(&mut stdio.stdout, &mut stdio.partial);
+            let line = match tokio::time::timeout_at(deadline, reading).await {
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(self.failure(&too_big_message()));
+                }
                 Err(_) => {
                     return Err(self.failure(&format!(
                         "nessuna risposta a «{method}» entro {} secondi.",
@@ -548,9 +633,12 @@ impl McpClient {
         }
     }
 
-    async fn http_failure(&mut self, response: reqwest::Response) -> Error {
+    async fn http_failure(&mut self, mut response: reqwest::Response) -> Error {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let (bytes, _) = read_body(&mut response, MAX_ERROR_BYTES)
+            .await
+            .unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes);
         let detail: String = body.trim().chars().take(300).collect();
         let hint = match status.as_u16() {
             401 | 403 => {
@@ -587,9 +675,12 @@ impl McpClient {
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.contains("text/event-stream"));
         if !is_stream {
-            let body: Value = response
-                .json()
-                .await
+            let bytes = match read_body(&mut response, MAX_MESSAGE_BYTES).await {
+                Ok((bytes, true)) => bytes,
+                Ok((_, false)) => return Err(self.failure(&too_big_message())),
+                Err(e) => return Err(self.failure(&format!("risposta illeggibile ({e})."))),
+            };
+            let body: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| self.failure(&format!("risposta illeggibile ({e}).")))?;
             // Una risposta sola, o un gruppo di messaggi.
             let messages = match body {
@@ -624,7 +715,12 @@ impl McpClient {
                 }
                 Ok(Err(e)) => return Err(self.failure(&format!("collegamento interrotto ({e})."))),
             };
-            for data in parser.push(&chunk) {
+            let events = parser.push(&chunk);
+            // Un evento senza fine resterebbe tutto in memoria.
+            if parser.pending() > MAX_MESSAGE_BYTES {
+                return Err(self.failure(&too_big_message()));
+            }
+            for data in events {
                 let Ok(message) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
@@ -880,12 +976,29 @@ fn spawn(config: &McpServerConfig, cwd: Option<&Path>) -> Result<StdioLink> {
     let job = job_for(&child);
 
     let stdin = child.stdin.take().expect("entrata collegata");
-    let stdout = BufReader::new(child.stdout.take().expect("uscita collegata")).lines();
+    let stdout = BufReader::new(child.stdout.take().expect("uscita collegata"));
     let stderr = Arc::new(Mutex::new(Vec::new()));
     let sink = stderr.clone();
-    let mut err_lines = BufReader::new(child.stderr.take().expect("errori collegati")).lines();
+    let mut err_reader = BufReader::new(child.stderr.take().expect("errori collegati"));
     tokio::spawn(async move {
-        while let Ok(Some(line)) = err_lines.next_line().await {
+        // Il flusso va svuotato fino in fondo, anche se una riga è enorme:
+        // altrimenti il server si blocca quando il canale è pieno.
+        let mut partial = Vec::new();
+        loop {
+            let mut line = match read_line_limited(&mut err_reader, &mut partial).await {
+                Ok(Some(line)) => line,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                _ => break,
+            };
+            // Servono solo a spiegare un guasto: di ognuna basta l'inizio.
+            if line.len() > STDERR_LINE_BYTES {
+                let mut cut = STDERR_LINE_BYTES;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                line.truncate(cut);
+                line.push('…');
+            }
             let mut lines = sink.lock().unwrap_or_else(|e| e.into_inner());
             lines.push(line);
             if lines.len() > STDERR_LINES {
@@ -897,6 +1010,7 @@ fn spawn(config: &McpServerConfig, cwd: Option<&Path>) -> Result<StdioLink> {
         child,
         stdin,
         stdout,
+        partial: Vec::new(),
         stderr,
         #[cfg(windows)]
         _job: job,
@@ -1313,6 +1427,58 @@ pub async fn probe(config: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn le_righe_troppo_lunghe_si_rifiutano() {
+        let text = b"{\"a\":1}\r\nseconda\nultima senza a capo".to_vec();
+        let mut reader = BufReader::new(&text[..]);
+        let mut partial = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(line) = read_line_limited(&mut reader, &mut partial).await.unwrap() {
+            lines.push(line);
+        }
+        assert_eq!(lines, ["{\"a\":1}", "seconda", "ultima senza a capo"]);
+
+        // Oltre il limite è un errore, e la riga dopo si legge ancora.
+        let mut huge = vec![b'x'; MAX_MESSAGE_BYTES + 10];
+        huge.extend_from_slice(b"\ndopo\n");
+        let mut reader = BufReader::new(&huge[..]);
+        let error = read_line_limited(&mut reader, &mut partial)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        // Ciò che era stato letto non resta in memoria.
+        assert!(partial.is_empty());
+        // Il resto della riga lunga, poi quella dopo.
+        let mut next = async || read_line_limited(&mut reader, &mut partial).await.unwrap();
+        assert_eq!(next().await.unwrap(), "x".repeat(10));
+        assert_eq!(next().await.unwrap(), "dopo");
+        assert!(next().await.is_none());
+    }
+
+    /// Una lettura abbandonata a metà riga (tempo scaduto) non perde i byte:
+    /// la successiva restituisce la riga intera.
+    #[tokio::test]
+    async fn una_lettura_interrotta_non_perde_la_riga() {
+        let (mut server, client) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(client);
+        let mut partial = Vec::new();
+        server.write_all(b"{\"id\":1,").await.unwrap();
+        let first = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_line_limited(&mut reader, &mut partial),
+        )
+        .await;
+        assert!(first.is_err(), "doveva scadere il tempo");
+        server.write_all(b"\"result\":{}}\n").await.unwrap();
+        assert_eq!(
+            read_line_limited(&mut reader, &mut partial)
+                .await
+                .unwrap()
+                .unwrap(),
+            "{\"id\":1,\"result\":{}}"
+        );
+    }
 
     #[test]
     fn i_nomi_esposti_sono_validi_per_i_servizi() {

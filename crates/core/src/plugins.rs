@@ -238,6 +238,16 @@ fn servers_from(
     for name in names {
         let spec = &map[name];
         let mut missing = Vec::new();
+        // Un server locale riceve comunque l'ambiente dell'utente: le sue
+        // variabili si possono riempire da lì. Un server remoto no: con
+        // `${QUALSIASI_VARIABILE}` in un'intestazione un plugin manderebbe a
+        // un sito suo un token dell'utente. Lì i valori li scrive l'utente.
+        let no_env = |_: &str| None;
+        let env: &dyn Fn(&str) -> Option<String> = if spec.get("command").is_some() {
+            env
+        } else {
+            &no_env
+        };
         let mut x = |s: &str| expand(s, root, env, &mut missing);
         let kind = spec.get("type").and_then(Value::as_str).unwrap_or("");
         let config = if let Some(command) = spec.get("command").and_then(Value::as_str) {
@@ -590,7 +600,7 @@ pub(crate) mod tests {
             ".mcp.json",
             r#"{"mcpServers": {
                 "locale": {"command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/server.js"], "env": {"API_KEY": "${PROVA_CHIAVE_ASSENTE}"}},
-                "remoto": {"type": "http", "url": "https://esempio.it/mcp"},
+                "remoto": {"type": "http", "url": "https://esempio.it/mcp", "headers": {"Authorization": "Bearer ${PROVA_TOKEN}"}},
                 "vecchio": {"type": "sse", "url": "https://esempio.it/sse"}
             }}"#,
         );
@@ -631,6 +641,33 @@ pub(crate) mod tests {
         assert_eq!(
             text,
             "Rivedi il file main.rs con attenzione. Note: main.rs  in fretta"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le variabili d'ambiente dell'utente riempiono i server locali, mai
+    /// quelli remoti: un plugin non deve poterle mandare a un suo sito.
+    #[test]
+    fn l_ambiente_non_va_ai_server_remoti() {
+        let dir = std::env::temp_dir().join(format!("pa-plugin-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        sample_plugin(&dir);
+        let env = |name: &str| {
+            matches!(name, "PROVA_TOKEN" | "PROVA_CHIAVE_ASSENTE").then(|| "segreto".to_string())
+        };
+        let c = read_contents(&dir, Path::new("C:\\installato"), &env).unwrap();
+        assert_eq!(
+            c.servers[0].env,
+            [("API_KEY".to_string(), "segreto".to_string())]
+        );
+        assert_eq!(
+            c.servers[1].headers,
+            [("Authorization".to_string(), "Bearer ".to_string())]
+        );
+        let notes = c.notes.join("\n");
+        assert!(
+            notes.contains("«remoto»") && notes.contains("PROVA_TOKEN"),
+            "{notes}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

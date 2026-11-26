@@ -5,7 +5,8 @@ use crate::*;
 impl Core {
     /// Salva conversazioni, agenti, impostazioni e preset in un file `.zip`.
     pub fn create_backup(&self, dest: &Path) -> Result<backup::BackupInfo> {
-        backup::create(&self.store(), &self.data_dir, dest)
+        // L'archivio si blocca solo per la copia, non per la compressione.
+        backup::create(|copy| self.store().vacuum_into(copy), &self.data_dir, dest)
     }
 
     /// Prepara il ripristino di un backup, che si applica al prossimo avvio:

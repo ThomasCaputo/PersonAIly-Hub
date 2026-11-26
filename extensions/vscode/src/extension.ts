@@ -23,9 +23,13 @@ export function activate(context: vscode.ExtensionContext): void {
   setLanguage(languageFor(vscode.env.language));
   const output = vscode.window.createOutputChannel("PersonAIly Hub");
   const config = () => vscode.workspace.getConfiguration("personailyHub");
+  // Programma da avviare e cartella dati vengono solo dalle impostazioni
+  // dell'utente, mai da quelle di un progetto: un repository clonato potrebbe
+  // altrimenti far eseguire un suo programma o indicare un nucleo finto.
+  const userSetting = (key: string) => config().inspect<string>(key)?.globalValue?.trim() ?? "";
   const core = new CoreClient({
-    dataDir: () => config().get<string>("dataDir")?.trim() || defaultDataDir(),
-    serverPath: () => config().get<string>("serverPath") ?? "",
+    dataDir: () => userSetting("dataDir") || defaultDataDir(),
+    serverPath: () => userSetting("serverPath"),
     log: (line) => output.appendLine(line),
   });
   client = core;

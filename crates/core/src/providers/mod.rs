@@ -232,9 +232,15 @@ pub fn validate(provider: &Provider) -> Result<()> {
     if provider.name.trim().is_empty() {
         return Err(Error::msg("Dai un nome al provider."));
     }
-    let url = provider.base();
-    let is_local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost");
-    if !url.starts_with("https://") && !is_local {
+    // Si guarda il nome del computer vero, non l'inizio del testo:
+    // `http://localhost.altro-sito.it` non è questo computer.
+    let parsed = reqwest::Url::parse(provider.base()).ok();
+    let scheme = parsed.as_ref().map(|u| u.scheme());
+    let is_local = scheme == Some("http")
+        && parsed
+            .as_ref()
+            .is_some_and(|u| matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")));
+    if scheme != Some("https") && !is_local {
         return Err(Error::msg(
             "L'indirizzo deve iniziare con https:// (http:// è ammesso solo per questo computer): \
              altrimenti la chiave API viaggerebbe in chiaro.",
@@ -305,6 +311,12 @@ mod tests {
         assert!(validate(&provider("http://127.0.0.1:8080/v1")).is_ok());
         assert!(validate(&provider("http://localhost:1234/v1")).is_ok());
         assert!(validate(&provider("http://api.example.com/v1")).is_err());
+        // Il nome del computer conta per intero, non solo l'inizio dell'indirizzo.
+        assert!(validate(&provider("http://localhost.example.com/v1")).is_err());
+        assert!(validate(&provider("http://127.0.0.1.nip.io/v1")).is_err());
+        assert!(validate(&provider("http://localhost@example.com/v1")).is_err());
+        assert!(validate(&provider("http://[::1]:8080/v1")).is_ok());
+        assert!(validate(&provider("ftp://api.example.com/v1")).is_err());
         assert!(validate(&provider("api.example.com")).is_err());
     }
 

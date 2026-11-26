@@ -1,8 +1,59 @@
 //! Prove del nucleo: conversazioni, agenti, permessi e impostazioni.
 
 use crate::ops::conversation::{chat_history, title_from};
-use crate::ops::rounds::known_urls;
+use crate::ops::rounds::{known_urls, remember_always};
 use crate::*;
+
+/// Il backup non tiene bloccato l'archivio mentre comprime: due backup insieme
+/// (e il lavoro normale) vanno avanti, ognuno con la sua copia.
+#[test]
+fn due_backup_insieme_non_si_intralciano() {
+    let dir = std::env::temp_dir().join(format!("core-backup-insieme-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir.join("dati")).unwrap();
+    core.create_conversation().unwrap();
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..2)
+            .map(|n| {
+                let core = &core;
+                let dest = dir.join(format!("copia-{n}.zip"));
+                scope.spawn(move || core.create_backup(&dest))
+            })
+            .collect();
+        for job in jobs {
+            job.join().unwrap().unwrap();
+        }
+    });
+    assert!(dir.join("copia-0.zip").is_file() && dir.join("copia-1.zip").is_file());
+    // Le copie temporanee dell'archivio non restano.
+    let leftovers = std::fs::read_dir(dir.join("dati"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".sqlite.tmp"))
+        .count();
+    assert_eq!(leftovers, 0);
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn consentire_sempre_una_delega_non_apre_il_terminale() {
+    let mut settings = ToolSettings::default();
+    // Una delega (come uno strumento MCP) si annota da sola: il livello resta.
+    remember_always(&mut settings, agents::DELEGATE_TOOL, Risk::Execute, true);
+    remember_always(&mut settings, agents::DELEGATE_TOOL, Risk::Execute, true);
+    assert_eq!(settings.permission, PermissionLevel::Ask);
+    assert_eq!(settings.allowed_tools, [agents::DELEGATE_TOOL]);
+    assert_eq!(
+        tools::decide(settings.permission, Risk::Execute),
+        tools::Decision::Ask
+    );
+    // Gli strumenti dell'app alzano il livello, come prima.
+    remember_always(&mut settings, "write_file", Risk::Edit, false);
+    assert_eq!(settings.permission, PermissionLevel::Edits);
+    remember_always(&mut settings, "run_command", Risk::Execute, false);
+    assert_eq!(settings.permission, PermissionLevel::All);
+}
 
 #[test]
 fn il_titolo_viene_dal_primo_messaggio() {
@@ -512,7 +563,7 @@ async fn fermare_un_agente_in_attesa_di_conferma_non_esegue_il_comando() {
     .await;
 
     let (id, summary) = asked.expect("doveva chiedere conferma");
-    assert_eq!(id, format!("s{}:call_1", session.id));
+    assert!(id.starts_with(&format!("s{}:call_1:", session.id)), "{id}");
     assert!(summary.contains("New-Item"));
     assert!(outcome.cancelled);
     let messages = core.messages(session.conversation_id).unwrap();
@@ -1458,6 +1509,39 @@ fn installare_e_disinstallare_un_plugin() {
     assert_eq!(replaced.agents.len(), 1);
     assert_eq!(core.mcp_servers().unwrap().len(), 2);
     assert_eq!(core.list_plugins().unwrap().len(), 1);
+
+    // Una versione nuova che non si può installare (una sua skill ha il nome
+    // di una dell'utente) lascia al suo posto quella installata.
+    let draft = skills::SkillDraft {
+        name: "altra".into(),
+        description: "Dell'utente".into(),
+        instructions: "Mie regole.".into(),
+    };
+    core.save_skill(&draft, None).unwrap();
+    std::fs::create_dir_all(source.join("skills").join("altra")).unwrap();
+    std::fs::write(
+        source.join("skills").join("altra").join("SKILL.md"),
+        "---\nname: altra\ndescription: Del plugin\n---\nAltre regole.",
+    )
+    .unwrap();
+    let error = core.import_plugin(&source, true).unwrap_err().to_string();
+    assert!(error.contains("altra"), "{error}");
+    assert_eq!(core.list_plugins().unwrap().len(), 1);
+    assert_eq!(core.mcp_servers().unwrap().len(), 2);
+    assert!(
+        core.list_skills()
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "stile")
+    );
+    assert!(
+        installed
+            .join(".claude-plugin")
+            .join("plugin.json")
+            .is_file()
+    );
+    std::fs::remove_dir_all(source.join("skills").join("altra")).unwrap();
+    core.delete_skill("altra").unwrap();
 
     // Disinstallare toglie tutto, anche dal portachiavi.
     core.uninstall_plugin("revisione").unwrap();

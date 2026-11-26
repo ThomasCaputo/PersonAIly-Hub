@@ -173,8 +173,6 @@ export const CORE_EN: Record<string, string> = {
   "Il server di autorizzazione non indica dove chiedere i token.": "The authorization server does not say where to request tokens.",
   "Il servizio non permette all'app di registrarsi da sola: registra un'app OAuth presso il servizio (indirizzo di ritorno http://127.0.0.1/callback) e scrivi il suo Client ID nel modulo.":
     "The service does not let the app register itself: register an OAuth app with the service (redirect address http://127.0.0.1/callback) and enter its Client ID in the form.",
-  "La risposta del servizio non corrisponde all'accesso avviato (state diverso): riprova.":
-    "The service's reply does not match the sign-in that was started (different state): try again.",
   "Il servizio non ha restituito il codice di accesso.": "The service did not return the sign-in code.",
   "Salva il server prima di fare l'accesso.": "Save the server before signing in.",
   "Questo server non usa l'accesso dal browser: sceglilo nel modulo e salva.":
@@ -286,6 +284,11 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Il servizio ha interrotto la risposta: (.*)$/s, "The service interrupted the reply: $1"],
   [/^nessuna risposta a «(.*?)» entro (\d+) secondi\.$/s, "no reply to “$1” within $2 seconds."],
   [/^nessuna risposta a «(.*?)»\.$/s, "no reply to “$1”."],
+  [/^ha mandato un messaggio più grande di (\d+) MB\.$/s, "sent a message larger than $1 MB."],
+  [
+    /^Il backup è troppo grande da ripristinare \(più di (\d+) GB estratto\)\.$/s,
+    "The backup is too large to restore (more than $1 GB once extracted).",
+  ],
   [/^ha chiuso il flusso senza rispondere a «(.*?)»\.$/s, "closed the stream without replying to “$1”."],
   [/^non raggiungibile \((.*)\)\.$/s, "not reachable ($1)."],
   [/^risposta illeggibile \((.*)\)\.$/s, "unreadable reply ($1)."],

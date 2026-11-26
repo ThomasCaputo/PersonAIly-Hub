@@ -151,11 +151,13 @@
         "personailyHub.serverPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "markdownDescription": "%config.serverPath%"
         },
         "personailyHub.dataDir": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "markdownDescription": "%config.dataDir%"
         },
         "personailyHub.maxContextChars": {

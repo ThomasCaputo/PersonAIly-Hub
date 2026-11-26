@@ -2,6 +2,12 @@
 
 use crate::*;
 
+/// Numera le richieste di conferma: l'identificatore di una chiamata lo sceglie
+/// il modello (o, se manca, l'app: `call_0`, `call_1`…) e si ripete da un giro
+/// all'altro. Senza questo numero una risposta arrivata tardi a una vecchia
+/// richiesta potrebbe approvare una chiamata diversa con lo stesso nome.
+static APPROVAL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Gli indirizzi che il modello può aprire senza conferma anche mentre vede i
 /// file: quelli scritti dall'utente e quelli trovati da una ricerca.
 pub(crate) fn known_urls(chat: &[ChatMessage]) -> Vec<String> {
@@ -21,6 +27,30 @@ pub(crate) fn known_urls(chat: &[ChatMessage]) -> Vec<String> {
         })
         .flat_map(|m| tools::urls_in(&m.content))
         .collect()
+}
+
+/// Annota un "Consenti sempre". Con `only_this` (strumenti MCP, indirizzi
+/// scritti dal modello, deleghe) vale solo per quello strumento; per gli
+/// strumenti dell'app alza il livello della conversazione.
+///
+/// Una delega è un'esecuzione, ma consentirla sempre non deve aprire anche il
+/// terminale e il resto: per questo non passa dal livello.
+pub(crate) fn remember_always(
+    settings: &mut ToolSettings,
+    name: &str,
+    risk: Risk,
+    only_this: bool,
+) {
+    if only_this {
+        if !settings.allowed_tools.iter().any(|t| t == name) {
+            settings.allowed_tools.push(name.to_string());
+        }
+    } else {
+        settings.permission = match risk {
+            Risk::Execute => PermissionLevel::All,
+            _ => settings.permission.max_with(PermissionLevel::Edits),
+        };
+    }
 }
 
 /// Descrizione breve di una chiamata, per la conferma e il registro.
@@ -134,7 +164,8 @@ impl Core {
         };
         let cancel = &run.control.cancel;
         // "Consenti sempre" su uno strumento MCP vale solo per quello strumento.
-        let allowed_always = external.is_some() && settings.allowed_tools.contains(&call.name);
+        let allowed_always = (external.is_some() || delegation.is_some())
+            && settings.allowed_tools.contains(&call.name);
         // Un indirizzo inventato dal modello mentre vede i file dell'utente.
         let guarded = external.is_none()
             && self.exfiltration_guard()
@@ -148,7 +179,8 @@ impl Core {
             || (!allowed_always
                 && (mcp_in_chat || tools::decide(settings.permission, risk) == Decision::Ask))
         {
-            let key = format!("{}:{}", run.key_prefix, call.id);
+            let seq = APPROVAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let key = format!("{}:{}:{seq}", run.key_prefix, call.id);
             let (sender, receiver) = oneshot::channel();
             self.approvals
                 .lock()
@@ -185,14 +217,8 @@ impl Core {
                 Approval::Always => {
                     // Vale per il resto della conversazione (o della sessione),
                     // anche dopo il riavvio.
-                    if external.is_some() || guarded {
-                        settings.allowed_tools.push(call.name.clone());
-                    } else {
-                        settings.permission = match risk {
-                            Risk::Execute => PermissionLevel::All,
-                            _ => settings.permission.max_with(PermissionLevel::Edits),
-                        };
-                    }
+                    let only_this = external.is_some() || guarded || delegation.is_some();
+                    remember_always(settings, &call.name, risk, only_this);
                     let _ = self.set_conversation_tools(run.conversation_id, settings);
                 }
             }

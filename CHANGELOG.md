@@ -28,9 +28,42 @@ The section of each version is also used as the release notes shown by the in-ap
   nothing; uninstalling removes everything the plugin created, secrets included. Plugin commands
   appear in the `/` menu of every conversation. Plugins are included in backups.
 
+### Security
+- **VS Code extension:** the `personailyHub.serverPath` and `personailyHub.dataDir` settings are
+  now read only from your user settings, never from a project's `.vscode/settings.json`. A
+  cloned repository could otherwise make the extension start a program of its own, or point it
+  at a fake core.
+- **"Always allow" on a delegation to another agent** now covers only further delegations. It
+  used to raise the whole conversation to "Allow everything", which also ran terminal commands
+  without asking.
+- **Cloud provider addresses:** `http://` is accepted only when the host really is this
+  computer (`localhost`, `127.0.0.1`, `[::1]`). Addresses such as `http://localhost.example.com`
+  passed the old check, and the API key would have travelled unencrypted.
+- **Plugins:** remote (HTTP) MCP servers of a plugin no longer take `${VARIABLES}` from your
+  environment, which could have sent a token of yours to a site chosen by the plugin. Their
+  missing values are listed after the installation, to fill in Settings. Local servers are
+  unchanged.
+- **Limits:** a message from an MCP server can be at most 16 MB, and a backup to restore at most
+  20 GB once extracted, so a broken server or a crafted file cannot fill memory or disk.
+- Confirmation requests are now numbered: a late answer to an old request can no longer approve
+  a different call that happens to have the same identifier.
+
 ### Fixed
 - The "MCP servers" menu above the messages now shows servers added in Settings without
   reloading the app.
+- Opening the desktop app while the headless core started by VS Code was working no longer marks
+  that core's agent sessions as interrupted, and a pending backup restore is no longer skipped:
+  the headless core now closes before the app opens its data.
+- A backup restore that fails halfway puts everything back as it was and is retried at the next
+  start, instead of leaving the app with an empty archive.
+- Creating a backup no longer blocks chats and agents while the file is compressed (about 1.5
+  seconds every 100 MB of data): the archive is locked only for its copy.
+- Replacing a plugin with a version that cannot be installed (for example, because one of its
+  skills has the name of one of yours) now leaves the installed version in place.
+- A browser sign-in (OAuth) is no longer cancelled by a stray request to its return address; the
+  app keeps waiting for the right one.
+- While a reply is arriving, a code block opened with four backticks is no longer split at an
+  inner line of three.
 
 ## [1.2.1] — 2026-11-22
 

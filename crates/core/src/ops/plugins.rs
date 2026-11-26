@@ -66,21 +66,28 @@ impl Core {
         // Il nome si legge prima di sapere dove andrà; poi si rilegge con la
         // cartella definitiva, che entra nei comandi dei server.
         let name = plugins::read_contents(staged, staged, &|_| None)?.name;
-        if self.list_plugins()?.iter().any(|p| p.name == name) {
-            if !replace {
-                return Ok(PluginInstall {
-                    installed: None,
-                    existing: Some(name),
-                });
-            }
-            self.uninstall_plugin(&name)?;
+        let previous = self.list_plugins()?.into_iter().find(|p| p.name == name);
+        if previous.is_some() && !replace {
+            return Ok(PluginInstall {
+                installed: None,
+                existing: Some(name),
+            });
         }
         let target = self.plugins_dir().join(&name);
         let env = |var: &str| std::env::var(var).ok();
         let contents = plugins::read_contents(staged, &target, &env)?;
 
-        // Una skill con lo stesso nome che non è del plugin ferma tutto, prima di cambiare qualcosa.
-        let existing: Vec<String> = self.list_skills()?.into_iter().map(|s| s.name).collect();
+        // Una skill con lo stesso nome che non è del plugin ferma tutto, prima
+        // di cambiare qualcosa: anche prima di togliere la versione installata,
+        // che altrimenti andrebbe persa per niente. Le skill di quella versione
+        // non contano: se ne vanno con lei.
+        let own: &[String] = previous.as_ref().map_or(&[], |p| &p.skills);
+        let existing: Vec<String> = self
+            .list_skills()?
+            .into_iter()
+            .map(|s| s.name)
+            .filter(|n| !own.contains(n))
+            .collect();
         let clashes: Vec<String> = contents
             .skills
             .iter()
@@ -94,6 +101,10 @@ impl Core {
             )));
         }
 
+        // Solo ora, con i controlli superati, si toglie la versione installata.
+        if previous.is_some() {
+            self.uninstall_plugin(&name)?;
+        }
         // Una cartella rimasta da un'installazione interrotta si sostituisce.
         if target.exists() {
             std::fs::remove_dir_all(&target)?;
