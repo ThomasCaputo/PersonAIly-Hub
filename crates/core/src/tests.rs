@@ -1424,6 +1424,18 @@ async fn i_prompt_della_conversazione_usano_i_suoi_server() {
         .await
         .unwrap();
     assert!(text.starts_with("Rivedi con tono allegro."), "{text}");
+    let values = core
+        .conversation_prompt_completion(
+            conv,
+            prompts[0].server,
+            &prompts[0].name,
+            "tono",
+            "al",
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(values[0], "ref/prompt|revisione|tono|al");
     // Gli stessi server, non un nuovo avvio.
     let again = core
         .chat_mcp

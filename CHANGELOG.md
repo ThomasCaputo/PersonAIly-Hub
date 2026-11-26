@@ -3,7 +3,7 @@
 All notable changes to PersonAIly Hub. Versions follow [Semantic Versioning](https://semver.org).
 The section of each version is also used as the release notes shown by the in-app updater.
 
-## [Unreleased]
+## [1.3.0] — 2026-11-26
 
 ### Added
 - **MCP servers in chat:** the tools bar above the messages has an "MCP servers" menu to pick,
@@ -22,7 +22,8 @@ The section of each version is also used as the release notes shown by the in-ap
   Linear are in the list of known servers.
 - **`/` commands from MCP prompts:** typing `/` in a chat lists the prompts offered by the
   conversation's MCP servers; after filling in their arguments, the prompt's text lands in the
-  message box, to review and send.
+  message box, to review and send. Servers that can suggest values for an argument
+  (`completion/complete`) show them in a list under its box as you type.
 - **Plugins:** packages with skills, MCP servers, agents and `/` commands, in the Claude Code
   plugin format, installed from a folder or a `.zip` (Settings → Plugins). Installing starts
   nothing; uninstalling removes everything the plugin created, secrets included. Plugin commands
@@ -166,6 +167,7 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.1
 [1.0.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ThomasCaputo/personaily-hub/releases/tag/v0.1.0

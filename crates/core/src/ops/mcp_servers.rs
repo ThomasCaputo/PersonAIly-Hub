@@ -222,6 +222,25 @@ impl Core {
         set.get_prompt(server, name, arguments).await
     }
 
+    /// I valori suggeriti dal server per un argomento di un prompt, mentre
+    /// l'utente lo compila. `context` sono gli altri argomenti già scritti.
+    pub async fn conversation_prompt_completion(
+        &self,
+        conversation_id: i64,
+        server: usize,
+        name: &str,
+        argument: &str,
+        value: &str,
+        context: &HashMap<String, String>,
+    ) -> Result<Vec<String>> {
+        let set = self
+            .conversation_mcp(conversation_id)
+            .await?
+            .ok_or_else(|| Error::msg("Questa conversazione non usa server MCP."))?;
+        set.complete_prompt_arg(server, name, argument, value, context)
+            .await
+    }
+
     /// Segna come appena usati i server MCP di una conversazione.
     pub(crate) fn touch_chat_mcp(&self, conversation_id: i64) {
         if let Some(entry) = self

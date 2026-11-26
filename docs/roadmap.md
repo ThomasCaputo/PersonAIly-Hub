@@ -283,11 +283,13 @@ Ciò che resta (certificato Authenticode, prove dal vivo, tag) è in
 - [x] Plugin nel formato di Claude Code: skill, server MCP, agenti e comandi `/` in un pacchetto
       ([ADR 0026](adr/0026-plugin.md)).
 - [ ] Plugin provato con uno pubblicato (finora uno scritto per la prova).
+- [x] Suggerimenti del server per gli argomenti dei prompt MCP (`completion/complete`;
+      [ADR 0025](adr/0025-prompt-mcp.md)).
 
 ## Dopo
 
 Linux e macOS (GE-2), Gemini (CL-3).
 
-Idee ancora da valutare: catalogo di plugin da installare con un clic, suggerimenti per gli argomenti dei prompt MCP, più modelli locali
+Idee ancora da valutare: catalogo di plugin da installare con un clic, più modelli locali
 caricati insieme.
 

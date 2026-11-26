@@ -245,6 +245,8 @@ export type McpPrompt = {
   name: string;
   description: string;
   arguments: { name: string; description: string; required: boolean }[];
+  /** Il server sa suggerire i valori degli argomenti. */
+  completions: boolean;
 };
 
 /** Nome leggibile di uno strumento MCP (`mcp__server__strumento`), oppure null. */
@@ -599,6 +601,15 @@ export const api = {
   conversationPrompts: (conversationId: number) => invoke<McpPrompt[]>("conversation_prompts", { conversationId }),
   conversationPrompt: (conversationId: number, server: number, name: string, args: Record<string, string>) =>
     invoke<string>("conversation_prompt", { conversationId, server, name, arguments: args }),
+  conversationPromptCompletion: (
+    conversationId: number,
+    server: number,
+    name: string,
+    argument: string,
+    value: string,
+    context: Record<string, string>,
+  ) =>
+    invoke<string[]>("conversation_prompt_completion", { conversationId, server, name, argument, value, context }),
   mcpOauthStart: (id: string) => invoke<OAuthStart>("mcp_oauth_start", { id }),
   mcpOauthFinish: (id: string) => invoke<OAuthStatus>("mcp_oauth_finish", { id }),
   mcpOauthCancel: (id: string) => invoke<void>("mcp_oauth_cancel", { id }),

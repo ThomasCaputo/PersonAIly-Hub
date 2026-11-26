@@ -156,7 +156,9 @@ tool: "Allow everything in the folders" does not cover them.
 **`/` commands:** if the conversation's servers offer prompts (ready-made texts, sometimes with
 arguments), type `/` at the start of the message: the list appears and narrows as you type.
 Choose with the arrows and Enter (or a click), fill in any arguments, and the prompt's text
-lands in the message box, to review and send.
+lands in the message box, to review and send. If the server can suggest values for an argument,
+a list appears under its box as you type: pick one with the arrows and Enter (or a click), or keep
+typing.
 
 ## Skills
 

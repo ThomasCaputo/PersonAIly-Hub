@@ -350,10 +350,19 @@ pub struct McpPrompt {
     pub name: String,
     pub description: String,
     pub arguments: Vec<McpPromptArg>,
+    /// Il server sa suggerire i valori degli argomenti (`completion/complete`).
+    pub completions: bool,
 }
 
 /// Caratteri massimi del testo di un prompt.
 const PROMPT_CHARS: usize = 30_000;
+
+/// Suggerimenti al massimo per un argomento (il protocollo ne ammette 100).
+const MAX_COMPLETIONS: usize = 50;
+/// Caratteri massimi di un suggerimento: oltre non è più un valore da scegliere.
+const COMPLETION_CHARS: usize = 500;
+/// I suggerimenti servono mentre si scrive: un server lento si salta.
+const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Uno strumento dichiarato da un server, per l'interfaccia.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -409,6 +418,8 @@ pub struct McpClient {
     resources: bool,
     /// Il server offre dei prompt (`prompts/list`, `prompts/get`).
     prompts: bool,
+    /// Il server suggerisce i valori degli argomenti (`completion/complete`).
+    completions: bool,
 }
 
 impl McpClient {
@@ -439,6 +450,7 @@ impl McpClient {
             next_id: 1,
             resources: false,
             prompts: false,
+            completions: false,
         };
         let result = client
             .request(
@@ -453,6 +465,7 @@ impl McpClient {
             .await?;
         client.resources = result.pointer("/capabilities/resources").is_some();
         client.prompts = result.pointer("/capabilities/prompts").is_some();
+        client.completions = result.pointer("/capabilities/completions").is_some();
         if let Link::Http(http) = &mut client.link {
             http.protocol = Some(
                 result
@@ -872,6 +885,29 @@ impl McpClient {
         Ok(prompt_text(&result))
     }
 
+    /// I valori suggeriti per un argomento di un prompt, dato ciò che l'utente
+    /// ha già scritto (`value`) e gli altri argomenti compilati (`context`).
+    async fn complete_prompt_arg(
+        &mut self,
+        prompt: &str,
+        argument: &str,
+        value: &str,
+        context: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<String>> {
+        let result = self
+            .request(
+                "completion/complete",
+                json!({
+                    "ref": { "type": "ref/prompt", "name": prompt },
+                    "argument": { "name": argument, "value": value },
+                    "context": { "arguments": context },
+                }),
+                COMPLETION_TIMEOUT,
+            )
+            .await?;
+        Ok(completion_values(&result))
+    }
+
     async fn list_resources(&mut self) -> Result<ToolOutput> {
         let mut lines = Vec::new();
         let mut cursor: Option<String> = None;
@@ -1078,6 +1114,31 @@ fn prompt_text(result: &Value) -> String {
         text = text.chars().take(PROMPT_CHARS).collect();
     }
     text
+}
+
+/// I valori di una risposta a `completion/complete`: solo testi non vuoti, senza
+/// doppioni, al massimo [`MAX_COMPLETIONS`] e ciascuno non oltre [`COMPLETION_CHARS`].
+fn completion_values(result: &Value) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    for value in result
+        .pointer("/completion/values")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if value.is_empty()
+            || value.chars().count() > COMPLETION_CHARS
+            || values.iter().any(|v| v == value)
+        {
+            continue;
+        }
+        values.push(value.to_string());
+        if values.len() == MAX_COMPLETIONS {
+            break;
+        }
+    }
+    values
 }
 
 fn next_cursor(result: &Value) -> Option<String> {
@@ -1348,6 +1409,7 @@ impl McpSet {
                                 name,
                                 description,
                                 arguments,
+                                completions: client.completions,
                             }),
                     )
                 }
@@ -1369,6 +1431,32 @@ impl McpSet {
             .get(server)
             .ok_or_else(|| Error::msg("Il server di questo prompt non è più attivo."))?;
         client.lock().await.get_prompt(name, arguments).await
+    }
+
+    /// I valori suggeriti per un argomento di un prompt (vuoti se il server non
+    /// li offre). Se il server è occupato, per esempio da uno strumento lungo,
+    /// non si aspetta: i suggerimenti servono solo mentre si scrive.
+    pub async fn complete_prompt_arg(
+        &self,
+        server: usize,
+        prompt: &str,
+        argument: &str,
+        value: &str,
+        context: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<String>> {
+        let client = self
+            .clients
+            .get(server)
+            .ok_or_else(|| Error::msg("Il server di questo prompt non è più attivo."))?;
+        let Ok(mut client) = tokio::time::timeout(COMPLETION_TIMEOUT, client.lock()).await else {
+            return Ok(Vec::new());
+        };
+        if !client.completions {
+            return Ok(Vec::new());
+        }
+        client
+            .complete_prompt_arg(prompt, argument, value, context)
+            .await
     }
 
     /// `true` se tutti i server stdio sono ancora in esecuzione. Un server al
@@ -1792,7 +1880,7 @@ while ($true) {
                     }
                     ("initialize", _) => json_reply(json!({
                         "protocolVersion": "2025-06-18",
-                        "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                        "capabilities": {"tools": {}, "resources": {}, "prompts": {}, "completions": {}},
                         "serverInfo": {"name": "finto", "version": "1"}
                     })),
                     ("notifications/initialized", _) => {
@@ -1838,6 +1926,27 @@ while ($true) {
                             {"role": "user", "content": {"type": "resource", "resource": {"uri": "doc://regole", "text": "Regole di stile"}}},
                             {"role": "user", "content": {"type": "image", "data": "AA==", "mimeType": "image/png"}}
                         ]}))
+                    }
+                    ("completion/complete", _) => {
+                        // Rimanda indietro ciò che ha ricevuto, più valori da scartare.
+                        let get = |pointer: &str| {
+                            message
+                                .pointer(pointer)
+                                .and_then(Value::as_str)
+                                .unwrap_or("?")
+                                .to_string()
+                        };
+                        let echo = format!(
+                            "{}|{}|{}|{}",
+                            get("/params/ref/type"),
+                            get("/params/ref/name"),
+                            get("/params/argument/name"),
+                            get("/params/argument/value")
+                        );
+                        let context = get("/params/context/arguments/lingua");
+                        json_reply(json!({"completion": {"values": [
+                            echo, context, "formale", "formale", "", "x".repeat(COMPLETION_CHARS + 1), 7
+                        ], "hasMore": false}}))
                     }
                     _ => json_reply(json!({})),
                 };
@@ -1937,6 +2046,45 @@ while ($true) {
             "Rivedi con tono formale.\n\n[assistente] Certo.\n\nRegole di stile\n\n[immagine]"
         );
         assert!(set.get_prompt(5, "revisione", &arguments).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn il_server_suggerisce_i_valori_degli_argomenti() {
+        let (url, _) = fake_http_server();
+        let config = McpServerConfig {
+            name: "Remoto".into(),
+            transport: Transport::Http,
+            url,
+            ..Default::default()
+        };
+        let set = McpSet::start(std::slice::from_ref(&config), None)
+            .await
+            .unwrap();
+        assert!(set.prompts().await.iter().all(|p| p.completions));
+        let context = [("lingua".to_string(), "italiano".to_string())].into();
+        let values = set
+            .complete_prompt_arg(0, "revisione", "tono", "for", &context)
+            .await
+            .unwrap();
+        // Niente doppioni, vuoti, testi troppo lunghi o valori che non sono testo.
+        assert_eq!(
+            values,
+            ["ref/prompt|revisione|tono|for", "italiano", "formale"]
+        );
+        assert!(
+            set.complete_prompt_arg(5, "revisione", "tono", "", &context)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn i_suggerimenti_sono_al_massimo_cinquanta() {
+        let values: Vec<String> = (0..200).map(|i| format!("v{i}")).collect();
+        let list = completion_values(&json!({"completion": {"values": values}}));
+        assert_eq!(list.len(), MAX_COMPLETIONS);
+        assert_eq!(list[0], "v0");
+        assert!(completion_values(&json!({})).is_empty());
     }
 
     #[tokio::test]

@@ -523,6 +523,22 @@ async fn conversation_prompt(
         .map_err(text)
 }
 
+/// I valori suggeriti per un argomento di un prompt MCP, mentre lo si compila.
+#[tauri::command]
+async fn conversation_prompt_completion(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    server: usize,
+    name: String,
+    argument: String,
+    value: String,
+    context: std::collections::HashMap<String, String>,
+) -> CmdResult<Vec<String>> {
+    core.conversation_prompt_completion(conversation_id, server, &name, &argument, &value, &context)
+        .await
+        .map_err(text)
+}
+
 /// Prepara l'accesso OAuth a un server salvato: la pagina da aprire nel browser.
 #[tauri::command]
 async fn mcp_oauth_start(core: CoreState<'_>, id: String) -> CmdResult<LoginStart> {
@@ -1326,6 +1342,7 @@ pub fn run() {
             probe_mcp_server,
             conversation_prompts,
             conversation_prompt,
+            conversation_prompt_completion,
             list_plugins,
             import_plugin,
             uninstall_plugin,

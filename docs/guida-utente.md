@@ -160,7 +160,9 @@ quello strumento: «Consenti tutto nelle cartelle» non li copre.
 **Comandi `/`:** se i server della conversazione offrono dei prompt (testi pronti, a volte con
 argomenti), scrivi `/` all'inizio del messaggio: compare l'elenco, che si restringe mentre
 scrivi. Scegli con le frecce e Invio (o con un clic), compila gli eventuali argomenti e il
-testo del prompt finisce nella casella del messaggio, da rivedere e inviare.
+testo del prompt finisce nella casella del messaggio, da rivedere e inviare. Se il server sa
+suggerire i valori di un argomento, mentre scrivi compare un elenco sotto la casella: scegli con
+le frecce e Invio (o con un clic), oppure continua a scrivere.
 
 ## Skill
 
