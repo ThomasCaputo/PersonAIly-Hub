@@ -5,7 +5,7 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
-## [1.3.1] — 2026-11-26
+## [1.3.2] — 2026-11-26
 
 ### Added
 - **Fallback models:** a queue of cloud models to try, in order, when the chosen one returns an
@@ -185,8 +185,8 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
-[1.3.1]: https://github.com/ThomasCaputo/personaily-hub/compare/1.3.0...v1.3.1
-[1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.0
+[1.3.2]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.2
+[1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...ed79438
 [1.2.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.1
 [1.0.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ThomasCaputo/personaily-hub/releases/tag/v0.1.0
