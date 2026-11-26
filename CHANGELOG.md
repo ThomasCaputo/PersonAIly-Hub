@@ -5,6 +5,8 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-11-26
+
 ### Added
 - **Fallback models:** a queue of cloud models to try, in order, when the chosen one returns an
   error (busy, too many requests, credit used up…). Settings → Fallback models holds the default
@@ -14,6 +16,10 @@ The section of each version is also used as the release notes shown by the in-ap
   failing model had already written is discarded. A note above the reply says which model
   answered instead of which, and every message shows the name of its model. Model comparison
   keeps using exactly the models you picked.
+
+### Security
+- Updated the `cookie` library used by Tauri to 0.18.3, which fixes RUSTSEC-2026-0594 (private
+  cookie nonces could repeat in processes that fork).
 
 ## [1.3.0] — 2026-11-26
 
@@ -179,6 +185,7 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.3.1]: https://github.com/ThomasCaputo/personaily-hub/compare/1.3.0...v1.3.1
 [1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.1
 [1.0.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v0.1.0...v1.0.0
