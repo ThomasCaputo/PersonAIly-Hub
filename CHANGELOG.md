@@ -3,7 +3,7 @@
 All notable changes to PersonAIly Hub. Versions follow [Semantic Versioning](https://semver.org).
 The section of each version is also used as the release notes shown by the in-app updater.
 
-## [Unreleased]
+## [1.4.2] — 2026-11-27
 
 ### Changed
 - **New look:** the interface takes the colours of the app icon (pine green and glacier blue)
@@ -249,6 +249,7 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.4.2]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.3.2...v1.4.1
 [1.4.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.2

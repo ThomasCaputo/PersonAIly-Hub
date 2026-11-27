@@ -2,7 +2,7 @@
   "name": "personaily-hub-vscode",
   "displayName": "PersonAIly Hub",
   "description": "%description%",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "publisher": "personaily",
   "private": true,
   "license": "Apache-2.0",
