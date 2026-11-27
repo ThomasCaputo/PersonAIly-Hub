@@ -367,7 +367,10 @@ impl Core {
             }
             running.insert(conversation_id, control.clone());
         }
-        self.note_local_activity();
+        let _use = match &target {
+            Target::Local(loaded) => self.begin_local_use(&loaded.model_path, true),
+            Target::Cloud(..) => None,
+        };
         // Libera la conversazione a qualunque uscita, errori compresi.
         let _running = Running {
             core: self,

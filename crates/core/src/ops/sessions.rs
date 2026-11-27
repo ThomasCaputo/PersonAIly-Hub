@@ -373,9 +373,6 @@ Ultima risposta:
         live: &Arc<LiveSession>,
     ) -> Result<SendOutcome> {
         let session = self.store().session(id)?;
-        if !session.unattended {
-            self.note_local_activity();
-        }
         let agent = session.definition.clone().ok_or_else(|| {
             Error::msg("La definizione dell'agente di questa sessione è illeggibile.")
         })?;
@@ -390,6 +387,12 @@ Ultima risposta:
             )));
         }
         let target = self.target(&agent.model)?;
+        // Una sessione avviata dall'utente tiene caricato il modello che una
+        // pianificazione voleva scaricare; una pianificata no (ADR 0028).
+        let _use = match &target {
+            Target::Local(loaded) => self.begin_local_use(&loaded.model_path, !session.unattended),
+            Target::Cloud(..) => None,
+        };
         let sampling = self.preset(&target.preset_key())?.sampling;
         let reads_images = target.reads_images();
 

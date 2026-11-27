@@ -112,6 +112,21 @@ impl Core {
         list
     }
 
+    /// Il motore del modello `path`, se c'è.
+    pub(crate) fn engine_for(&self, path: &str) -> Option<Arc<Engine>> {
+        self.find_engine(&local::pool::key(path))
+    }
+
+    /// Segna che un lavoro usa il modello locale `model_path` finché il
+    /// segno vive (vedi [`Engine::begin_use`]).
+    pub(crate) fn begin_local_use(
+        &self,
+        model_path: &str,
+        attended: bool,
+    ) -> Option<local::pool::EngineUse> {
+        self.engine_for(model_path).map(|e| e.begin_use(attended))
+    }
+
     fn find_engine(&self, key: &str) -> Option<Arc<Engine>> {
         self.engines
             .lock()
@@ -509,6 +524,9 @@ impl Core {
     /// `Some(true)` se l'ha caricato, `Some(false)` se c'era già, `None` se
     /// non c'è posto o un solo modello alla volta non lo permette.
     pub(crate) async fn load_alongside(&self, path: &str) -> Result<Option<bool>> {
+        // Due caricamenti insieme misurerebbero la stessa memoria libera e
+        // potrebbero entrare tutti e due solo sulla carta: uno alla volta.
+        let _loading = self.loading_alongside.lock().await;
         let key = local::pool::key(path);
         // Un altro (per esempio un aiutante in parallelo) lo sta già caricando.
         if let Some(engine) = self.find_engine(&key) {
@@ -645,8 +663,8 @@ impl Core {
     /// modello addestrato al "fill-in-the-middle", come Qwen2.5-Coder. Nulla
     /// si salva: se il client chiude la richiesta, la generazione si ferma.
     pub async fn infill(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String> {
-        self.note_local_activity();
         let loaded = self.local_model(None)?;
+        let _use = self.begin_local_use(&loaded.model_path, true);
         let body = serde_json::json!({
             "input_prefix": prefix,
             "input_suffix": suffix,

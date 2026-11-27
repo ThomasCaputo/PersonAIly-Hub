@@ -441,13 +441,13 @@ pub struct Core {
     oauth_logins: Mutex<HashMap<String, ops::mcp_oauth::LoginSlot>>,
     /// Le pianificazioni in coda o al lavoro (ADR 0028).
     schedules_running: Mutex<HashSet<i64>>,
-    /// Le esecuzioni pianificate vanno una alla volta: chi aspetta il turno
-    /// aspetta questo lucchetto, che serve nell'ordine di arrivo.
-    schedule_turn: tokio::sync::Mutex<()>,
-    /// Cresce ogni volta che qualcuno che non è una sessione pianificata usa
-    /// il modello locale: a lavoro finito, il modello caricato da una
-    /// pianificazione si scarica solo se nessun altro l'ha usato.
-    local_activity: std::sync::atomic::AtomicU64,
+    /// I turni delle esecuzioni pianificate, uno per modello: quelle sullo
+    /// stesso modello vanno una alla volta, nell'ordine di arrivo; quelle su
+    /// modelli diversi lavorano insieme (ADR 0029).
+    schedule_turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Un caricamento "accanto agli altri" alla volta: due insieme
+    /// misurerebbero la stessa memoria libera.
+    loading_alongside: tokio::sync::Mutex<()>,
     /// Esiti delle esecuzioni pianificate, per le notifiche dell'app.
     schedule_events: tokio::sync::broadcast::Sender<schedules::ScheduleEvent>,
 }
@@ -695,8 +695,8 @@ impl Core {
             chat_mcp: Mutex::new(HashMap::new()),
             oauth_logins: Mutex::new(HashMap::new()),
             schedules_running: Mutex::new(HashSet::new()),
-            schedule_turn: tokio::sync::Mutex::new(()),
-            local_activity: std::sync::atomic::AtomicU64::new(0),
+            schedule_turns: Mutex::new(HashMap::new()),
+            loading_alongside: tokio::sync::Mutex::new(()),
             schedule_events: tokio::sync::broadcast::channel(32).0,
         })
     }

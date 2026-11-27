@@ -29,6 +29,11 @@ The section of each version is also used as the release notes shown by the in-ap
   away. A run missed while the app was closed or the PC off is done once when the app is back,
   or skipped. New "Start with Windows" option: the app starts in the notification area when you
   sign in. Local API: `/api/schedules`.
+- **Schedules and several local models:** schedules due together now run at the same time when
+  they use different models (or a cloud model); only those on the same local model still take
+  turns. A model loaded by a schedule is unloaded at the end unless someone used *that* model
+  meanwhile: chatting with another model no longer keeps it loaded. "Replace it" frees room only
+  among the models nobody is using at that moment.
 
 ## [1.3.2] — 2026-11-26
 

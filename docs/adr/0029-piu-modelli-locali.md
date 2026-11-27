@@ -91,6 +91,17 @@ scaricamento per inattività, il completamento in linea e le pianificazioni
   valgono "Aspetta" e "Sostituiscilo"; "Sostituiscilo" scarica il modello inattivo da più
   tempo, mai il principale se ce n'è un altro, e mai uno al lavoro. A lavoro finito si
   scarica solo il modello caricato dalla pianificazione, con le regole di oggi.
+- **Pianificazioni in parallelo** (aggiunto il 27-11-2026): quelle dovute insieme
+  lavorano insieme se usano modelli diversi; si danno il turno solo quelle sullo stesso
+  modello locale (un turno per file GGUF, nell'ordine di arrivo), e quelle con un modello
+  cloud non aspettano nessuno. I caricamenti "accanto agli altri" (pianificazioni, agenti,
+  deleghe) vanno uno alla volta, perché due insieme misurerebbero la stessa memoria libera.
+- **Chi usa un modello si conta per modello:** ogni motore sa quanti lavori ha in corso
+  (risposte in chat, sessioni, completamenti in linea) e quante volte l'ha usato qualcuno
+  che non è una pianificazione. A fine esecuzione il modello caricato dalla pianificazione
+  si scarica se è ancora lo stesso motore, nessuno lo sta usando e nessun altro l'ha usato:
+  chi lavora con un altro modello, locale o cloud, non lo tiene più caricato. "Sostituiscilo"
+  aspetta solo se è al lavoro uno dei modelli da scaricare, non una chat su un altro modello.
 
 ### Stato e interfaccia
 

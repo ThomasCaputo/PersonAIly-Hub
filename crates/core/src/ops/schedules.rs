@@ -2,7 +2,6 @@
 //! quelle dovute, preparare il modello locale, eseguire la sessione senza
 //! sorveglianza e poi scaricare il modello, se l'aveva caricato la pianificazione.
 
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
@@ -19,12 +18,6 @@ const ENGINE_POLL: Duration = Duration::from_secs(30);
 /// Caratteri del resoconto mostrati nella notifica.
 const SUMMARY_CHARS: usize = 200;
 
-/// Due percorsi dello stesso file, su Windows dove maiuscole e barre non contano.
-fn same_path(a: &str, b: &str) -> bool {
-    let norm = |p: &str| p.replace('/', "\\").to_lowercase();
-    norm(a) == norm(b)
-}
-
 /// Il motore locale pronto per l'esecuzione, oppure il motivo per saltarla.
 enum Prepared {
     /// `true` se il modello l'ha caricato la pianificazione: a fine lavoro si scarica.
@@ -39,11 +32,38 @@ struct Finished {
     session_id: Option<i64>,
 }
 
+/// Il turno di una pianificazione: quelle con lo stesso modello locale lo
+/// condividono, una con un modello cloud non aspetta nessuno.
+fn turn_key(schedule: &Schedule, agent: &Agent) -> Option<String> {
+    match &agent.model {
+        ModelRef::Local { .. } => Some(local::pool::key(
+            schedule.local_model.as_deref().unwrap_or_default(),
+        )),
+        ModelRef::Cloud { .. } => None,
+    }
+}
+
 impl Core {
-    /// Qualcuno che non è una sessione pianificata sta usando (o sta per
-    /// usare) il modello locale.
-    pub(crate) fn note_local_activity(&self) {
-        self.local_activity.fetch_add(1, Ordering::Relaxed);
+    /// Il lucchetto del turno `key`, creato se manca.
+    fn schedule_turn(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.schedule_turns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Toglie il turno `key` se nessuno lo usa o lo aspetta più.
+    fn release_schedule_turn(&self, key: &str, turn: Arc<tokio::sync::Mutex<()>>) {
+        let mut turns = self
+            .schedule_turns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Uno è nell'elenco, l'altro è `turn`.
+        if Arc::strong_count(&turn) <= 2 {
+            turns.remove(key);
+        }
     }
 
     /// Le pianificazioni, dalla prossima a partire.
@@ -204,14 +224,18 @@ impl Core {
 
     /// Esegue una pianificazione già segnata come in coda, quando arriva il suo turno.
     async fn execute_schedule(self: Arc<Self>, id: i64) {
-        let turn = self.schedule_turn.lock().await;
-        // Un lucchetto dell'archivio alla volta: niente chiamate annidate.
-        let schedule = self.store().schedule(id);
-        let agent = schedule
-            .as_ref()
-            .ok()
-            .map(|s| self.store().agent(s.agent_id));
-        if let (Ok(schedule), Some(Ok(agent))) = (schedule, agent) {
+        // Quelle sullo stesso modello locale vanno una alla volta, così non si
+        // contendono il suo `llama-server`; con modelli diversi lavorano insieme.
+        let key = self
+            .schedule_and_agent(id)
+            .and_then(|(s, a)| turn_key(&s, &a));
+        let turn = key.as_deref().map(|k| self.schedule_turn(k));
+        let guard = match &turn {
+            Some(turn) => Some(turn.lock().await),
+            None => None,
+        };
+        // Riletta dopo l'attesa: nel frattempo può essere cambiata.
+        if let Some((schedule, agent)) = self.schedule_and_agent(id) {
             log::info(format!(
                 "pianificazione {id}: parte il lavoro di {}",
                 agent.name
@@ -229,11 +253,22 @@ impl Core {
             };
             self.finish_schedule(&schedule, finished);
         }
-        drop(turn);
+        drop(guard);
+        if let (Some(key), Some(turn)) = (key, turn) {
+            self.release_schedule_turn(&key, turn);
+        }
         self.schedules_running
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id);
+    }
+
+    /// La pianificazione e il suo agente, se ci sono ancora. Un lucchetto
+    /// dell'archivio alla volta: niente chiamate annidate.
+    fn schedule_and_agent(&self, id: i64) -> Option<(Schedule, Agent)> {
+        let schedule = self.store().schedule(id).ok()?;
+        let agent = self.store().agent(schedule.agent_id).ok()?;
+        Some((schedule, agent))
     }
 
     async fn execute(&self, schedule: &Schedule, agent: &Agent) -> Result<Finished> {
@@ -250,8 +285,12 @@ impl Core {
             };
             match self.prepare_local(&path, schedule.on_conflict).await? {
                 Prepared::Ready(loaded_here) => {
-                    if loaded_here {
-                        ours = Some(path);
+                    // Il motore e quante volte l'hanno usato gli altri finora:
+                    // a lavoro finito si scarica solo se è ancora lui e nessun
+                    // altro l'ha toccato.
+                    if loaded_here && let Some(engine) = self.engine_for(&path) {
+                        let uses = engine.attended_uses();
+                        ours = Some((path, engine, uses));
                     }
                 }
                 Prepared::Skip(note) => {
@@ -263,8 +302,6 @@ impl Core {
                 }
             }
         }
-        let activity = self.local_activity.load(Ordering::Relaxed);
-
         let when = local_label(Timestamp::now(), &TimeZone::system());
         let header = if self.language().ok().flatten().as_deref() == Some("en") {
             format!("Scheduled run, {when}.")
@@ -292,8 +329,8 @@ impl Core {
             }
         };
 
-        if let Some(path) = ours {
-            self.unload_if_unused(&path, activity).await;
+        if let Some((path, engine, uses)) = ours {
+            self.unload_if_unused(&path, &engine, uses).await;
         }
 
         let session = self.store().session(session_id)?;
@@ -330,9 +367,7 @@ impl Core {
                 if let Some(loaded_here) = self.load_alongside(path).await? {
                     return Ok(Prepared::Ready(loaded_here));
                 }
-                if on_conflict == OnConflict::Replace && !self.is_busy() {
-                    log::info("pianificazione: faccio posto al suo modello");
-                    self.make_room_for(path).await?;
+                if on_conflict == OnConflict::Replace && self.make_room_for(path).await? {
                     return Ok(Prepared::Ready(true));
                 }
             }
@@ -352,8 +387,21 @@ impl Core {
 
     /// Scarica altri modelli finché `path` non entra, poi lo carica: prima i
     /// modelli inattivi da più tempo, il principale per ultimo. Con un solo
-    /// modello alla volta, semplicemente lo sostituisce.
-    async fn make_room_for(&self, path: &str) -> Result<()> {
+    /// modello alla volta, semplicemente lo sostituisce. `false`, senza
+    /// toccare niente, se un modello da scaricare sta lavorando: non si
+    /// interrompe mai un lavoro in corso. Chi lavora su un modello cloud non
+    /// conta.
+    async fn make_room_for(&self, path: &str) -> Result<bool> {
+        let _loading = self.loading_alongside.lock().await;
+        let key = local::pool::key(path);
+        if self
+            .engine_list()
+            .iter()
+            .any(|e| e.key != key && (e.in_use() || e.is_busy()))
+        {
+            return Ok(false);
+        }
+        log::info("pianificazione: faccio posto al suo modello");
         let params = self.preset(path)?.load;
         let options = LoadOptions {
             make_primary: false,
@@ -363,7 +411,11 @@ impl Core {
             let primary = self
                 .primary_model()
                 .map(|m| local::pool::key(&m.model_path));
-            let mut candidates = self.engine_list();
+            let mut candidates: Vec<_> = self
+                .engine_list()
+                .into_iter()
+                .filter(|e| e.key != key)
+                .collect();
             candidates.sort_by_key(|e| {
                 (
                     primary.as_deref() == Some(e.key.as_str()),
@@ -395,23 +447,21 @@ impl Core {
             )
             .await?;
         }
-        Ok(())
+        Ok(true)
     }
 
-    /// Scarica il modello caricato dalla pianificazione, se c'è ancora e nel
-    /// frattempo nessun altro ha lavorato.
-    async fn unload_if_unused(&self, path: &str, activity: u64) {
-        if self.local_activity.load(Ordering::Relaxed) != activity || self.is_busy() {
+    /// Scarica il modello caricato dalla pianificazione, se è ancora quello
+    /// (`engine`), nessuno lo sta usando e nel frattempo nessun altro ci ha
+    /// lavorato. Chi usa altri modelli, locali o cloud, non conta.
+    async fn unload_if_unused(&self, path: &str, engine: &Arc<Engine>, uses: u64) {
+        let same = self
+            .engine_for(path)
+            .is_some_and(|current| Arc::ptr_eq(&current, engine));
+        if !same || engine.in_use() || engine.attended_uses() != uses {
             return;
         }
-        if self
-            .loaded_models()
-            .iter()
-            .any(|m| same_path(&m.model_path, path))
-        {
-            log::info("pianificazione finita: scarico il modello che aveva caricato");
-            self.unload_local(path).await;
-        }
+        log::info("pianificazione finita: scarico il modello che aveva caricato");
+        self.unload_local(path).await;
     }
 
     /// Annota l'esito e lo manda a chi mostra le notifiche.
@@ -479,5 +529,43 @@ impl Core {
             refused,
             notify,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local_schedule(path: &str) -> Schedule {
+        Schedule {
+            local_model: Some(path.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn il_turno_e_uno_per_modello() {
+        let local = Agent::default();
+        let qwen = turn_key(&local_schedule(r"C:\Modelli\Qwen.gguf"), &local);
+        let gemma = turn_key(&local_schedule(r"C:\Modelli\Gemma.gguf"), &local);
+        // Modelli diversi: turni diversi, lavorano insieme.
+        assert!(qwen.is_some() && gemma.is_some());
+        assert_ne!(qwen, gemma);
+        // Lo stesso file scritto in un altro modo: stesso turno, uno alla volta.
+        if cfg!(windows) {
+            assert_eq!(
+                qwen,
+                turn_key(&local_schedule("c:/modelli/qwen.gguf"), &local)
+            );
+        }
+        // Un modello cloud non aspetta nessuno.
+        let cloud = Agent {
+            model: ModelRef::Cloud {
+                provider_id: "p".into(),
+                model: "m".into(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(turn_key(&Schedule::default(), &cloud), None);
     }
 }

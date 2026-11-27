@@ -73,7 +73,8 @@ tutto, o il PC spento, proprio all'ora stabilita.
   dall'utente. Se qualcuno l'ha usato, resta caricato e ci pensa lo scaricamento per
   inattività già esistente. Il nucleo lo sa da un contatore che cresce a ogni uso di
   questo tipo.
-- Le pianificazioni dovute insieme partono **una alla volta**, in ordine di orario:
+- (Superato dall'[ADR 0029](0029-piu-modelli-locali.md): ora vanno una alla volta solo
+  quelle sullo stesso modello locale.) Le pianificazioni dovute insieme partono **una alla volta**, in ordine di orario:
   così non si contendono il motore e i caricamenti non si accavallano. Una pianificazione
   il cui lavoro precedente è ancora in corso **salta** quel turno invece di partire due
   volte.
@@ -166,7 +167,7 @@ tutto, o il PC spento, proprio all'ora stabilita.
 | Usare "il modello caricato" anche per le pianificazioni | All'ora stabilita può esserci qualunque cosa, o niente: lo stesso compito darebbe risultati diversi a seconda di cosa l'utente stava facendo |
 | Sostituire sempre il modello dell'utente | L'utente che torna al PC troverebbe un altro modello senza averlo chiesto; per questo "Aspetta" è la scelta predefinita |
 | Espressioni cron nell'interfaccia | Facili da sbagliare e poco leggibili; le ricorrenze proposte coprono l'uso normale |
-| Pianificazioni in parallelo | Con un solo motore locale si alternerebbero comunque, e i caricamenti di modelli diversi si annullerebbero a vicenda. Si potrà rivedere con più modelli caricati insieme |
+| Pianificazioni in parallelo | Con un solo motore locale si alternerebbero comunque, e i caricamenti di modelli diversi si annullerebbero a vicenda. Rivisto con più modelli caricati insieme: ora quelle su modelli diversi lavorano insieme ([ADR 0029](0029-piu-modelli-locali.md)) |
 
 ## Conseguenze
 
