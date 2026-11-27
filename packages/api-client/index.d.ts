@@ -300,7 +300,11 @@ attachments?: Array<string>, model: ModelRef,
 /**
  * Assenti: si usano quelli del preset del modello.
  */
-sampling?: SamplingParams, systemPrompt?: string, };
+sampling?: SamplingParams, 
+/**
+ * Assente: quello della conversazione (vuoto se non ne ha).
+ */
+systemPrompt?: string, };
 
 export type BranchBody = { 
 /**

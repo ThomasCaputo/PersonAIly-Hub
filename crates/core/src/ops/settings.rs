@@ -99,6 +99,27 @@ impl Core {
             .set_conversation_tools(conversation_id, &serde_json::to_string(&settings)?)
     }
 
+    /// Modello e prompt di sistema di una conversazione: si ritrovano
+    /// riaprendola. Senza modello salvato (conversazione vecchia o appena
+    /// creata) decide l'interfaccia.
+    pub fn conversation_setup(&self, conversation_id: i64) -> Result<ConversationSetup> {
+        let (model, system_prompt) = self.store().conversation_setup(conversation_id)?;
+        Ok(ConversationSetup {
+            model: model.and_then(|json| serde_json::from_str(&json).ok()),
+            system_prompt: system_prompt.unwrap_or_default(),
+        })
+    }
+
+    pub fn set_conversation_model(&self, conversation_id: i64, model: &ModelRef) -> Result<()> {
+        self.store()
+            .set_conversation_model(conversation_id, &serde_json::to_string(model)?)
+    }
+
+    pub fn set_conversation_system_prompt(&self, conversation_id: i64, prompt: &str) -> Result<()> {
+        self.store()
+            .set_conversation_system_prompt(conversation_id, prompt)
+    }
+
     /// Lingua dell'interfaccia scelta dall'utente (`it`, `en`); `None` finché
     /// non sceglie: l'interfaccia segue allora quella del sistema.
     pub fn language(&self) -> Result<Option<String>> {

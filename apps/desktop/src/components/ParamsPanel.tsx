@@ -11,6 +11,9 @@ type Props = {
   /** Parametri accettati dal modello; `null` = tutti (modello locale). */
   supported: string[] | null;
   onChange: (preset: Preset) => void;
+  /** Il prompt di sistema è della conversazione, non del modello. */
+  systemPrompt: string;
+  onSystemPromptChange: (prompt: string) => void;
   onOpenModels: () => void;
 };
 
@@ -47,7 +50,15 @@ const SLIDERS: SliderDef[] = [
 
 const KV_LABEL = { q8_0: "q8_0", f16: "f16", q4_0: "q4_0" } as const;
 
-export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels }: Props) {
+export function ParamsPanel({
+  preset,
+  loaded,
+  supported,
+  onChange,
+  systemPrompt,
+  onSystemPromptChange,
+  onOpenModels,
+}: Props) {
   const shows = (param: string) => supported === null || supported.includes(param);
 
   // Testo così come lo scrive l'utente: ricavarlo dall'elenco gli impedirebbe
@@ -64,9 +75,11 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
 
       <NamedPresets
         preset={preset}
+        systemPrompt={systemPrompt}
         onApply={(named) => {
           setStopText(named.sampling.stop.join(", "));
-          onChange({ ...preset, sampling: named.sampling, systemPrompt: named.systemPrompt });
+          onChange({ ...preset, sampling: named.sampling });
+          onSystemPromptChange(named.systemPrompt);
         }}
       />
 
@@ -75,9 +88,9 @@ export function ParamsPanel({ preset, loaded, supported, onChange, onOpenModels 
         <textarea
           id="system-prompt"
           rows={4}
-          value={preset.systemPrompt}
-          placeholder={t("Istruzioni sempre valide per questo modello")}
-          onChange={(e) => onChange({ ...preset, systemPrompt: e.target.value })}
+          value={systemPrompt}
+          placeholder={t("Istruzioni per questa conversazione")}
+          onChange={(e) => onSystemPromptChange(e.target.value)}
         />
       </div>
 

@@ -108,8 +108,10 @@ OpenRouter, Groq, Mistral, Google AI Studio…). Paste the API key and press **R
 - **Tools** (above the messages): files in the granted folders, web search, documents. The
   permission level decides what the model may do without asking.
 - **Export** saves the conversation as Markdown (or JSON, with every branch).
-- The right-hand panel holds the parameters (temperature, top-p, context…) and the system
-  prompt, saved per model. Named presets can be exported and imported.
+- The right-hand panel holds the parameters (temperature, top-p, context…), saved per model,
+  and the system prompt, which belongs to the conversation instead: each one has its own and a
+  new one starts empty. The chosen model also stays with the conversation and comes back when
+  you reopen it. Named presets (parameters and prompt) can be exported and imported.
 - **Compare:** the page of that name sends the same message to two models side by side. Both conversations are temporary: "Save as conversation" (or "Save both") keeps them in the chat, the others are deleted with "New comparison" or when you close the app.
 
 ## Agents and permissions

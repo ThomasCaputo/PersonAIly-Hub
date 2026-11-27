@@ -352,6 +352,8 @@ impl Core {
     ) -> Result<SendOutcome> {
         // Prima si verifica di poter raggiungere il modello, poi si salva il messaggio.
         let target = self.target(model)?;
+        // Riaprendo la conversazione si ritrova il modello con cui si parlava.
+        self.set_conversation_model(conversation_id, model)?;
         // Anche il limite di spesa, prima di salvare: niente messaggi senza risposta.
         if matches!(target, Target::Cloud(..)) {
             self.check_spend(conversation_id)?;

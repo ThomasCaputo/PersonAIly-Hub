@@ -189,6 +189,12 @@ const MIGRATIONS: &[&str] = &[
         REFERENCES schedules(id) ON DELETE SET NULL;
     ALTER TABLE agent_sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
     ",
+    // 13 — ogni conversazione ricorda il modello scelto (ModelRef in JSON) e
+    //      il suo prompt di sistema, che prima valeva per tutto il modello
+    "
+    ALTER TABLE conversations ADD COLUMN model TEXT;
+    ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
+    ",
 ];
 
 /// Caratteri del risultato conservati nel registro delle azioni.
@@ -573,6 +579,36 @@ impl Store {
         self.conn.execute(
             "UPDATE conversations SET tools = ?2 WHERE id = ?1",
             params![id, tools_json],
+        )?;
+        Ok(())
+    }
+
+    /// Modello scelto (JSON) e prompt di sistema della conversazione; `None`
+    /// se mai impostati.
+    pub fn conversation_setup(&self, id: i64) -> Result<(Option<String>, Option<String>)> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT model, system_prompt FROM conversations WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((None, None)))
+    }
+
+    pub fn set_conversation_model(&self, id: i64, model_json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET model = ?2 WHERE id = ?1",
+            params![id, model_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_conversation_system_prompt(&self, id: i64, prompt: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET system_prompt = ?2 WHERE id = ?1",
+            params![id, prompt],
         )?;
         Ok(())
     }

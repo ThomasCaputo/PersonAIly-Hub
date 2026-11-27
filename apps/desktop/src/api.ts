@@ -135,6 +135,9 @@ export type LocalModelStatus = LoadedModel & {
 
 export type Conversation = { id: number; title: string; createdAt: string; updatedAt: string };
 
+/** Ciò che una conversazione ricorda oltre ai messaggi. */
+export type ConversationSetup = { model: ModelRef | null; systemPrompt: string };
+
 export type Message = {
   id: number;
   conversationId: number;
@@ -647,6 +650,11 @@ export const api = {
   toolDefaults: () => invoke<ToolSettings>("tool_defaults"),
   setToolDefaults: (settings: ToolSettings) => invoke<void>("set_tool_defaults", { settings }),
   conversationTools: (conversationId: number) => invoke<ToolSettings>("conversation_tools", { conversationId }),
+  conversationSetup: (conversationId: number) => invoke<ConversationSetup>("conversation_setup", { conversationId }),
+  setConversationModel: (conversationId: number, model: ModelRef) =>
+    invoke<void>("set_conversation_model", { conversationId, model }),
+  setConversationSystemPrompt: (conversationId: number, prompt: string) =>
+    invoke<void>("set_conversation_system_prompt", { conversationId, prompt }),
   setConversationTools: (conversationId: number, settings: ToolSettings) =>
     invoke<void>("set_conversation_tools", { conversationId, settings }),
 

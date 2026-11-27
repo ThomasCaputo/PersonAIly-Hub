@@ -12,6 +12,16 @@ The section of each version is also used as the release notes shown by the in-ap
   have an icon, the sidebar shows the real logo with a row of pines at the bottom, and an empty
   chat greets you with the logo.
 - The window opens larger: 1320 × 800 instead of 1100 × 720.
+- **The system prompt belongs to the conversation:** each chat keeps its own and a new chat
+  starts without one; before, it was saved per model, so it stayed the same in every chat with
+  that model and came back after being changed. Prompts saved with a model are no longer used
+  (Compare sends none; the local API uses the conversation's one when the request has none).
+
+### Fixed
+- Each conversation remembers its model: reopening it brings back the model it was using,
+  instead of whatever was chosen last. With several local models loaded, the parameters panel
+  and the context meter now follow the chosen model, not the primary one.
+- Emptying the Hugging Face search box also clears the results of the previous search.
 
 ## [1.4.1] — 2026-11-27
 

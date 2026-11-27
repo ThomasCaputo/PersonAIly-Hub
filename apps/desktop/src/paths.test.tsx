@@ -230,6 +230,62 @@ describe("chat", () => {
     await click(button("Vai ai modelli"));
     expect(openModels).toHaveBeenCalled();
   });
+
+  it("ogni conversazione ritrova il suo modello e il suo prompt di sistema", async () => {
+    const cloud = { kind: "cloud", providerId: "p", model: "m" };
+    const setups: Record<number, unknown> = {
+      1: { model: { kind: "local" }, systemPrompt: "Parla come un gatto" },
+      2: { model: cloud, systemPrompt: "" },
+    };
+    Object.assign(backend.handlers, {
+      list_conversations: () => [
+        { id: 1, title: "Gatto", createdAt: "", updatedAt: "" },
+        { id: 2, title: "Seria", createdAt: "", updatedAt: "" },
+      ],
+      get_messages: () => [],
+      conversation_tools: () => TOOLS,
+      tool_defaults: () => TOOLS,
+      conversation_setup: ({ conversationId }: Record<string, unknown>) =>
+        setups[Number(conversationId)] ?? { model: null, systemPrompt: "" },
+      create_conversation: () => ({ id: 3, title: "Nuova", createdAt: "", updatedAt: "" }),
+    });
+    const chosen: unknown[] = [];
+
+    await render(
+      <ChatArea
+        status={STATUS as never}
+        providers={[]}
+        activeModel={{ kind: "local" }}
+        onModelChange={(model) => chosen.push(model)}
+        preset={PRESET as never}
+        onPresetChange={() => {}}
+        onOpenModels={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    const prompt = () => container.querySelector<HTMLTextAreaElement>("#system-prompt")!;
+    // Si apre la conversazione più recente, con il suo prompt.
+    expect(prompt().value).toBe("Parla come un gatto");
+    expect(chosen.at(-1)).toEqual({ kind: "local" });
+
+    await click(button("Seria"));
+    expect(prompt().value).toBe("");
+    expect(chosen.at(-1)).toEqual(cloud);
+
+    await click(button("Gatto"));
+    expect(prompt().value).toBe("Parla come un gatto");
+
+    // Il prompt cambiato si salva nella conversazione aperta, non nel modello.
+    await type(prompt(), "Parla come un cane");
+    await settle(600);
+    expect(calls("set_conversation_system_prompt").at(-1)?.args).toEqual({ conversationId: 1, prompt: "Parla come un cane" });
+    expect(calls("save_preset")).toHaveLength(0);
+
+    // Una conversazione nuova parte senza prompt.
+    await click(button("Nuova conversazione"));
+    expect(prompt().value).toBe("");
+    expect(calls("set_conversation_model").at(-1)?.args).toEqual({ conversationId: 3, model: { kind: "local" } });
+  });
 });
 
 // ── Modelli ─────────────────────────────────────────────────────────────

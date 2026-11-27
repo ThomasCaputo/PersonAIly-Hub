@@ -454,7 +454,9 @@ export const EN: Record<string, string> = {
   "Parametri": "Parameters",
   "Valgono dal prossimo messaggio.": "They apply from the next message.",
   "Prompt di sistema": "System prompt",
-  "Istruzioni sempre valide per questo modello": "Instructions that always apply to this model",
+  "Istruzioni per questa conversazione": "Instructions for this conversation",
+  "{model} non è caricato: caricalo da Modelli o scegli un altro modello.":
+    "{model} is not loaded: load it from Models or choose another model.",
   "Token massimi per risposta": "Maximum tokens per reply",
   "Nessun limite": "No limit",
   "Predefinito": "Default",

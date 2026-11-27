@@ -363,6 +363,7 @@ pub(crate) struct SendBody {
     /// Assenti: si usano quelli del preset del modello.
     #[ts(optional)]
     sampling: Option<SamplingParams>,
+    /// Assente: quello della conversazione (vuoto se non ne ha).
     #[ts(optional)]
     system_prompt: Option<String>,
 }
@@ -382,9 +383,13 @@ async fn send_message(
     // come risposta HTTP e non a flusso già aperto.
     // Legge il preset e, per un modello cloud, la chiave dal portachiavi.
     let model = body.model.clone();
-    let preset = blocking(&state.core, move |core| core.preset_for(&model)).await?;
+    let (preset, setup) = blocking(&state.core, move |core| {
+        Ok((core.preset_for(&model)?, core.conversation_setup(id)?))
+    })
+    .await?;
     let sampling = body.sampling.unwrap_or(preset.sampling);
-    let system_prompt = body.system_prompt.unwrap_or(preset.system_prompt);
+    // Il prompt di sistema è della conversazione, come nell'app.
+    let system_prompt = body.system_prompt.unwrap_or(setup.system_prompt);
 
     let (tx, rx) = mpsc::unbounded_channel::<Outgoing>();
     let core = state.core.clone();

@@ -147,7 +147,7 @@ export function CompareArea({ status, providers }: Props) {
           api.answerToolRequest(event.id, "deny").catch(() => {});
         }
       };
-      const outcome = await api.sendMessage(id, text, [], preset.sampling, preset.systemPrompt, side.model, onEvent);
+      const outcome = await api.sendMessage(id, text, [], preset.sampling, "", side.model, onEvent);
       if (first) {
         // Nella cronologia si riconosce come confronto e si sa con chi.
         await api

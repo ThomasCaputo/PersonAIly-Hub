@@ -373,6 +373,16 @@ pub enum ModelRef {
     Cloud { provider_id: String, model: String },
 }
 
+/// Ciò che una conversazione ricorda oltre ai messaggi.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSetup {
+    /// Il modello scelto l'ultima volta; `None` per le conversazioni di prima.
+    pub model: Option<ModelRef>,
+    /// Il prompt di sistema della conversazione (vuoto se non c'è).
+    pub system_prompt: String,
+}
+
 /// Un provider con le informazioni che servono all'interfaccia.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]

@@ -56,18 +56,36 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
     return () => window.clearInterval(timer);
   }, [poll]);
 
+  // Ogni ricerca ha un numero: vale solo il risultato dell'ultima, così una
+  // risposta lenta non riempie l'elenco dopo che la casella è stata svuotata.
+  const searchSeq = useRef(0);
+
   const search = async () => {
     if (!query.trim()) return;
+    const seq = ++searchSeq.current;
     setSearching(true);
     setError(null);
     setOpenRepo(null);
     try {
-      setRepos(await api.searchHub(query));
+      const found = await api.searchHub(query);
+      if (seq === searchSeq.current) setRepos(found);
     } catch (e) {
-      setError(String(e));
+      if (seq === searchSeq.current) setError(String(e));
     } finally {
-      setSearching(false);
+      if (seq === searchSeq.current) setSearching(false);
     }
+  };
+
+  /** Svuotando la casella spariscono anche i risultati della ricerca di prima. */
+  const changeQuery = (value: string) => {
+    setQuery(value);
+    if (value.trim()) return;
+    searchSeq.current++;
+    setSearching(false);
+    setRepos(null);
+    setOpenRepo(null);
+    setFiles(null);
+    setError(null);
   };
 
   const toggleRepo = async (id: string) => {
@@ -115,7 +133,7 @@ export function HubSection({ folders, status, onDownloaded }: Props) {
               aria-label={t("Cerca modelli su Hugging Face")}
               placeholder={t("Cerca su Hugging Face, per esempio: qwen 7b instruct")}
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => changeQuery(e.target.value)}
             />
             <button className="btn" type="submit" disabled={searching || !query.trim()}>
               {searching ? t("Ricerca…") : t("Cerca")}

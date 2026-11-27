@@ -42,6 +42,8 @@ const attachmentFilters = () => [
  * risposte lunghe: il lavoro cresce con il quadrato della lunghezza.
  */
 const STREAM_FLUSH_MS = 60;
+/** Il prompt di sistema si salva quando l'utente smette di scrivere. */
+const PROMPT_SAVE_DELAY_MS = 500;
 
 /** Nome del file da un percorso di Windows o di altri sistemi. */
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -95,6 +97,9 @@ export function ChatArea({
   // Il modello scelto non ha risposto e ha risposto uno della coda di riserva.
   const [switches, setSwitches] = useState<{ from: string; to: string; reason: string }[]>([]);
   const [draft, setDraft] = useState("");
+  // Prompt di sistema della conversazione aperta (vuoto per una nuova).
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const promptSaveTimer = useRef<number | undefined>(undefined);
   const promptMenu = useRef<PromptMenuHandle>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -142,7 +147,19 @@ export function ChatArea({
   useEffect(() => discardStream, [discardStream]);
 
   const generating = streaming !== null;
-  const loaded = status?.loaded ?? null;
+  const primary = status?.loaded ?? null;
+  const samePath = (a: string, b: string | undefined) => b !== undefined && a.toLowerCase() === b.toLowerCase();
+  // Il modello locale scelto: uno per nome (più modelli insieme, ADR 0029) o il principale.
+  const localPath = activeModel.kind === "local" ? activeModel.path : undefined;
+  const loaded = !localPath
+    ? primary
+    : (status?.models.find((m) => samePath(m.modelPath, localPath)) ??
+      (primary && samePath(primary.modelPath, localPath) ? primary : null));
+  // Con un solo modello caricato la scelta per nome è "il principale".
+  const pickerModel: ModelRef =
+    localPath && (status?.models.length ?? 0) < 2 && primary && samePath(primary.modelPath, localPath)
+      ? { kind: "local" }
+      : activeModel;
 
   // Il modello scelto: quello locale caricato oppure uno di un provider cloud.
   const provider = activeModel.kind === "cloud" ? providers.find((p) => p.id === activeModel.providerId) : undefined;
@@ -160,7 +177,9 @@ export function ChatArea({
         : null
     : loaded
       ? null
-      : t("Nessun modello locale caricato.");
+      : localPath
+        ? t("{model} non è caricato: caricalo da Modelli o scegli un altro modello.", { model: modelFileName(localPath) })
+        : t("Nessun modello locale caricato.");
 
   const refreshConversations = useCallback(async () => {
     const list = await api.listConversations(query);
@@ -197,6 +216,56 @@ export function ChatArea({
     api.getMessages(activeId).then(setMessages).catch((e) => setError(String(e)));
   }, [activeId]);
 
+  // Modello e prompt di sistema della conversazione aperta: si ritrovano
+  // com'erano. Una conversazione nuova parte senza prompt e con il modello in uso.
+  useEffect(() => {
+    if (activeId === null) {
+      setSystemPrompt("");
+      return;
+    }
+    let current = true;
+    api
+      .conversationSetup(activeId)
+      .then((setup) => {
+        if (!current) return;
+        setSystemPrompt(setup.systemPrompt);
+        if (setup.model) onModelChange(setup.model);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+    // onModelChange è stabile (useCallback in App): conta solo la conversazione.
+  }, [activeId]);
+
+  /** Il modello scelto vale per la conversazione aperta e si salva con lei. */
+  const chooseModel = (model: ModelRef) => {
+    onModelChange(model);
+    if (activeId !== null) api.setConversationModel(activeId, model).catch(() => {});
+  };
+
+  /** Il prompt vale subito; il salvataggio aspetta che l'utente smetta di scrivere. */
+  const changeSystemPrompt = (prompt: string) => {
+    setSystemPrompt(prompt);
+    window.clearTimeout(promptSaveTimer.current);
+    if (activeId === null) return;
+    const id = activeId;
+    promptSaveTimer.current = window.setTimeout(() => {
+      api.setConversationSystemPrompt(id, prompt).catch(() => {});
+    }, PROMPT_SAVE_DELAY_MS);
+  };
+
+  /** Crea la conversazione e le lascia modello e prompt scelti prima di aprirla. */
+  const createConversation = async () => {
+    const id = (await api.createConversation()).id;
+    window.clearTimeout(promptSaveTimer.current);
+    await Promise.all([
+      api.setConversationModel(id, activeModel),
+      api.setConversationSystemPrompt(id, systemPrompt),
+    ]);
+    return id;
+  };
+
   // Strumenti della conversazione aperta; quelli predefiniti per una nuova.
   useEffect(() => {
     api.grantedFolders().then((f) => setFolderCount(f.length)).catch(() => {});
@@ -208,7 +277,7 @@ export function ChatArea({
     setToolSettings(next);
     let id = activeId;
     if (id === null) {
-      id = (await api.createConversation()).id;
+      id = await createConversation();
       setActiveId(id);
       refreshConversations().catch(() => {});
     }
@@ -258,8 +327,10 @@ export function ChatArea({
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming, pendingUser]);
 
+  /** Una conversazione nuova tiene il modello in uso e parte senza prompt di sistema. */
   const newConversation = async () => {
     const conversation = await api.createConversation();
+    await api.setConversationModel(conversation.id, activeModel).catch(() => {});
     await refreshConversations();
     setActiveId(conversation.id);
   };
@@ -303,7 +374,7 @@ export function ChatArea({
     let conversationId = activeId;
     try {
       if (conversationId === null) {
-        conversationId = (await api.createConversation()).id;
+        conversationId = await createConversation();
         setActiveId(conversationId);
       }
     } catch (e) {
@@ -315,7 +386,7 @@ export function ChatArea({
     setAttachments([]);
     const id = conversationId;
     await reply(id, text, (onEvent) =>
-      api.sendMessage(id, text, files, preset.sampling, preset.systemPrompt, activeModel, onEvent),
+      api.sendMessage(id, text, files, preset.sampling, systemPrompt, activeModel, onEvent),
     );
   };
 
@@ -330,7 +401,7 @@ export function ChatArea({
     // Ciò che segue sparisce subito: l'archivio lo cancella con la nuova risposta.
     setMessages((current) => current.filter((m) => m.id < message.id));
     await reply(id, text ?? message.content, (onEvent) =>
-      api.resendMessage(id, message.id, text, preset.sampling, preset.systemPrompt, activeModel, onEvent),
+      api.resendMessage(id, message.id, text, preset.sampling, systemPrompt, activeModel, onEvent),
     );
   };
 
@@ -520,11 +591,11 @@ export function ChatArea({
         <div className="thread-head">
           <ModelPicker
             providers={providers}
-            loadedName={loaded?.modelName ?? null}
+            loadedName={primary?.modelName ?? null}
             localModels={status?.models}
-            value={activeModel}
+            value={pickerModel}
             disabled={generating}
-            onChange={onModelChange}
+            onChange={chooseModel}
           />
           <button
             className="btn"
@@ -740,6 +811,8 @@ export function ChatArea({
             key={isCloud ? `${activeModel.providerId}/${activeModel.model}` : (loaded?.modelPath ?? "local")}
             preset={preset}
             loaded={isCloud ? null : loaded}
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={changeSystemPrompt}
             supported={isCloud ? (provider?.supportedParams ?? []) : null}
             onChange={onPresetChange}
             onOpenModels={onOpenModels}

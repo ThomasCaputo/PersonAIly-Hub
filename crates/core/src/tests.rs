@@ -2456,3 +2456,40 @@ fn senza_modelli_caricati_il_principale_non_c_e() {
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Ogni conversazione ricorda il suo modello e il suo prompt di sistema; una
+/// nuova parte senza nessuno dei due.
+#[test]
+fn la_conversazione_ricorda_modello_e_prompt() {
+    let dir = std::env::temp_dir().join(format!("core-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir).unwrap();
+    let a = core.create_conversation().unwrap().id;
+    let b = core.create_conversation().unwrap().id;
+    assert_eq!(
+        core.conversation_setup(a).unwrap(),
+        ConversationSetup::default()
+    );
+
+    let cloud = ModelRef::Cloud {
+        provider_id: "p".into(),
+        model: "m".into(),
+    };
+    core.set_conversation_model(a, &cloud).unwrap();
+    core.set_conversation_system_prompt(a, "Rispondi in rima")
+        .unwrap();
+    let local = ModelRef::Local {
+        path: Some(r"C:\modelli\b.gguf".into()),
+    };
+    core.set_conversation_model(b, &local).unwrap();
+
+    let setup = core.conversation_setup(a).unwrap();
+    assert_eq!(setup.model, Some(cloud));
+    assert_eq!(setup.system_prompt, "Rispondi in rima");
+    let setup = core.conversation_setup(b).unwrap();
+    assert_eq!(setup.model, Some(local));
+    assert_eq!(setup.system_prompt, "");
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -28,8 +28,8 @@ use app_core::skills::{ImportOutcome, Skill, SkillDraft};
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{
-    Approval, Core, EngineStatus, LoadCheck, ModelRef, Preferences, ProviderInfo, RuntimeStatus,
-    SecuritySettings, SendOutcome, SpendLimits, Spending,
+    Approval, ConversationSetup, Core, EngineStatus, LoadCheck, ModelRef, Preferences,
+    ProviderInfo, RuntimeStatus, SecuritySettings, SendOutcome, SpendLimits, Spending,
 };
 use app_server::ApiHandle;
 use serde::Serialize;
@@ -428,6 +428,31 @@ fn set_conversation_tools(
     settings: ToolSettings,
 ) -> CmdResult<()> {
     core.set_conversation_tools(conversation_id, &settings)
+        .map_err(text)
+}
+
+#[tauri::command(async)]
+fn conversation_setup(core: CoreState<'_>, conversation_id: i64) -> CmdResult<ConversationSetup> {
+    core.conversation_setup(conversation_id).map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_conversation_model(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    model: ModelRef,
+) -> CmdResult<()> {
+    core.set_conversation_model(conversation_id, &model)
+        .map_err(text)
+}
+
+#[tauri::command(async)]
+fn set_conversation_system_prompt(
+    core: CoreState<'_>,
+    conversation_id: i64,
+    prompt: String,
+) -> CmdResult<()> {
+    core.set_conversation_system_prompt(conversation_id, &prompt)
         .map_err(text)
 }
 
@@ -1517,6 +1542,9 @@ pub fn run() {
             set_tool_defaults,
             conversation_tools,
             set_conversation_tools,
+            conversation_setup,
+            set_conversation_model,
+            set_conversation_system_prompt,
             answer_tool_request,
             list_actions,
             action_log_days,

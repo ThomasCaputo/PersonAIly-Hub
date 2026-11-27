@@ -5,6 +5,8 @@ import { t, tc } from "../i18n";
 
 type Props = {
   preset: Preset;
+  /** Il prompt di sistema della conversazione, salvato insieme ai parametri. */
+  systemPrompt: string;
   /** Applica parametri e prompt di sistema di un preset con nome al modello in uso. */
   onApply: (named: NamedPreset) => void;
 };
@@ -12,7 +14,7 @@ type Props = {
 const JSON_FILTER = [{ name: "Preset", extensions: ["json"] }];
 
 /** Preset con nome: salvare i parametri attuali, riapplicarli, esportarli e importarli. */
-export function NamedPresets({ preset, onApply }: Props) {
+export function NamedPresets({ preset, systemPrompt, onApply }: Props) {
   const [presets, setPresets] = useState<NamedPreset[]>([]);
   const [selected, setSelected] = useState("");
   const [naming, setNaming] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export function NamedPresets({ preset, onApply }: Props) {
       const saved = await api.saveNamedPreset({
         name: naming ?? "",
         sampling: preset.sampling,
-        systemPrompt: preset.systemPrompt,
+        systemPrompt,
       });
       setNaming(null);
       await refresh();
