@@ -161,6 +161,7 @@ export const EN: Record<string, string> = {
   "Elimina conversazione": "Delete conversation",
   "Elimina la conversazione {title}": "Delete the conversation {title}",
   "Scrivi un messaggio per iniziare.": "Write a message to get started.",
+  "Di cosa parliamo?": "What shall we talk about?",
   "Modello": "Model",
   "Sto elaborando…": "Thinking…",
   "Togli {name}": "Remove {name}",

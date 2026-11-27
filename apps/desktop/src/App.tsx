@@ -24,6 +24,7 @@ import { UpdateOffer } from "./components/UpdateSection";
 // Il primo avvio guidato si carica solo se serve.
 const Welcome = lazy(() => import("./components/Welcome").then((m) => ({ default: m.Welcome })));
 import "./App.css";
+import logoUrl from "./assets/logo.svg";
 
 // La chat è la pagina d'apertura; le altre si caricano quando si aprono.
 const AgentsArea = lazy(() => import("./areas/AgentsArea").then((m) => ({ default: m.AgentsArea })));
@@ -299,10 +300,10 @@ export default function App() {
       </a>
       <nav className="sidebar" aria-label={t("Pagine")}>
         <div className="brand">
-          <span className="brand-mark">
-            <Icon path="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z" size={18} />
+          <img className="brand-mark" src={logoUrl} alt="" />
+          <span className="brand-name">
+            Person<span>AI</span>ly Hub
           </span>
-          PersonAIly Hub
         </div>
         {AREAS.map((a) => (
           <button

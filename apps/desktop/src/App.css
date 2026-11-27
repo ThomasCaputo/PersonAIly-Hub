@@ -6,33 +6,33 @@
  */
 
 :root {
-  /* Schema di colori Material 3 generato da un seme indaco (#4355b9). */
-  --md-primary: #4355b9;
+  /* Colori dell'icona: verde scuro dei pini, azzurro e bianco del ghiaccio. */
+  --md-primary: #1d5c4b;
   --md-on-primary: #ffffff;
-  --md-primary-container: #dee0ff;
-  --md-on-primary-container: #00105c;
-  --md-secondary-container: #e0e1f9;
-  --md-on-secondary-container: #181a2c;
-  --md-tertiary-container: #ffd7f1;
-  --md-on-tertiary-container: #2d1228;
+  --md-primary-container: #c2ecdc;
+  --md-on-primary-container: #00201a;
+  --md-secondary-container: #d3ebe2;
+  --md-on-secondary-container: #0b2a22;
+  --md-tertiary-container: #cdeaf7;
+  --md-on-tertiary-container: #002635;
   --md-error: #ba1a1a;
   --md-error-container: #ffdad6;
   --md-on-error-container: #410002;
   --md-success: #1e6c3a;
   --md-success-container: #c8f0cf;
-  --md-surface: #fbf8ff;
-  --md-surface-dim: #dbd9e0;
+  --md-surface: #f7faf9;
+  --md-surface-dim: #d5dddb;
   --md-surface-container-lowest: #ffffff;
-  --md-surface-container-low: #f5f2fa;
-  --md-surface-container: #efedf4;
-  --md-surface-container-high: #e9e7ef;
-  --md-surface-container-highest: #e4e1e9;
-  --md-on-surface: #1b1b21;
-  --md-on-surface-variant: #46464f;
-  --md-outline: #767680;
-  --md-outline-variant: #c6c5d0;
-  --md-code-bg: #1b1b21;
-  --md-code-text: #e4e1e9;
+  --md-surface-container-low: #f0f5f3;
+  --md-surface-container: #e6eeeb;
+  --md-surface-container-high: #e0e9e6;
+  --md-surface-container-highest: #d9e3e0;
+  --md-on-surface: #151d1b;
+  --md-on-surface-variant: #3d4946;
+  --md-outline: #6d7a76;
+  --md-outline-variant: #bdcac5;
+  --md-code-bg: #0f1d19;
+  --md-code-text: #dbe5e1;
 
   /* Forme */
   --md-shape-xs: 4px;
@@ -48,6 +48,18 @@
 
   --md-elevation-1: 0 1px 2px rgb(0 0 0 / 0.18), 0 1px 3px 1px rgb(0 0 0 / 0.08);
   --md-motion: 150ms cubic-bezier(0.2, 0, 0, 1);
+  --md-elevation-2: 0 2px 6px 2px rgb(11 42 34 / 0.08), 0 1px 2px rgb(11 42 34 / 0.14);
+
+  /* Marchio: le sfumature dell'icona (pino → ghiaccio). */
+  --brand-gradient: linear-gradient(135deg, #1d5444 0%, #26705f 55%, #3f9cc2 100%);
+  --btn-gradient: linear-gradient(135deg, #1d5c4b, #1f6670);
+  --frost: radial-gradient(ellipse 90% 340px at 50% -80px, rgb(95 184 221 / 0.16), transparent 70%);
+  --pine: #1d5444;
+  --brand-text: linear-gradient(135deg, #1d5444, #2a7f9f);
+  --card-bg: var(--md-surface-container-lowest);
+  --panel-bg: var(--md-surface-container-low);
+  /* Larghezza del contenuto delle pagine, centrato nella finestra. */
+  --page-w: 940px;
 
   /* Nomi usati dal resto dell'interfaccia, ricavati dai token. */
   --bg: var(--md-surface);
@@ -79,64 +91,78 @@
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --md-primary: #bac3ff;
-    --md-on-primary: #08218a;
-    --md-primary-container: #293ca0;
-    --md-on-primary-container: #dee0ff;
-    --md-secondary-container: #3a3d5c;
-    --md-on-secondary-container: #e0e1f9;
-    --md-tertiary-container: #5d3c55;
-    --md-on-tertiary-container: #ffd7f1;
+    --md-primary: #a9e2f7;
+    --md-on-primary: #003545;
+    --md-primary-container: #1b4a5a;
+    --md-on-primary-container: #cdf0fc;
+    --md-secondary-container: #1f4a3d;
+    --md-on-secondary-container: #c6efe0;
+    --md-tertiary-container: #234d5d;
+    --md-on-tertiary-container: #d3eefa;
     --md-error: #ffb4ab;
     --md-error-container: #93000a;
     --md-on-error-container: #ffdad6;
     --md-success: #8ed99f;
     --md-success-container: #0f5228;
-    --md-surface: #131318;
-    --md-surface-dim: #131318;
-    --md-surface-container-lowest: #0e0e13;
-    --md-surface-container-low: #1b1b21;
-    --md-surface-container: #1f1f25;
-    --md-surface-container-high: #2a292f;
-    --md-surface-container-highest: #35343a;
-    --md-on-surface: #e4e1e9;
-    --md-on-surface-variant: #c6c5d0;
-    --md-outline: #90909a;
-    --md-outline-variant: #46464f;
-    --md-code-bg: #0e0e13;
-    --md-code-text: #e4e1e9;
+    --md-surface: #0f1916;
+    --md-surface-dim: #0f1916;
+    --md-surface-container-lowest: #09110f;
+    --md-surface-container-low: #13201c;
+    --md-surface-container: #0b1512;
+    --md-surface-container-high: #1d2b27;
+    --md-surface-container-highest: #273733;
+    --md-on-surface: #dce6e2;
+    --md-on-surface-variant: #b9c8c3;
+    --md-outline: #85948f;
+    --md-outline-variant: #34443f;
+    --md-code-bg: #07100d;
+    --md-code-text: #dce6e2;
     --md-elevation-1: 0 1px 3px 1px rgb(0 0 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.4);
+    --md-elevation-2: 0 4px 12px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.4);
+    --btn-gradient: linear-gradient(135deg, #a9e2f7, #a6e6d3);
+    --frost: radial-gradient(ellipse 90% 380px at 50% -100px, rgb(169 226 247 / 0.09), transparent 70%);
+    --pine: #7fc7b3;
+    --brand-text: linear-gradient(135deg, #cdf0fc, #8fd8c2);
+    --card-bg: var(--md-surface-container-high);
+    --panel-bg: var(--md-surface-container-low);
   }
 }
 
 :root[data-theme="dark"] {
-  --md-primary: #bac3ff;
-  --md-on-primary: #08218a;
-  --md-primary-container: #293ca0;
-  --md-on-primary-container: #dee0ff;
-  --md-secondary-container: #3a3d5c;
-  --md-on-secondary-container: #e0e1f9;
-  --md-tertiary-container: #5d3c55;
-  --md-on-tertiary-container: #ffd7f1;
+  --md-primary: #a9e2f7;
+  --md-on-primary: #003545;
+  --md-primary-container: #1b4a5a;
+  --md-on-primary-container: #cdf0fc;
+  --md-secondary-container: #1f4a3d;
+  --md-on-secondary-container: #c6efe0;
+  --md-tertiary-container: #234d5d;
+  --md-on-tertiary-container: #d3eefa;
   --md-error: #ffb4ab;
   --md-error-container: #93000a;
   --md-on-error-container: #ffdad6;
   --md-success: #8ed99f;
   --md-success-container: #0f5228;
-  --md-surface: #131318;
-  --md-surface-dim: #131318;
-  --md-surface-container-lowest: #0e0e13;
-  --md-surface-container-low: #1b1b21;
-  --md-surface-container: #1f1f25;
-  --md-surface-container-high: #2a292f;
-  --md-surface-container-highest: #35343a;
-  --md-on-surface: #e4e1e9;
-  --md-on-surface-variant: #c6c5d0;
-  --md-outline: #90909a;
-  --md-outline-variant: #46464f;
-  --md-code-bg: #0e0e13;
-  --md-code-text: #e4e1e9;
+  --md-surface: #0f1916;
+  --md-surface-dim: #0f1916;
+  --md-surface-container-lowest: #09110f;
+  --md-surface-container-low: #13201c;
+  --md-surface-container: #0b1512;
+  --md-surface-container-high: #1d2b27;
+  --md-surface-container-highest: #273733;
+  --md-on-surface: #dce6e2;
+  --md-on-surface-variant: #b9c8c3;
+  --md-outline: #85948f;
+  --md-outline-variant: #34443f;
+  --md-code-bg: #07100d;
+  --md-code-text: #dce6e2;
   --md-elevation-1: 0 1px 3px 1px rgb(0 0 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.4);
+  --md-elevation-2: 0 4px 12px 2px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.4);
+  --btn-gradient: linear-gradient(135deg, #a9e2f7, #a6e6d3);
+  --frost: radial-gradient(ellipse 90% 380px at 50% -100px, rgb(169 226 247 / 0.09), transparent 70%);
+  --pine: #7fc7b3;
+  --brand-text: linear-gradient(135deg, #cdf0fc, #8fd8c2);
+  --card-bg: var(--md-surface-container-high);
+  --panel-bg: var(--md-surface-container-low);
   color-scheme: dark;
 }
 
@@ -161,10 +187,22 @@ body {
 
 h1 {
   margin: 0 0 20px;
-  font-size: 26px;
-  font-weight: 500;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 600;
   line-height: 1.25;
-  letter-spacing: 0;
+  letter-spacing: -0.01em;
+}
+
+/* Titolo di pagina: una breve linea nei colori dell'icona sotto il nome. */
+.page > h1::after {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 4px;
+  margin-top: 10px;
+  border-radius: var(--md-shape-full);
+  background: var(--brand-gradient);
 }
 
 h2 {
@@ -309,7 +347,7 @@ textarea {
   gap: 8px;
   min-height: 36px;
   padding: 0 18px;
-  border: 1px solid var(--md-outline);
+  border: 1px solid color-mix(in srgb, var(--md-outline) 65%, transparent);
   border-radius: var(--md-shape-full);
   background: transparent;
   color: var(--md-primary);
@@ -335,17 +373,23 @@ textarea {
 
 .btn.primary {
   border-color: transparent;
-  background: var(--md-primary);
+  background: var(--btn-gradient);
   color: var(--md-on-primary);
-}
-
-.btn.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--md-on-primary) var(--md-hover), var(--md-primary));
   box-shadow: var(--md-elevation-1);
 }
 
+/* Lo strato di stato sopra la sfumatura, che con color-mix si perderebbe. */
+.btn.primary:hover:not(:disabled) {
+  background:
+    linear-gradient(color-mix(in srgb, var(--md-on-primary) var(--md-hover), transparent), color-mix(in srgb, var(--md-on-primary) var(--md-hover), transparent)),
+    var(--btn-gradient);
+  box-shadow: var(--md-elevation-2);
+}
+
 .btn.primary:active:not(:disabled) {
-  background: color-mix(in srgb, var(--md-on-primary) var(--md-press), var(--md-primary));
+  background:
+    linear-gradient(color-mix(in srgb, var(--md-on-primary) var(--md-press), transparent), color-mix(in srgb, var(--md-on-primary) var(--md-press), transparent)),
+    var(--btn-gradient);
   box-shadow: none;
 }
 
@@ -391,34 +435,63 @@ textarea {
 
 /* Navigation drawer */
 .sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 0 0 224px;
-  padding: 14px 12px 12px;
+  flex: 0 0 232px;
+  padding: 16px 12px 12px;
   background: transparent;
+  isolation: isolate;
+}
+
+/* Una fila di pini sul fondo, come nell'icona: solo una maschera colorata. */
+.sidebar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 210px;
+  background: var(--pine);
+  opacity: 0.22;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 224 60' preserveAspectRatio='none'%3E%3Cpath d='M8 26L20 60H-4ZM26 8L45 60H7ZM44 30L55 60H33ZM60 16L76 60H44ZM80 2L101 60H59ZM100 24L113 60H87ZM118 12L135 60H101ZM138 30L149 60H127ZM156 6L175 60H137ZM176 20L190 60H162ZM196 10L214 60H178ZM216 26L228 60H204Z'/%3E%3C/svg%3E")
+    bottom / 100% 100% no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 224 60' preserveAspectRatio='none'%3E%3Cpath d='M8 26L20 60H-4ZM26 8L45 60H7ZM44 30L55 60H33ZM60 16L76 60H44ZM80 2L101 60H59ZM100 24L113 60H87ZM118 12L135 60H101ZM138 30L149 60H127ZM156 6L175 60H137ZM176 20L190 60H162ZM196 10L214 60H178ZM216 26L228 60H204Z'/%3E%3C/svg%3E")
+    bottom / 100% 100% no-repeat;
+  pointer-events: none;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 12px 18px;
-  font-weight: 600;
-  font-size: 16px;
+  gap: 12px;
+  padding: 2px 10px 22px;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
-  background: var(--md-primary);
-  color: var(--md-on-primary);
+  flex: none;
+  width: 36px;
+  height: 36px;
+  /* Il riquadro dell'icona occupa 928/1024 del disegno. */
+  margin: -2px;
+  filter: drop-shadow(0 2px 4px rgb(11 42 34 / 0.25));
+}
+
+.brand-name span {
+  background: var(--brand-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -449,6 +522,22 @@ textarea {
   font-weight: 600;
 }
 
+.nav-item.active svg {
+  color: var(--md-primary);
+}
+
+/* Segno della pagina aperta, a sinistra della voce. */
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 12px;
+  bottom: 12px;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--brand-gradient);
+}
+
 .nav-item.active:hover {
   background: color-mix(in srgb, var(--md-on-secondary-container) var(--md-hover), var(--md-secondary-container));
 }
@@ -461,8 +550,11 @@ textarea {
   min-width: 0;
   margin: 8px 8px 8px 0;
   overflow: hidden;
-  border-radius: var(--md-shape-lg);
-  background: var(--md-surface);
+  border: 1px solid color-mix(in srgb, var(--md-outline-variant) 55%, transparent);
+  border-radius: 20px;
+  /* Un velo di ghiaccio in alto, come la brina dell'icona. */
+  background: var(--frost), var(--md-surface);
+  box-shadow: var(--md-elevation-1);
 }
 
 .area {
@@ -519,9 +611,10 @@ textarea {
   margin-bottom: 8px;
 }
 
+/* Il contenuto resta al centro della finestra, largo al massimo --page-w. */
 .page {
   height: 100%;
-  padding: 32px 40px;
+  padding: 36px max(40px, calc((100% - var(--page-w)) / 2)) 48px;
   overflow: auto;
 }
 
@@ -534,8 +627,11 @@ textarea {
   margin-top: auto;
   padding: 14px;
   font-size: 12px;
-  border-radius: var(--md-shape-lg);
-  background: var(--md-surface-container-high);
+  border: 1px solid color-mix(in srgb, var(--md-outline-variant) 60%, transparent);
+  border-radius: 18px;
+  /* Semitrasparente: dietro si intravedono i pini. */
+  background: color-mix(in srgb, var(--md-surface-container-high) 82%, transparent);
+  backdrop-filter: blur(6px);
 }
 
 .status-model {
@@ -589,9 +685,46 @@ textarea {
 
 /* ── Modelli ──────────────────────────────────────────────── */
 
+/* Ogni sezione è un pannello a sé, così le pagine lunghe si leggono a blocchi. */
 .section {
-  max-width: 820px;
-  margin-bottom: 32px;
+  margin-bottom: 20px;
+  padding: 20px 24px 22px;
+  border-radius: 22px;
+  background: var(--panel-bg);
+}
+
+.section > h2,
+.section-head > h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section > h2::before,
+.section-head > h2::before {
+  content: "";
+  flex: none;
+  width: 4px;
+  height: 18px;
+  border-radius: var(--md-shape-full);
+  background: var(--brand-gradient);
+}
+
+.section > .folder:last-child,
+.section > :last-child > .folder:last-child {
+  border-bottom: 0;
+}
+
+/* Niente spazio vuoto in fondo al pannello. */
+.section > :last-child,
+.section > :last-child > :last-child {
+  margin-bottom: 0;
+}
+
+/* La freccia che apre e chiude una scheda. */
+.card-head > .dim:last-child {
+  font-size: 18px;
+  line-height: 1;
 }
 
 .section-head {
@@ -657,15 +790,43 @@ textarea {
 /* Outlined card */
 .card {
   margin-bottom: 10px;
-  border: 1px solid var(--md-outline-variant);
-  border-radius: var(--md-shape-md);
-  background: var(--md-surface-container-low);
+  border: 1px solid color-mix(in srgb, var(--md-outline-variant) 70%, transparent);
+  border-radius: var(--md-shape-lg);
+  background: var(--card-bg);
   overflow: hidden;
+  transition: box-shadow var(--md-motion), border-color var(--md-motion);
+}
+
+.card:hover {
+  box-shadow: var(--md-elevation-2);
 }
 
 .card.loaded {
   border-color: var(--md-primary);
   box-shadow: inset 0 0 0 1px var(--md-primary);
+}
+
+/* Riquadro con l'icona del modello, a sinistra del nome. */
+.card-lead {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.card-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  background: var(--brand-gradient);
+  color: #ffffff;
+}
+
+.card-icon.cloud {
+  background: linear-gradient(135deg, #2a7f9f, #5fb8dd);
 }
 
 .card-head {
@@ -1088,6 +1249,30 @@ textarea {
   justify-content: center;
   gap: 8px;
   height: 100%;
+  text-align: center;
+}
+
+/* Chat vuota: l'icona e un saluto al posto di una riga grigia. */
+.empty-logo {
+  width: 84px;
+  height: 84px;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 8px 18px rgb(11 42 34 / 0.3));
+}
+
+.empty-title {
+  margin: 0;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-size: 24px;
+  font-weight: 600;
+  background: var(--brand-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.empty-title + .dim {
+  margin: 0;
 }
 
 .message {
@@ -1182,10 +1367,12 @@ textarea {
   gap: 6px;
   width: calc(100% - 48px);
   max-width: 760px;
-  margin: 8px auto 16px;
+  margin: 8px auto 18px;
   padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--md-outline-variant) 70%, transparent);
   border-radius: var(--md-shape-xl);
-  background: var(--md-surface-container-high);
+  background: var(--card-bg);
+  box-shadow: var(--md-elevation-2);
   transition: box-shadow var(--md-motion);
 }
 
@@ -1806,7 +1993,7 @@ input[type="range"]:focus {
 
 .new-task,
 .agent-editor {
-  max-width: 760px;
+  --page-w: 780px;
 }
 
 .agent-editor input[type="number"] {

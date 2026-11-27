@@ -5,6 +5,14 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+### Changed
+- **New look:** the interface takes the colours of the app icon (pine green and glacier blue)
+  in both the light and the dark theme, instead of the old indigo. Pages are centred in the
+  window instead of sticking to the left, each section is its own panel, models and providers
+  have an icon, the sidebar shows the real logo with a row of pines at the bottom, and an empty
+  chat greets you with the logo.
+- The window opens larger: 1320 × 800 instead of 1100 × 720.
+
 ## [1.4.1] — 2026-11-27
 
 First published version with the changes of 1.4.0, whose build stopped before release.

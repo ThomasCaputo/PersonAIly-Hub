@@ -195,12 +195,19 @@ function ModelCard({ model, open, onToggle, isLoaded, othersLoaded, multiModel, 
   return (
     <div className={isLoaded ? "card loaded" : "card"}>
       <button className="card-head" aria-expanded={open} onClick={onToggle}>
-        <div>
-          <div className="card-title">
-            {model.name}
-            {isLoaded && <span className="badge">{t("Caricato")}</span>}
+        <div className="card-lead">
+          <span className="card-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z" />
+            </svg>
+          </span>
+          <div>
+            <div className="card-title">
+              {model.name}
+              {isLoaded && <span className="badge">{t("Caricato")}</span>}
+            </div>
+            <div className="dim">{model.error ? t("Non leggibile: {error}", { error: tc(model.error) }) : details}</div>
           </div>
-          <div className="dim">{model.error ? t("Non leggibile: {error}", { error: tc(model.error) }) : details}</div>
         </div>
         <span className="dim" aria-hidden="true">
           {open ? "▾" : "▸"}

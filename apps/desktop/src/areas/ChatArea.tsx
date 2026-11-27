@@ -26,6 +26,7 @@ import { ParamsPanel } from "../components/ParamsPanel";
 import { ToolRequestCard, ToolsBar } from "../components/ToolsBar";
 import { PromptMenu, type PromptMenuHandle } from "../components/PromptMenu";
 import { currentLanguage, msg, num, t, tc } from "../i18n";
+import logoUrl from "../assets/logo.svg";
 
 const attachmentFilters = () => [
   {
@@ -548,8 +549,12 @@ export function ChatArea({
         <div className="messages" role="log" aria-label={t("Messaggi")} aria-live="polite" aria-busy={generating}>
           {shown.length === 0 && (
             <div className="empty">
+              <img className="empty-logo" src={logoUrl} alt="" />
               {canSend ? (
-                <p className="dim">{t("Scrivi un messaggio per iniziare.")}</p>
+                <>
+                  <p className="empty-title">{t("Di cosa parliamo?")}</p>
+                  <p className="dim">{t("Scrivi un messaggio per iniziare.")}</p>
+                </>
               ) : (
                 <>
                   <p className="dim">{blockedReason}</p>
