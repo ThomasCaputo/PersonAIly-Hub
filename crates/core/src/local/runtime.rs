@@ -110,12 +110,13 @@ pub fn find_server(data_dir: &Path, preferred: Option<Variant>) -> Result<Instal
         })
 }
 
-/// Gestisce il processo `llama-server`. Un solo modello alla volta.
+/// Gestisce un processo `llama-server`, con un modello alla volta. Per più
+/// modelli insieme il nucleo ne tiene uno per modello (vedi [`super::pool`]).
 pub struct LocalRuntime {
     data_dir: PathBuf,
     http: reqwest::Client,
     /// Nome del registro in `logs/`: ogni istanza ha il suo.
-    log_name: &'static str,
+    log_name: String,
     current: Option<(LoadedModel, Child)>,
     #[cfg(windows)]
     job: Option<win32job::Job>,
@@ -128,11 +129,11 @@ impl LocalRuntime {
 
     /// Un'altra istanza di `llama-server` (per esempio quella degli
     /// embedding), con il suo registro.
-    pub fn named(data_dir: PathBuf, http: reqwest::Client, log_name: &'static str) -> Self {
+    pub fn named(data_dir: PathBuf, http: reqwest::Client, log_name: impl Into<String>) -> Self {
         Self {
             data_dir,
             http,
-            log_name,
+            log_name: log_name.into(),
             current: None,
             #[cfg(windows)]
             job: None,
@@ -145,7 +146,7 @@ impl LocalRuntime {
     }
 
     pub fn log_path(&self) -> PathBuf {
-        self.data_dir.join("logs").join(self.log_name)
+        self.data_dir.join("logs").join(&self.log_name)
     }
 
     /// Ciò che si sa del modello caricato leggendone il file: vedi

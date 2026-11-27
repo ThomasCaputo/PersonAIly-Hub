@@ -3,6 +3,7 @@ import {
   api,
   cloudPresetKey,
   usd,
+  modelFileName,
   type GenerationStats,
   type Message,
   type ModelRef,
@@ -100,16 +101,25 @@ export function CompareArea({ status, providers }: Props) {
   }, [sides]);
 
   const ready = (side: Side) => {
-    if (side.model.kind === "local") return loadedName !== null;
+    if (side.model.kind === "local") {
+      const path = side.model.path;
+      return path ? (status?.models ?? []).some((m) => m.modelPath === path) : loadedName !== null;
+    }
     const model = side.model;
     return providers.some((p) => p.id === model.providerId && p.hasKey);
   };
   const generating = sides.some((s) => s.streaming !== null);
-  const bothLocal = sides[0].model.kind === "local" && sides[1].model.kind === "local";
+  // Due colonne sullo stesso modello locale si danno il turno; su modelli diversi no.
+  const localKey = (model: ModelRef) =>
+    model.kind === "local" ? (model.path ?? status?.loaded?.modelPath ?? "").toLowerCase() : null;
+  const bothLocal = localKey(sides[0].model) !== null && localKey(sides[0].model) === localKey(sides[1].model);
   const canSend = !generating && sides.every(ready) && draft.trim() !== "";
 
   const nameOf = (model: ModelRef) => {
-    if (model.kind === "local") return loadedName ?? t("Modello locale");
+    if (model.kind === "local") {
+      if (model.path) return status?.models.find((m) => m.modelPath === model.path)?.modelName ?? modelFileName(model.path);
+      return loadedName ?? t("Modello locale");
+    }
     const provider = providers.find((p) => p.id === model.providerId);
     return provider?.models.find((m) => m.id === model.model)?.name ?? model.model;
   };
@@ -233,6 +243,7 @@ export function CompareArea({ status, providers }: Props) {
                 id={`compare-model-${index}`}
                 providers={providers}
                 loadedName={loadedName}
+                localModels={status?.models}
                 value={side.model}
                 disabled={generating || side.conversationId !== null}
                 onChange={(model) => update(index as 0 | 1, { model })}

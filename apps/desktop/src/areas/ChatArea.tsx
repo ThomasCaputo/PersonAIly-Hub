@@ -7,8 +7,11 @@ import {
   usd,
   type Approval,
   type Conversation,
+  modelFileName,
   type GenerationStats,
+  type LoadedModel,
   type Message,
+  type ModelInfo,
   type ModelRef,
   type Preset,
   type ProviderInfo,
@@ -517,6 +520,7 @@ export function ChatArea({
           <ModelPicker
             providers={providers}
             loadedName={loaded?.modelName ?? null}
+            localModels={status?.models}
             value={activeModel}
             disabled={generating}
             onChange={onModelChange}
@@ -748,31 +752,74 @@ type PickerProps = {
   id?: string;
   providers: ProviderInfo[];
   loadedName: string | null;
+  /** I modelli locali caricati: con più di uno si possono scegliere per nome (ADR 0029). */
+  localModels?: LoadedModel[];
+  /** Solo per gli agenti: modelli della libreria che l'agente carica da solo quando parte. */
+  library?: ModelInfo[];
   value: ModelRef;
   disabled: boolean;
   onChange: (model: ModelRef) => void;
 };
 
 /** Scelta del modello a cui inviare i messaggi; si può cambiare a metà conversazione. */
-export function ModelPicker({ id = "model-picker", providers, loadedName, value, disabled, onChange }: PickerProps) {
-  const encode = (model: ModelRef) => JSON.stringify(model.kind === "local" ? ["local"] : [model.providerId, model.model]);
+export function ModelPicker({
+  id = "model-picker",
+  providers,
+  loadedName,
+  localModels = [],
+  library = [],
+  value,
+  disabled,
+  onChange,
+}: PickerProps) {
+  const encode = (model: ModelRef) =>
+    JSON.stringify(model.kind === "local" ? ["local", model.path ?? ""] : ["cloud", model.providerId, model.model]);
   const decode = (text: string): ModelRef => {
     const parts = JSON.parse(text) as string[];
-    return parts.length === 2 ? { kind: "cloud", providerId: parts[0], model: parts[1] } : { kind: "local" };
+    if (parts[0] === "cloud") return { kind: "cloud", providerId: parts[1], model: parts[2] };
+    return parts[1] ? { kind: "local", path: parts[1] } : { kind: "local" };
   };
 
   const current = encode(value);
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  // Con più modelli caricati ognuno si sceglie per nome; con uno solo basta "il principale".
+  const named = localModels.length > 1 ? localModels : [];
+  const toLoad = library.filter((m) => !named.some((l) => same(l.modelPath, m.path)));
   const known =
-    value.kind === "local" ||
-    providers.some((p) => p.id === value.providerId && p.models.some((m) => m.id === value.model));
+    value.kind === "local"
+      ? !value.path ||
+        named.some((m) => same(m.modelPath, value.path!)) ||
+        toLoad.some((m) => same(m.path, value.path!))
+      : providers.some((p) => p.id === value.providerId && p.models.some((m) => m.id === value.model));
 
   return (
     <div className="model-picker">
       <label htmlFor={id}>{t("Modello")}</label>
       <select id={id} value={current} disabled={disabled} onChange={(e) => onChange(decode(e.target.value))}>
         <optgroup label={t("Su questo computer")}>
-          <option value={encode({ kind: "local" })}>{loadedName ?? t("Nessun modello locale caricato")}</option>
+          <option value={encode({ kind: "local" })}>
+            {named.length > 0 && loadedName
+              ? t("Il principale ({name})", { name: loadedName })
+              : (loadedName ?? t("Nessun modello locale caricato"))}
+          </option>
+          {named.map((m) => (
+            <option key={m.modelPath} value={encode({ kind: "local", path: m.modelPath })}>
+              {m.modelName}
+            </option>
+          ))}
+          {!known && value.kind === "local" && value.path && (
+            <option value={current}>{t("{model} (non caricato)", { model: modelFileName(value.path) })}</option>
+          )}
         </optgroup>
+        {toLoad.length > 0 && (
+          <optgroup label={t("Da caricare quando parte")}>
+            {toLoad.map((m) => (
+              <option key={m.path} value={encode({ kind: "local", path: m.path })}>
+                {m.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
         {providers
           .filter((p) => p.models.length > 0)
           .map((p) => (

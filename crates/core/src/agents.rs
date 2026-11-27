@@ -42,10 +42,18 @@ pub fn delegate_tool(agents: &[Agent]) -> ToolDef {
     let list = agents
         .iter()
         .map(|a| {
+            let model = match &a.model {
+                ModelRef::Local { path: None } => "modello locale principale".to_string(),
+                ModelRef::Local { path: Some(path) } => format!(
+                    "modello locale {}",
+                    crate::ops::engine::model_file_name(path)
+                ),
+                ModelRef::Cloud { model, .. } => model.clone(),
+            };
             if a.description.is_empty() {
-                format!("- {}", a.name)
+                format!("- {} ({model})", a.name)
             } else {
-                format!("- {}: {}", a.name, a.description)
+                format!("- {} ({model}): {}", a.name, a.description)
             }
         })
         .collect::<Vec<_>>()
@@ -55,7 +63,9 @@ pub fn delegate_tool(agents: &[Agent]) -> ToolDef {
         description: format!(
             "Affida una parte del lavoro a un altro agente e aspetta il suo resoconto. \
              Descrivi il compito in modo completo: l'altro agente non vede questa \
-             conversazione. Agenti disponibili:\n{list}"
+             conversazione. Puoi chiamarlo più volte nello stesso turno per pezzi \
+             indipendenti: gli agenti lavorano insieme e i resoconti arrivano tutti \
+             insieme. Agenti disponibili (con il loro modello):\n{list}"
         )
         .into(),
         schema: serde_json::json!({
@@ -78,6 +88,13 @@ pub const AGENT_PREAMBLE: &str = "Sei un agente che lavora in autonomia su un co
     per ogni passo: è l'app a chiederle all'utente quando servono. Quando hai finito, \
     rispondi con un breve resoconto di ciò che hai fatto e dei file che hai toccato. Se ti \
     manca un'informazione indispensabile, fermati e chiedila.";
+
+/// In più per le sessioni senza sorveglianza (esecuzioni pianificate, ADR 0028).
+pub const UNATTENDED_PREAMBLE: &str = "Questa è un'esecuzione pianificata: nessuno sta \
+    guardando e nessuno può confermare le azioni. Quelle che richiedono una conferma vengono \
+    rifiutate: non insistere, fai ciò che puoi senza. Non fermarti a fare domande: se ti manca \
+    qualcosa, scegli l'ipotesi più prudente o lascia quella parte, e scrivilo nel resoconto \
+    finale.";
 
 /// La definizione di un agente (AG-1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -118,7 +135,7 @@ impl Default for Agent {
             name: String::new(),
             description: String::new(),
             instructions: String::new(),
-            model: ModelRef::Local,
+            model: ModelRef::Local { path: None },
             folders: Vec::new(),
             tools: ToolSettings {
                 files: true,
@@ -231,6 +248,12 @@ pub struct AgentSession {
     pub restore_points: Vec<RestorePoint>,
     /// La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente.
     pub parent_session_id: Option<i64>,
+    /// La pianificazione che l'ha avviata (ADR 0028).
+    pub schedule_id: Option<i64>,
+    /// Nessuno la sorveglia: gli strumenti che chiederebbero conferma si
+    /// rifiutano. Vale per le sessioni pianificate e per quelle a cui
+    /// affidano lavoro; rispondere all'agente lo spegne.
+    pub unattended: bool,
 }
 
 /// Uno strumento in attesa di conferma, per l'interfaccia.
@@ -273,6 +296,9 @@ impl RunControl {
 
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        // Tutti quelli che aspettano adesso (più deleghe in parallelo), e il
+        // primo che si metterà ad aspettare dopo.
+        self.cancel.notify_waiters();
         self.cancel.notify_one();
         // Chi è in pausa deve accorgersi dell'arresto.
         self.resume.notify_one();

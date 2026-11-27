@@ -70,6 +70,19 @@ al modello e, al caricamento, spunta il componente visivo.
 **Scaricamento automatico.** In Modelli → Motore puoi far scaricare il modello dopo qualche
 minuto senza uso, per liberare la memoria.
 
+**Più modelli insieme.** Accendi **Più modelli locali insieme** in Modelli → Motore: da quel
+momento **Carica** aggiunge il modello accanto a quelli già caricati, finché entra nella memoria
+del tuo PC. L'app tiene sempre libero un margine per il sistema (il 5% della VRAM e il 10% della
+RAM, con un minimo), quindi su un PC con più memoria ne entrano di più. Se vuoi un tetto,
+scrivilo in **Al massimo**. Se un modello non entra, la sua scheda offre **Scarica gli altri e
+carica**.
+
+In **Modelli caricati** vedi ogni modello con la sua memoria. Uno è il **principale**: è quello
+usato dove non ne scegli uno (le chat con «Il principale», gli agenti creati prima, `local`
+nell'API, VS Code); di solito è l'ultimo che hai caricato, e puoi cambiarlo con **Rendi
+principale**. In chat, nel confronto e negli agenti il selettore del modello elenca ogni modello
+caricato per nome.
+
 ## Modelli cloud
 
 In **Modelli → Provider cloud** aggiungi un servizio: Anthropic, oppure uno compatibile con
@@ -135,6 +148,40 @@ l'agente in breve.
 
 **Deleghe.** Un agente può affidare parti del compito ad altri agenti scelti da te; ognuno
 lavora con le sue cartelle e i suoi permessi.
+
+**Agenti che cooperano.** Ogni agente può avere un **suo modello locale**: sceglilo nel
+selettore del modello, anche fra quelli non ancora caricati («Da caricare quando parte»).
+Quando l'agente parte, l'app carica il suo modello se non c'è, purché entri accanto agli altri.
+Così puoi avere, per esempio, un coordinatore con Qwen2.5 7B che affida pezzi del lavoro ad
+aiutanti con un modello più piccolo. Se il coordinatore affida più pezzi nello stesso turno, gli
+aiutanti lavorano **insieme** e i resoconti tornano tutti insieme. Gli aiutanti devono avere un
+modello che sa usare gli strumenti (per esempio Qwen2.5): l'app avvisa se il modello non li
+supporta.
+
+### Agenti pianificati
+
+Un agente può lavorare da solo a un orario o a intervalli: per esempio ogni mattina alle 8, o
+ogni 6 ore. In **Agenti → Pianificazioni** (o con **Pianifica** sulla scheda dell'agente)
+scegli l'agente, scrivi il compito per intero e decidi quando: una volta, ogni giorno (anche
+solo in certi giorni) oppure ogni tot ore.
+
+- **Modello locale.** Se l'agente usa un modello locale, scegli quale: si carica all'ora
+  stabilita e si scarica a lavoro finito, se l'aveva caricato la pianificazione e nessun altro
+  l'ha usato nel frattempo. Se c'è già caricato un altro modello, la pianificazione **aspetta**
+  che tu lo scarichi, oppure lo **sostituisce** appena nessuno lo sta usando, come preferisci.
+  Dopo un'ora di attesa salta.
+- **Nessuno a confermare.** Mentre lavora da solo, l'agente non può chiederti niente: ciò che
+  chiederebbe conferma viene **rifiutato**. Il modulo ti dice quali azioni verranno rifiutate
+  con i permessi attuali dell'agente; per consentirle, cambia i permessi dell'agente.
+  Rispondendo all'agente in una sessione pianificata, le conferme tornano a chiedersi.
+- **Esito.** Ogni esecuzione è una sessione normale, con il segno "pianificata": la trovi in
+  **Sessioni** con passi, file toccati e punto di ripristino. Una notifica di Windows ti dice
+  com'è andata (sempre, solo se qualcosa va storto, o mai). **Esegui ora** prova il compito
+  subito, con le stesse regole.
+- **App chiusa o PC spento.** Le pianificazioni girano finché l'app è accesa, anche solo
+  nell'area di notifica. Con **Avvia con Windows** l'app parte da sola all'accesso, senza
+  finestra. Un'esecuzione persa si recupera una volta appena l'app si riaccende, oppure si
+  salta, a tua scelta; il PC non viene risvegliato dalla sospensione.
 
 ## Server MCP
 

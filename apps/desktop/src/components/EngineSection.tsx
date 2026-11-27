@@ -87,6 +87,13 @@ export function EngineSection() {
     await api.setPreferences(next).catch((e) => setError(String(e)));
   };
 
+  const saveMulti = async (patch: Partial<Preferences>) => {
+    if (!preferences) return;
+    const next = { ...preferences, ...patch };
+    setPreferences(next);
+    await api.setPreferences(next).catch((e) => setError(String(e)));
+  };
+
   const percent = progress ? Math.round((progress.doneBytes / Math.max(1, progress.totalBytes)) * 100) : 0;
 
   return (
@@ -201,6 +208,41 @@ export function EngineSection() {
               "Libera VRAM e RAM quando il modello non serve, anche con la finestra chiusa. Lo ricarichi dalla scheda del modello.",
             )}
           </span>
+        </div>
+      )}
+
+      {preferences && (
+        <div className="field">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={preferences.multiModel}
+              onChange={(e) => saveMulti({ multiModel: e.target.checked })}
+            />
+            <span>
+              <strong>{t("Più modelli locali insieme")}</strong>
+              <span className="dim note block">
+                {t(
+                  "«Carica» aggiunge il modello accanto a quelli già caricati, finché entra nella memoria di questo PC, tenendo un margine per il sistema. Spento, caricare un modello sostituisce quello di prima.",
+                )}
+              </span>
+            </span>
+          </label>
+          {preferences.multiModel && (
+            <div className="row">
+              <label htmlFor="max-local-models">{t("Al massimo")}</label>
+              <input
+                id="max-local-models"
+                type="number"
+                min={0}
+                max={16}
+                placeholder={t("nessun tetto")}
+                value={preferences.maxLocalModels || ""}
+                onChange={(e) => saveMulti({ maxLocalModels: Math.max(0, Math.min(16, Math.round(Number(e.target.value)) || 0)) })}
+              />
+              <span className="dim note">{t("Vuoto: decide la memoria. Utile per tenere libera la VRAM per altro.")}</span>
+            </div>
+          )}
         </div>
       )}
 

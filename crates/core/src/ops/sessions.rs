@@ -95,6 +95,10 @@ impl Core {
         let session = store.session(id)?;
         store.add_message(session.conversation_id, "user", text, None)?;
         store.set_session_status(id, SessionStatus::Running, None)?;
+        // Chi risponde all'agente è lì a guardare: le conferme tornano a chiedersi.
+        if session.unattended {
+            store.set_session_unattended(id, false)?;
+        }
         store.session(id)
     }
 
@@ -199,6 +203,10 @@ impl Core {
             };
             if let Some(parent) = run.session_id {
                 let _ = self.store().set_session_parent(child.id, parent);
+            }
+            // Senza nessuno a confermare il genitore, nemmeno il figlio ce l'ha.
+            if run.unattended {
+                let _ = self.store().set_session_unattended(child.id, true);
             }
             let result = tokio::select! {
                 result = self.run_session(child.id) => result,
@@ -365,9 +373,22 @@ Ultima risposta:
         live: &Arc<LiveSession>,
     ) -> Result<SendOutcome> {
         let session = self.store().session(id)?;
-        let agent = session.definition.ok_or_else(|| {
+        if !session.unattended {
+            self.note_local_activity();
+        }
+        let agent = session.definition.clone().ok_or_else(|| {
             Error::msg("La definizione dell'agente di questa sessione è illeggibile.")
         })?;
+        // Un agente con un modello locale suo lo carica se non c'è (ADR 0029).
+        if let ModelRef::Local { path: Some(path) } = &agent.model
+            && self.load_alongside(path).await?.is_none()
+        {
+            return Err(Error::msg(format!(
+                "L'agente usa il modello locale «{}», che non è caricato e non entra accanto \
+                 agli altri: scaricane uno, oppure caricalo tu nella pagina Modelli.",
+                crate::ops::engine::model_file_name(path)
+            )));
+        }
         let target = self.target(&agent.model)?;
         let sampling = self.preset(&target.preset_key())?.sampling;
         let reads_images = target.reads_images();
@@ -452,6 +473,11 @@ Ultima risposta:
 
         let system = join_prompt(&[
             agents::AGENT_PREAMBLE,
+            if session.unattended {
+                agents::UNATTENDED_PREAMBLE
+            } else {
+                ""
+            },
             &agent.instructions,
             &self.language_instruction(),
             &tools::system_preamble(&defs, &folders),
@@ -478,6 +504,7 @@ Ultima risposta:
             delegation: delegation.as_ref(),
             step_tokens: Some(agent.max_step_tokens),
             fallback: Fallback::from_setting(&agent.fallback_models),
+            unattended: session.unattended,
         };
         let mut on_event = |event| {
             let mut state = live.state();

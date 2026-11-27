@@ -80,11 +80,61 @@ pub(crate) fn summary_of(run: &RunScope<'_>, call: &ToolCall) -> String {
         .unwrap_or_else(|| tools::summary(call))
 }
 
+/// Cosa riceve il modello quando uno strumento chiederebbe conferma in una
+/// sessione senza sorveglianza.
+pub(crate) const UNATTENDED_REFUSAL: &str = "Azione non disponibile in un'esecuzione \
+    pianificata: chiederebbe una conferma e nessuno può darla. Non riprovarla: fai ciò che \
+    puoi senza, e nel resoconto finale scrivi cosa non hai potuto fare e perché.";
+
+/// Deleghe al massimo in un turno: una protezione contro un modello che si
+/// incastra a ripetere la chiamata, non un limite di memoria (ADR 0029).
+pub(crate) const MAX_PARALLEL_DELEGATIONS: usize = 8;
+
+/// Come decidere se uno strumento può partire (vedi `Core::authorize`).
+#[derive(Clone, Copy)]
+struct Permission {
+    risk: Risk,
+    /// Indirizzo inventato dal modello mentre vede i file: si chiede sempre.
+    guarded: bool,
+    /// Strumento MCP in chat: si chiede anche con "Consenti tutto".
+    mcp_in_chat: bool,
+    /// "Consenti sempre" già dato a questo strumento.
+    allowed_always: bool,
+    /// "Consenti sempre" varrà solo per questo strumento.
+    only_this: bool,
+}
+
+/// Aspetta tutti i futuri insieme e ne restituisce i risultati in ordine.
+async fn join_all<'a, T>(
+    mut futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>>,
+) -> Vec<T> {
+    let mut results: Vec<Option<T>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (future, result) in futures.iter_mut().zip(results.iter_mut()) {
+            if result.is_none() {
+                match future.as_mut().poll(cx) {
+                    std::task::Poll::Ready(value) => *result = Some(value),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    results.into_iter().flatten().collect()
+}
+
 /// Esito di una chiamata a uno strumento.
 pub(crate) struct CallResult {
     /// `None` se l'utente ha interrotto nel frattempo.
     pub(crate) output: Option<ToolOutput>,
-    /// Come è stata decisa, per il registro: `auto`, `user`, `denied`, `refused`.
+    /// Come è stata decisa, per il registro: `auto`, `user`, `denied`,
+    /// `refused`, `unattended` (rifiutata perché nessuno poteva confermare).
     pub(crate) approval: &'static str,
 }
 
@@ -162,7 +212,6 @@ impl Core {
             };
             risk
         };
-        let cancel = &run.control.cancel;
         // "Consenti sempre" su uno strumento MCP vale solo per quello strumento.
         let allowed_always = (external.is_some() || delegation.is_some())
             && settings.allowed_tools.contains(&call.name);
@@ -174,11 +223,71 @@ impl Core {
         // In chat il livello parla delle cartelle concesse: non copre gli
         // strumenti MCP, che agiscono altrove (ADR 0022).
         let mcp_in_chat = external.is_some() && run.session_id.is_none();
-        let mut approval = "auto";
+        let only_this = external.is_some() || guarded || delegation.is_some();
+        let approval = match self
+            .authorize(
+                run,
+                call,
+                Permission {
+                    risk,
+                    guarded,
+                    mcp_in_chat,
+                    allowed_always,
+                    only_this,
+                },
+                settings,
+                on_event,
+            )
+            .await
+        {
+            Ok(approval) => approval,
+            Err(refused) => return refused,
+        };
+
+        let ctx = ToolContext {
+            folders,
+            web_http: &self.web_http,
+        };
+        if let Some(delegation) = delegation {
+            let output = self.delegate(run, delegation, call).await;
+            return CallResult { output, approval };
+        }
+        self.run_approved(
+            run, call, settings, &ctx, external, skill, documents, approval,
+        )
+        .await
+    }
+
+    /// Decide se uno strumento può partire e, se serve, chiede conferma.
+    /// `Ok` con l'esito per il registro, o `Err` con il risultato da dare al
+    /// modello (negato, rifiutato, interrotto).
+    async fn authorize(
+        &self,
+        run: &RunScope<'_>,
+        call: &ToolCall,
+        permission: Permission,
+        settings: &mut ToolSettings,
+        on_event: &mut impl FnMut(ChatEvent),
+    ) -> std::result::Result<&'static str, CallResult> {
+        let Permission {
+            risk,
+            guarded,
+            mcp_in_chat,
+            allowed_always,
+            only_this,
+        } = permission;
+        let cancel = &run.control.cancel;
         if guarded
             || (!allowed_always
                 && (mcp_in_chat || tools::decide(settings.permission, risk) == Decision::Ask))
         {
+            // Nessuno può confermare: si rifiuta subito invece di aspettare (ADR 0028).
+            if run.unattended {
+                return Err(CallResult {
+                    output: Some(ToolOutput::error(UNATTENDED_REFUSAL)),
+                    approval: "unattended",
+                });
+            }
             let seq = APPROVAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let key = format!("{}:{}:{seq}", run.key_prefix, call.id);
             let (sender, receiver) = oneshot::channel();
@@ -201,38 +310,45 @@ impl Core {
             });
             let answer = tokio::select! {
                 answer = receiver => answer.unwrap_or(Approval::Deny),
-                _ = cancel.notified() => return CallResult { output: None, approval: "interrupted" },
+                _ = cancel.notified() => return Err(CallResult { output: None, approval: "interrupted" }),
             };
             match answer {
                 Approval::Deny => {
-                    return CallResult {
+                    return Err(CallResult {
                         output: Some(ToolOutput::error(
                             "L'utente ha negato il permesso per questa azione. Non riprovare: \
                              chiedigli come vuole procedere.",
                         )),
                         approval: "denied",
-                    };
+                    });
                 }
                 Approval::Once => {}
                 Approval::Always => {
                     // Vale per il resto della conversazione (o della sessione),
                     // anche dopo il riavvio.
-                    let only_this = external.is_some() || guarded || delegation.is_some();
                     remember_always(settings, &call.name, risk, only_this);
                     let _ = self.set_conversation_tools(run.conversation_id, settings);
                 }
             }
-            approval = "user";
+            return Ok("user");
         }
+        Ok("auto")
+    }
 
-        let ctx = ToolContext {
-            folders,
-            web_http: &self.web_http,
-        };
-        if let Some(delegation) = delegation {
-            let output = self.delegate(run, delegation, call).await;
-            return CallResult { output, approval };
-        }
+    /// Esegue uno strumento già consentito (non una delega).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_approved(
+        &self,
+        run: &RunScope<'_>,
+        call: &ToolCall,
+        settings: &mut ToolSettings,
+        ctx: &ToolContext<'_>,
+        external: Option<&mcp::McpSet>,
+        skill: bool,
+        documents: bool,
+        approval: &'static str,
+    ) -> CallResult {
+        let cancel = &run.control.cancel;
         if skill {
             let output = skills::run(&self.enabled_skills(), &call.name, &call.arguments);
             return CallResult {
@@ -268,11 +384,79 @@ impl Core {
                 _ = cancel.notified() => None,
             },
             None => tokio::select! {
-                output = tools::run(call, settings, &ctx) => Some(output),
+                output = tools::run(call, settings, ctx) => Some(output),
                 _ = cancel.notified() => None,
             },
         };
         CallResult { output, approval }
+    }
+
+    /// Le deleghe di uno stesso turno: le conferme si chiedono una alla volta,
+    /// poi le sessioni degli aiutanti lavorano insieme. Restituisce l'esito
+    /// per indice della chiamata; quelle senza esito (dopo un'interruzione)
+    /// le gestisce il ciclo normale.
+    async fn delegate_in_parallel(
+        &self,
+        run: &RunScope<'_>,
+        delegation: &Delegation,
+        calls: &[ToolCall],
+        indices: &[usize],
+        settings: &mut ToolSettings,
+        on_event: &mut impl FnMut(ChatEvent),
+    ) -> std::collections::HashMap<usize, CallResult> {
+        let mut results = std::collections::HashMap::new();
+        let mut approved: Vec<(usize, &'static str)> = Vec::new();
+        for &index in indices {
+            let call = &calls[index];
+            if approved.len() >= MAX_PARALLEL_DELEGATIONS {
+                results.insert(
+                    index,
+                    CallResult {
+                        output: Some(ToolOutput::error(format!(
+                            "Troppe deleghe in un solo turno: al massimo {MAX_PARALLEL_DELEGATIONS} \
+                             insieme. Affida il resto quando arrivano i primi resoconti."
+                        ))),
+                        approval: "refused",
+                    },
+                );
+                continue;
+            }
+            let permission = Permission {
+                risk: Risk::Execute,
+                guarded: false,
+                mcp_in_chat: false,
+                allowed_always: settings.allowed_tools.contains(&call.name),
+                only_this: true,
+            };
+            match self
+                .authorize(run, call, permission, settings, &mut *on_event)
+                .await
+            {
+                Ok(approval) => approved.push((index, approval)),
+                Err(result) => {
+                    let interrupted = result.output.is_none();
+                    results.insert(index, result);
+                    if interrupted {
+                        break;
+                    }
+                }
+            }
+        }
+        if run.control.is_stopped() {
+            return results;
+        }
+        if approved.len() > 1 {
+            log::info(format!("{} deleghe in parallelo", approved.len()));
+        }
+        let futures = approved
+            .iter()
+            .map(|&(index, _)| self.delegate(run, delegation, &calls[index]))
+            .collect();
+        let outputs = join_all(futures).await;
+        for ((index, approval), output) in approved.into_iter().zip(outputs) {
+            results.insert(index, CallResult { output, approval });
+        }
+        results
     }
 
     /// Dimentica le conferme rimaste in sospeso di un ciclo concluso.
@@ -306,7 +490,7 @@ impl Core {
                     provider_id,
                     model: id,
                 } => skip != Some((provider_id.as_str(), id.as_str())),
-                ModelRef::Local => false,
+                ModelRef::Local { .. } => false,
             })
             .collect()
     }
@@ -388,7 +572,7 @@ impl Core {
                         &mut *on_event,
                     )
                     .await;
-                    self.touch_local();
+                    self.touch_local_model(&loaded.model_path);
                     (result, loaded.model_name.clone())
                 }
                 Target::Cloud(..) => loop {
@@ -531,7 +715,30 @@ impl Core {
                 ..ChatMessage::new("assistant", outcome.text)
             });
 
-            for call in &calls {
+            // Più deleghe nello stesso turno lavorano insieme (ADR 0029).
+            let mut parallel = std::collections::HashMap::new();
+            if let Some(delegation) = run.delegation {
+                let indices: Vec<usize> = calls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.name == agents::DELEGATE_TOOL)
+                    .map(|(i, _)| i)
+                    .collect();
+                if indices.len() > 1 && run.control.checkpoint().await {
+                    parallel = self
+                        .delegate_in_parallel(
+                            run,
+                            delegation,
+                            &calls,
+                            &indices,
+                            settings,
+                            &mut *on_event,
+                        )
+                        .await;
+                }
+            }
+
+            for (index, call) in calls.iter().enumerate() {
                 // Dopo un'interruzione le chiamate rimaste ricevono comunque
                 // un risultato: la cronologia deve restare coerente.
                 if !cancelled && !run.control.checkpoint().await {
@@ -539,6 +746,9 @@ impl Core {
                 }
                 let output = if cancelled {
                     None
+                } else if let Some(result) = parallel.remove(&index) {
+                    self.log_action(run, call, &result);
+                    result.output
                 } else {
                     let known = known_urls(&chat);
                     let result = self

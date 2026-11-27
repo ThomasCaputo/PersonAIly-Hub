@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   isActive,
+  modelFileName,
   usd,
   type ActionRecord,
   type Agent,
@@ -11,6 +12,7 @@ import {
   type LiveState,
   type McpServer,
   type Message,
+  type ModelInfo,
   type PermissionLevel,
   type ProviderInfo,
   type RuntimeStatus,
@@ -21,6 +23,7 @@ import { ToolRequestCard } from "../components/ToolsBar";
 import { FallbackChoice } from "../components/FallbackSection";
 import { ModelPicker, ToolResult, toolLabel } from "./ChatArea";
 import { locale, msg, t, tc } from "../i18n";
+import { SchedulesTab } from "../components/SchedulesTab";
 
 type Props = {
   status: RuntimeStatus | null;
@@ -28,7 +31,7 @@ type Props = {
   onOpenModels: () => void;
 };
 
-type Tab = "sessions" | "agents" | "actions";
+type Tab = "sessions" | "agents" | "schedules" | "actions";
 
 const LIST_INTERVAL_MS = 2000;
 const LIVE_INTERVAL_MS = 500;
@@ -102,6 +105,8 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
     sessions.find((s) => s.id === id)?.agentName ?? t("sessione {n}", { n: id });
   const [selectedSession, setSelectedSession] = useState<number | "new" | null>(null);
   const [preselected, setPreselected] = useState<number | null>(null);
+  /** L'agente da pianificare scelto dalla sua scheda ("Pianifica"). */
+  const [toSchedule, setToSchedule] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshAgents = useCallback(() => {
@@ -140,6 +145,9 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
         <button role="tab" aria-selected={tab === "agents"} className={tab === "agents" ? "tab active" : "tab"} onClick={() => setTab("agents")}>
           {t("Agenti")}
         </button>
+        <button role="tab" aria-selected={tab === "schedules"} className={tab === "schedules" ? "tab active" : "tab"} onClick={() => setTab("schedules")}>
+          {t("Pianificazioni")}
+        </button>
         <button role="tab" aria-selected={tab === "actions"} className={tab === "actions" ? "tab active" : "tab"} onClick={() => setTab("actions")}>
           {t("Registro azioni")}
         </button>
@@ -175,6 +183,7 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
                   <span className="session-task">{s.task}</span>
                   <span className="dim session-when">
                     {s.parentSessionId != null && `↳ ${parentName(s.parentSessionId)} · `}
+                    {s.scheduleId != null && `${t("pianificata")} · `}
                     {when(s.updatedAt)}
                   </span>
                 </button>
@@ -220,6 +229,24 @@ export function AgentsArea({ status, providers, onOpenModels }: Props) {
             setPreselected(agentId);
             setTab("sessions");
             setSelectedSession("new");
+          }}
+          onSchedule={(agentId) => {
+            setToSchedule(agentId);
+            setTab("schedules");
+          }}
+        />
+      )}
+
+      {tab === "schedules" && (
+        <SchedulesTab
+          key={toSchedule ?? "none"}
+          agents={agents}
+          newForAgent={toSchedule}
+          onEditorClosed={() => setToSchedule(null)}
+          onOpenSession={(id) => {
+            refreshSessions();
+            setSelectedSession(id);
+            setTab("sessions");
           }}
         />
       )}
@@ -571,6 +598,7 @@ function AgentsTab({
   onChanged,
   onOpenModels,
   onStart,
+  onSchedule,
 }: {
   agents: Agent[];
   providers: ProviderInfo[];
@@ -578,6 +606,7 @@ function AgentsTab({
   onChanged: () => void;
   onOpenModels: () => void;
   onStart: (agentId: number) => void;
+  onSchedule: (agentId: number) => void;
 }) {
   const [editing, setEditing] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -630,6 +659,9 @@ function AgentsTab({
               <button className="btn primary" onClick={() => onStart(a.id)}>
                 {t("Affida un compito")}
               </button>
+              <button className="btn" onClick={() => onSchedule(a.id)}>
+                {t("Pianifica")}
+              </button>
               <button className="btn" onClick={() => setEditing(a)}>
                 {t("Modifica")}
               </button>
@@ -639,7 +671,13 @@ function AgentsTab({
               <button
                 className="btn"
                 onClick={() => {
-                  if (window.confirm(t("Eliminare l'agente «{name}»? Le sue sessioni restano.", { name: a.name }))) {
+                  if (
+                    window.confirm(
+                      t("Eliminare l'agente «{name}»? Le sue sessioni restano, le sue pianificazioni no.", {
+                        name: a.name,
+                      }),
+                    )
+                  ) {
                     act(() => api.deleteAgent(a.id));
                   }
                 }}
@@ -669,7 +707,9 @@ function AgentsTab({
 }
 
 function modelLabel(agent: Agent, providers: ProviderInfo[]): string {
-  if (agent.model.kind === "local") return t("Modello locale caricato");
+  if (agent.model.kind === "local") {
+    return agent.model.path ? modelFileName(agent.model.path) : t("Modello locale principale");
+  }
   const { providerId, model } = agent.model;
   const provider = providers.find((p) => p.id === providerId);
   return provider?.models.find((m) => m.id === model)?.name ?? model;
@@ -705,6 +745,11 @@ function AgentEditor({
   }, []);
   // Gli altri agenti, che questo può scegliere come aiutanti (AG-8).
   const [otherAgents, setOtherAgents] = useState<Agent[]>([]);
+  /** I modelli della libreria, che l'agente può caricare da solo (ADR 0029). */
+  const [library, setLibrary] = useState<ModelInfo[]>([]);
+  useEffect(() => {
+    api.listModels().then(setLibrary).catch(() => {});
+  }, []);
   useEffect(() => {
     api
       .listAgents()
@@ -756,13 +801,19 @@ function AgentEditor({
       <ModelPicker
         providers={providers}
         loadedName={status?.loaded?.modelName ?? null}
+        localModels={status?.models}
+        library={library}
         value={agent.model}
         disabled={false}
         onChange={(model) => set({ model })}
       />
       {agent.model.kind === "local" && (
         <p className="dim note">
-          {t("Usa il modello locale caricato quando parte la sessione.")}{" "}
+          {agent.model.path
+            ? t(
+                "Usa questo modello; se non è caricato lo carica da solo quando parte, purché entri accanto agli altri (con «Più modelli locali insieme» acceso) o non ce ne siano altri.",
+              )
+            : t("Usa il modello locale principale quando parte la sessione.")}{" "}
           <button className="btn-link" onClick={onOpenModels}>
             {t("Vai ai modelli")}
           </button>
@@ -1008,6 +1059,7 @@ const APPROVAL_LABELS: Record<ActionRecord["approval"], string> = {
   denied: msg("negata da te"),
   refused: msg("rifiutata dall'app"),
   interrupted: msg("interrotta"),
+  unattended: msg("rifiutata: nessuno poteva confermare"),
 };
 
 /** Durate proposte per il registro, in giorni (0 = per sempre). */

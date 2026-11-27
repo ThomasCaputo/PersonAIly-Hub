@@ -4,6 +4,7 @@
 //! (vedi `docs/adr/0002-motore-locale-llama-server.md`).
 
 pub mod install;
+pub mod pool;
 pub mod runtime;
 pub mod sysmon;
 

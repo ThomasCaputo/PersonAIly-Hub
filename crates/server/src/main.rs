@@ -132,6 +132,7 @@ async fn run() -> Result<(), String> {
                 if let Some(limit) = idle_limit
                     && api.idle_for() >= limit
                     && !core.is_busy()
+                    && !core.has_scheduled_work()
                 {
                     println!("Nessuna richiesta da {} minuti: mi chiudo.", options.idle_minutes);
                     break;

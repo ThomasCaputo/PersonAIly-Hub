@@ -38,7 +38,7 @@ Libreria Rust senza interfaccia grafica. Moduli:
 | Modulo | Compito |
 |---|---|
 | `providers` | Interfaccia unica verso i modelli: invio messaggi in streaming, elenco modelli, capacità (visione, strumenti, contesto massimo). Un'implementazione per famiglia di API |
-| `local` | Gestione di `llama-server`: avvio, arresto, controllo di salute, costruzione degli argomenti, stima della memoria, monitoraggio di VRAM e RAM |
+| `local` | Gestione di `llama-server`: avvio, arresto, controllo di salute, costruzione degli argomenti, stima della memoria, monitoraggio di VRAM e RAM; `local::pool` tiene un motore per ogni modello caricato e il margine di memoria per caricarne altri ([ADR 0029](adr/0029-piu-modelli-locali.md)) |
 | `models` | Libreria dei file GGUF: scansione delle cartelle scelte dall'utente |
 | `gguf` | Lettura dei metadati di un file GGUF (solo l'intestazione, non i pesi) |
 | `hub` | Ricerca e download di modelli GGUF da Hugging Face (file `.part`, ripresa, impronta) |
@@ -49,6 +49,7 @@ Libreria Rust senza interfaccia grafica. Moduli:
 | `chat` | Ciclo di una conversazione: messaggio → modello → eventuali strumenti → risposta |
 | `agents` | Definizioni degli agenti e loro sessioni; riusa il ciclo di `chat` senza attendere l'utente a ogni passo |
 | `snapshots` | Punti di ripristino delle cartelle degli agenti, con git in un repository separato |
+| `schedules` | Agenti pianificati: definizione e calcolo delle date nell'ora locale ([ADR 0028](adr/0028-agenti-pianificati.md)) |
 | `rag` | Documenti consultabili: pezzi di testo, embedding e ricerca per somiglianza |
 | `store` | Archivio SQLite (modalità WAL): conversazioni, messaggi con indice di ricerca a trigrammi, agenti, sessioni, impostazioni |
 | `secrets` | Chiavi API nel Gestore credenziali di Windows (portachiavi di sistema sulle altre piattaforme) |
@@ -68,6 +69,7 @@ in `ops/`, un file per argomento ([ADR 0021](adr/0021-completamento-1-0-0.md)):
 | `conversation` | Conversazioni, invio e rinvio dei messaggi, rami, esportazione |
 | `rounds` | Il ciclo modello → strumenti → modello, conferme, registro delle azioni |
 | `sessions` | Agenti, sessioni, deleghe, punti di ripristino |
+| `schedules` | Pianificazioni: esecuzioni dovute, modello locale caricato e scaricato, sessioni senza sorveglianza, esiti per le notifiche |
 | `mcp_servers` | Server MCP configurati |
 | `documents` | Documenti consultabili (RAG) |
 | `providers` | Provider cloud |
@@ -214,9 +216,11 @@ Due famiglie di endpoint, solo su `127.0.0.1` (porta preferita 41241), con token
 
 - `/v1/...` — compatibile con OpenAI, per i programmi esistenti: `GET /v1/models`,
   `POST /v1/chat/completions`. Senza archivio: la cronologia la manda il client. Modelli:
-  `local` (quello caricato) oppure `<provider>/<modello>`;
+  `local` (il principale), `local/<nome del file>` (un modello caricato preciso) oppure
+  `<provider>/<modello>`;
 - `/api/...` — API propria: conversazioni, invio di messaggi con strumenti e conferme
   (`POST /api/tool-requests`), modelli, caricamento e scaricamento, agenti e sessioni,
+  pianificazioni (`/api/schedules`),
   registro delle azioni, chiusura del nucleo senza interfaccia. Le risposte in corso
   arrivano via Server-Sent Events (`text`, `reasoning`, `saved`, `toolRequest`, `modelSwitch`, `done`,
   `error`); lo stato degli agenti si legge con `GET /api/sessions/{id}/live`.

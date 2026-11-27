@@ -224,7 +224,7 @@ impl Core {
                     on_event,
                 )
                 .await;
-                self.touch_local();
+                self.touch_local_model(&loaded.model_path);
                 result
             }
             Target::Cloud(provider, key, id) => {
@@ -248,16 +248,7 @@ impl Core {
     /// A chi mandare le richieste per un modello; errore se non è raggiungibile.
     pub(crate) fn target(&self, model: &ModelRef) -> Result<Target> {
         Ok(match model {
-            ModelRef::Local => {
-                let loaded = self
-                    .runtime
-                    .try_lock()
-                    .ok()
-                    .and_then(|mut runtime| runtime.loaded())
-                    .ok_or_else(|| Error::msg("Nessun modello locale caricato."))?;
-                self.touch_local();
-                Target::Local(loaded)
-            }
+            ModelRef::Local { path } => Target::Local(self.local_model(path.as_deref())?),
             ModelRef::Cloud {
                 provider_id,
                 model: id,
@@ -376,6 +367,7 @@ impl Core {
             }
             running.insert(conversation_id, control.clone());
         }
+        self.note_local_activity();
         // Libera la conversazione a qualunque uscita, errori compresi.
         let _running = Running {
             core: self,
@@ -489,6 +481,7 @@ impl Core {
             mcp: mcp_set.as_deref(),
             delegation: None,
             step_tokens: None,
+            unattended: false,
             // Le conversazioni temporanee sono quelle del confronto tra modelli.
             fallback: if self.store().is_temporary(conversation_id)? {
                 Fallback::Off

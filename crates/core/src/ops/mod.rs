@@ -11,6 +11,7 @@ pub(crate) mod mcp_servers;
 pub(crate) mod plugins;
 pub(crate) mod providers;
 pub(crate) mod rounds;
+pub(crate) mod schedules;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod skills;

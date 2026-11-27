@@ -5,6 +5,31 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+### Added
+- **Several local models together:** with "Several local models together" on (Models → Engine,
+  off by default), "Load" adds a model next to the ones already loaded, each with its own
+  `llama-server`, as long as it fits in this PC's memory: there is no fixed number, the app keeps
+  a margin free for the system (5% of VRAM, at least 512 MB; 10% of RAM, at least 2 GB) and an
+  optional "At most" cap. "Loaded models" shows each model with its memory, "Make primary" and
+  "Unload"; a model that does not fit offers "Unload the others and load". The primary model is
+  used wherever none is chosen (existing chats and agents, `local` in the API, VS Code); chats,
+  model comparison and agents can pick any loaded model by name, and the local API accepts
+  `local/<file name>`.
+- **Agents working together:** an agent can have its own local model, which it loads by itself
+  when it starts if it fits next to the others. When a coordinator hands out several tasks in the
+  same turn, the helper agents now work in parallel and their reports come back together.
+- **Scheduled agents:** in Agents → Schedules (or with "Schedule" on an agent's card) an agent
+  can run a task by itself once, every day (also only on chosen days) or every few hours. If the
+  agent uses a local model, the chosen model is loaded at the set time and unloaded when the
+  work is done, if the schedule loaded it and nobody else used it meanwhile; when another model
+  is loaded the schedule waits for it to be unloaded, or replaces it as soon as nobody is using
+  it. Nobody is there to approve anything, so whatever would ask for approval is refused (the
+  form lists what will be refused with the agent's permissions). Every run is a normal session
+  marked "scheduled", with a Windows notification of the result; "Run now" tries it straight
+  away. A run missed while the app was closed or the PC off is done once when the app is back,
+  or skipped. New "Start with Windows" option: the app starts in the notification area when you
+  sign in. Local API: `/api/schedules`.
+
 ## [1.3.2] — 2026-11-26
 
 ### Added

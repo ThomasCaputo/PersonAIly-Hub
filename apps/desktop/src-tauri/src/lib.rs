@@ -23,6 +23,7 @@ use app_core::mcp_oauth::{LoginStart, OAuthStatus};
 use app_core::models::ModelInfo;
 use app_core::named_presets::NamedPreset;
 use app_core::providers::Provider;
+use app_core::schedules::{Schedule, ScheduleEvent, ScheduleOutcome};
 use app_core::skills::{ImportOutcome, Skill, SkillDraft};
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
@@ -38,6 +39,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindowBuilder};
 
 const MAIN_WINDOW: &str = "main";
+/// Argomento con cui Windows avvia l'app all'accesso ("Avvia con Windows"):
+/// parte nell'area di notifica, senza finestra (ADR 0028).
+const TRAY_ARG: &str = "--tray";
 const TRAY_ID: &str = "main";
 
 /// Come si sta chiudendo l'app.
@@ -177,16 +181,34 @@ async fn load_model(
     model_path: String,
     params: LoadParams,
     force: bool,
+    replace: Option<bool>,
 ) -> CmdResult<LoadedModel> {
-    core.load_model(&model_path, &params, force)
-        .await
-        .map_err(text)
+    core.load_model_with(
+        &model_path,
+        &params,
+        app_core::LoadOptions {
+            force,
+            replace_others: replace.unwrap_or(false),
+            make_primary: true,
+        },
+    )
+    .await
+    .map_err(text)
 }
 
+/// Scarica un modello, o tutti senza `model_path`.
 #[tauri::command]
-async fn unload_model(core: CoreState<'_>) -> CmdResult<()> {
-    core.unload_model().await;
+async fn unload_model(core: CoreState<'_>, model_path: Option<String>) -> CmdResult<()> {
+    match model_path {
+        Some(path) => core.unload_local(&path).await,
+        None => core.unload_model().await,
+    }
     Ok(())
+}
+
+#[tauri::command(async)]
+fn set_primary_model(core: CoreState<'_>, model_path: String) -> CmdResult<()> {
+    core.set_primary_model(&model_path).map_err(text)
 }
 
 #[tauri::command]
@@ -691,6 +713,136 @@ fn stop_agent_session(core: CoreState<'_>, id: i64) {
 #[tauri::command(async)]
 fn delete_agent_session(core: CoreState<'_>, id: i64) -> CmdResult<()> {
     core.delete_session(id).map_err(text)
+}
+
+// ── Pianificazioni (ADR 0028) ───────────────────────────────────────────
+
+#[tauri::command(async)]
+fn list_schedules(core: CoreState<'_>) -> CmdResult<Vec<Schedule>> {
+    core.schedules().map_err(text)
+}
+
+#[tauri::command(async)]
+fn save_schedule(core: CoreState<'_>, schedule: Schedule) -> CmdResult<Schedule> {
+    core.save_schedule(schedule).map_err(text)
+}
+
+#[tauri::command(async)]
+fn delete_schedule(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.delete_schedule(id).map_err(text)
+}
+
+/// Esegue subito il compito, con le regole di un'esecuzione pianificata.
+#[tauri::command]
+async fn run_schedule_now(core: CoreState<'_>, id: i64) -> CmdResult<()> {
+    core.run_schedule_now(id).map_err(text)
+}
+
+/// L'app parte da sola all'accesso a Windows, nell'area di notifica.
+#[tauri::command]
+fn autostart_enabled(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> CmdResult<()> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    }
+    .map_err(text)
+}
+
+/// Titolo e testo della notifica per l'esito di un'esecuzione pianificata.
+fn schedule_notice(english: bool, event: &ScheduleEvent) -> (String, String) {
+    let name = &event.agent_name;
+    let title = match (event.outcome, english) {
+        (ScheduleOutcome::Done, false) => format!("{name} ha finito"),
+        (ScheduleOutcome::Done, true) => format!("{name} finished"),
+        (ScheduleOutcome::Failed, false) => format!("{name}: lavoro non riuscito"),
+        (ScheduleOutcome::Failed, true) => format!("{name} failed"),
+        (ScheduleOutcome::Stopped, false) => format!("{name} si è fermato"),
+        (ScheduleOutcome::Stopped, true) => format!("{name} stopped"),
+        (ScheduleOutcome::Skipped, false) => format!("{name}: esecuzione saltata"),
+        (ScheduleOutcome::Skipped, true) => format!("{name}: run skipped"),
+    };
+    let mut lines = Vec::new();
+    if let Some(note) = &event.note {
+        lines.push(if english {
+            english_note(note)
+        } else {
+            note.clone()
+        });
+    }
+    if !event.summary.is_empty() {
+        lines.push(event.summary.clone());
+    }
+    if event.refused > 0 {
+        lines.push(match (english, event.refused) {
+            (false, 1) => "1 azione rifiutata: chiedeva una conferma.".to_string(),
+            (false, n) => format!("{n} azioni rifiutate: chiedevano una conferma."),
+            (true, 1) => "1 action refused: it needed confirmation.".to_string(),
+            (true, n) => format!("{n} actions refused: they needed confirmation."),
+        });
+    }
+    (title, lines.join("\n"))
+}
+
+/// Le note fisse del nucleo in inglese; le altre (errori dei servizi) restano come sono.
+fn english_note(note: &str) -> String {
+    const NOTES: &[(&str, &str)] = &[
+        (
+            "Esecuzione persa:",
+            "Run missed: the app was closed or the PC off at the scheduled time.",
+        ),
+        (
+            "Il lavoro della volta precedente",
+            "The previous run had not finished yet.",
+        ),
+        (
+            "Era caricato un altro modello",
+            "Another model was loaded and nobody unloaded it within an hour.",
+        ),
+        (
+            "Il modello locale è rimasto occupato",
+            "The local model stayed busy for an hour.",
+        ),
+        ("Fermata dopo ", "Stopped at the maximum duration."),
+    ];
+    NOTES
+        .iter()
+        .find(|(it, _)| note.starts_with(it))
+        .map(|(_, en)| en.to_string())
+        .unwrap_or_else(|| note.to_string())
+}
+
+/// Mostra una notifica di Windows per ogni esecuzione pianificata conclusa o
+/// saltata, e avvisa l'interfaccia (se è aperta) di rileggere.
+fn spawn_schedule_notifications(app: AppHandle, core: Arc<Core>) {
+    use tauri::Emitter;
+    use tauri_plugin_notification::NotificationExt;
+    let mut events = core.schedule_events();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let event = match events.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            if event.notify {
+                let english = matches!(core.language().ok().flatten().as_deref(), Some("en"));
+                let (title, body) = schedule_notice(english, &event);
+                if let Err(e) = app.notification().builder().title(title).body(body).show() {
+                    app_core::log::warn(format!("notifica non mostrata: {e}"));
+                }
+            }
+            let _ = app.emit("schedule-finished", event.schedule_id);
+        }
+    });
 }
 
 /// Riporta le cartelle dell'agente a prima della sessione.
@@ -1284,6 +1436,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![TRAY_ARG]),
+        ))
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
                 .on_navigation(|_, url| is_app_page(url))
@@ -1310,10 +1467,19 @@ pub fn run() {
             // chiuderla chiude tutto, come prima.
             let tray = create_tray(app.handle(), &core).is_ok();
             lifecycle.tray.store(tray, Ordering::Relaxed);
+            spawn_schedule_notifications(app.handle().clone(), core.clone());
+            // Avviata da Windows all'accesso: niente finestra, solo l'icona.
+            // Senza icona, o se chiudere la finestra chiude tutto, la finestra resta.
+            let hidden =
+                tray && core.preferences().keep_running && std::env::args().any(|a| a == TRAY_ARG);
             app.manage(core);
             app.manage(api);
             app.manage(lifecycle);
             app.manage(Arc::new(Updates::default()));
+            if hidden && let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                app_core::log::info("avvio nell'area di notifica, senza finestra");
+                let _ = window.destroy();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1392,6 +1558,13 @@ pub fn run() {
             stop_agent_session,
             delete_agent_session,
             restore_agent_session,
+            set_primary_model,
+            list_schedules,
+            save_schedule,
+            delete_schedule,
+            run_schedule_now,
+            autostart_enabled,
+            set_autostart,
             restore_points_available,
             list_providers,
             save_provider,
@@ -1538,6 +1711,39 @@ mod tests {
             serde_json::json!({"type": "modelSwitch", "from": "gemini-pro",
                                "to": "gemini-flash", "reason": "occupato"})
         );
+    }
+
+    #[test]
+    fn la_notifica_di_un_esecuzione_pianificata() {
+        let event = ScheduleEvent {
+            schedule_id: 1,
+            agent_name: "Notturno".into(),
+            outcome: ScheduleOutcome::Done,
+            note: None,
+            session_id: Some(3),
+            summary: "Ho riassunto 4 file.".into(),
+            refused: 2,
+            notify: true,
+        };
+        assert_eq!(
+            schedule_notice(false, &event),
+            (
+                "Notturno ha finito".to_string(),
+                "Ho riassunto 4 file.\n2 azioni rifiutate: chiedevano una conferma.".to_string()
+            )
+        );
+        let skipped = ScheduleEvent {
+            outcome: ScheduleOutcome::Skipped,
+            note: Some(
+                "Esecuzione persa: all'ora stabilita l'app era chiusa o il PC spento.".into(),
+            ),
+            summary: String::new(),
+            refused: 0,
+            ..event
+        };
+        let (title, body) = schedule_notice(true, &skipped);
+        assert_eq!(title, "Notturno: run skipped");
+        assert!(body.starts_with("Run missed"), "{body}");
     }
 
     #[test]

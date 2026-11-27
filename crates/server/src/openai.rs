@@ -45,20 +45,30 @@ fn now_secs() -> u64 {
 // ── Modelli ─────────────────────────────────────────────────────────────
 
 async fn models(State(state): State<ApiState>) -> ApiResult<Json<Value>> {
-    let loaded = state.core.status().await.loaded;
+    let status = state.core.status().await;
     let core = state.core.clone();
     let providers = tokio::task::spawn_blocking(move || core.providers())
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
     let mut data = Vec::new();
-    if let Some(loaded) = loaded {
+    // `local` è il principale; ogni modello caricato ha anche il suo nome.
+    if let Some(loaded) = &status.loaded {
         data.push(json!({
             "id": LOCAL_MODEL,
             "object": "model",
             "created": 0,
             "owned_by": "local",
             "name": loaded.model_name,
+        }));
+    }
+    for entry in &status.models {
+        data.push(json!({
+            "id": format!("{LOCAL_MODEL}/{}", app_core::model_file_name(&entry.model.model_path)),
+            "object": "model",
+            "created": 0,
+            "owned_by": "local",
+            "name": entry.model.model_name,
         }));
     }
     for info in providers.iter().filter(|p| p.has_key) {
@@ -78,8 +88,14 @@ async fn models(State(state): State<ApiState>) -> ApiResult<Json<Value>> {
 /// Dal nome del modello nella richiesta al modello dell'app.
 pub(crate) fn parse_model(name: &str) -> Result<ModelRef, String> {
     let name = name.trim();
-    if name == LOCAL_MODEL || name.starts_with("local/") {
-        return Ok(ModelRef::Local);
+    if name == LOCAL_MODEL {
+        return Ok(ModelRef::Local { path: None });
+    }
+    // Il nome del file: si cerca fra i modelli caricati con `resolve_local`.
+    if let Some(file) = name.strip_prefix("local/") {
+        return Ok(ModelRef::Local {
+            path: Some(file.to_string()),
+        });
     }
     match name.split_once('/') {
         Some((provider, model)) if !provider.is_empty() && !model.is_empty() => {
@@ -93,6 +109,27 @@ pub(crate) fn parse_model(name: &str) -> Result<ModelRef, String> {
              oppure \"<provider>/<modello>\" come in GET /v1/models."
         )),
     }
+}
+
+/// Da `local/<nome del file>` al percorso del modello caricato con quel nome.
+fn resolve_local(
+    model: ModelRef,
+    loaded: &[app_core::local::runtime::LoadedModel],
+) -> Result<ModelRef, String> {
+    let ModelRef::Local { path: Some(name) } = &model else {
+        return Ok(model);
+    };
+    loaded
+        .iter()
+        .find(|m| app_core::model_file_name(&m.model_path).eq_ignore_ascii_case(name))
+        .map(|m| ModelRef::Local {
+            path: Some(m.model_path.clone()),
+        })
+        .ok_or_else(|| {
+            format!(
+                "Il modello locale \"{name}\" non è caricato: i modelli caricati sono in GET /v1/models."
+            )
+        })
 }
 
 // ── Richiesta ───────────────────────────────────────────────────────────
@@ -333,7 +370,9 @@ async fn chat_completions(
     State(state): State<ApiState>,
     Json(request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
-    let model = parse_model(&request.model).map_err(|e| ApiError::new(StatusCode::NOT_FOUND, e))?;
+    let model = parse_model(&request.model)
+        .and_then(|m| resolve_local(m, &state.core.loaded_models()))
+        .map_err(|e| ApiError::new(StatusCode::NOT_FOUND, e))?;
     let messages = to_chat_messages(request.messages).map_err(ApiError::bad_request)?;
     let tools = to_tool_defs(request.tools);
     let overrides = SamplingOverrides {
@@ -476,8 +515,19 @@ mod tests {
 
     #[test]
     fn model_names() {
-        assert_eq!(parse_model("local"), Ok(ModelRef::Local));
-        assert_eq!(parse_model("local/qwen"), Ok(ModelRef::Local));
+        assert_eq!(parse_model("local"), Ok(ModelRef::Local { path: None }));
+        assert_eq!(
+            parse_model("local/qwen"),
+            Ok(ModelRef::Local {
+                path: Some("qwen".into())
+            })
+        );
+        // Un nome che non corrisponde a nessun modello caricato non usa il principale.
+        assert!(resolve_local(parse_model("local/qwen").unwrap(), &[]).is_err());
+        assert_eq!(
+            resolve_local(ModelRef::Local { path: None }, &[]),
+            Ok(ModelRef::Local { path: None })
+        );
         assert_eq!(
             parse_model("openrouter-1a/anthropic/claude"),
             Ok(ModelRef::Cloud {

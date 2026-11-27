@@ -33,3 +33,5 @@ ADR che sostituisce il precedente.
 | [0025](0025-prompt-mcp.md) | Prompt dei server MCP come comandi `/` in chat | Accettata e provata con un server pubblicato |
 | [0026](0026-plugin.md) | Plugin nel formato di Claude Code: skill, server MCP, agenti e comandi in un pacchetto | Accettata; da provare con un plugin pubblicato |
 | [0027](0027-modelli-di-riserva.md) | Modelli di riserva: code di modelli cloud (predefinita e per chat o agente) da provare quando quello scelto dà errore | Accettata; da provare con un servizio vero |
+| [0028](0028-agenti-pianificati.md) | Agenti pianificati: il modello si carica all'ora stabilita e se ne va a lavoro finito; senza nessuno a confermare, ciò che chiederebbe conferma si rifiuta | Accettata e provata con un modello locale; notifiche e avvio con Windows solo con test automatici |
+| [0029](0029-piu-modelli-locali.md) | Più modelli locali insieme (un `llama-server` per modello, un principale), agenti con un modello proprio e deleghe in parallelo | Accettata e provata con due modelli locali; interfaccia solo con test automatici |

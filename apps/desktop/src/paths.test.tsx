@@ -54,6 +54,10 @@ const STATUS = {
   processRamBytes: null,
   processGpu: null,
   vramSpillBytes: null,
+  models: [],
+  multiModel: false,
+  roomVramBytes: null,
+  roomRamBytes: null,
 };
 
 let nextId = 100;

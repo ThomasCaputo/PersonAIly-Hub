@@ -289,6 +289,7 @@ async fn drive(
     let target = Target::Cloud(provider, "chiave".into(), "modello".into());
     let chat = chat_history(core.messages(session.conversation_id).unwrap(), true);
     let scope = RunScope {
+        unattended: false,
         conversation_id: session.conversation_id,
         session_id: Some(session.id),
         source: agent.name.clone(),
@@ -358,7 +359,12 @@ fn la_catena_delle_deleghe() {
     .normalized();
     assert_eq!(me.delegates, [helper.id]);
     let tool = agents::delegate_tool(&[helper]);
-    assert!(tool.description.contains("- Aiutante: Scrive i file"));
+    assert!(
+        tool.description
+            .contains("- Aiutante (modello locale principale): Scrive i file"),
+        "{}",
+        tool.description
+    );
     assert_eq!(tool.schema["properties"]["agent"]["enum"][0], "Aiutante");
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);
@@ -462,6 +468,7 @@ async fn il_limite_di_spesa_ferma_i_modelli_cloud() {
     let target = Target::Cloud(provider, "chiave".into(), "modello".into());
     let control = RunControl::new();
     let scope = RunScope {
+        unattended: false,
         conversation_id: conv,
         session_id: Some(session.id),
         source: agent.name.clone(),
@@ -619,6 +626,7 @@ async fn consenti_sempre_su_uno_strumento_mcp_vale_solo_per_quello() {
     let chat = chat_history(core.messages(session.conversation_id).unwrap(), true);
     let control = RunControl::new();
     let scope = RunScope {
+        unattended: false,
         conversation_id: session.conversation_id,
         session_id: Some(session.id),
         source: "Prova".into(),
@@ -790,6 +798,7 @@ async fn in_chat_consenti_tutto_non_copre_gli_strumenti_mcp() {
     let chat = chat_history(core.messages(conv).unwrap(), true);
     let control = RunControl::new();
     let scope = RunScope {
+        unattended: false,
         conversation_id: conv,
         session_id: None,
         source: "Chat".into(),
@@ -1039,6 +1048,7 @@ async fn il_modello_carica_una_skill_senza_chiedere() {
     let chat = chat_history(core.messages(conv).unwrap(), true);
     let control = RunControl::new();
     let scope = RunScope {
+        unattended: false,
         conversation_id: conv,
         session_id: None,
         source: "Chat".into(),
@@ -1687,6 +1697,7 @@ async fn answer_with(
     let target = Target::Cloud(primary.clone(), "chiave-finta".into(), model.into());
     let control = RunControl::new();
     let scope = RunScope {
+        unattended: false,
         conversation_id: conv,
         session_id: None,
         source: "prova".into(),
@@ -1737,7 +1748,10 @@ fn la_coda_di_riserva_accetta_solo_modelli_cloud() {
         .unwrap();
     assert_eq!(core.fallback_models(), [b.clone(), a.clone()]);
 
-    assert!(core.set_fallback_models(&[ModelRef::Local]).is_err());
+    assert!(
+        core.set_fallback_models(&[ModelRef::Local { path: None }])
+            .is_err()
+    );
     let empty = ModelRef::Cloud {
         provider_id: " ".into(),
         model: "m".into(),
@@ -2039,7 +2053,7 @@ async fn ogni_conversazione_puo_avere_la_sua_coda_di_riserva() {
         core.set_conversation_tools(
             default,
             &ToolSettings {
-                fallback_models: Some(vec![ModelRef::Local]),
+                fallback_models: Some(vec![ModelRef::Local { path: None }]),
                 ..Default::default()
             },
         )
@@ -2099,12 +2113,346 @@ fn la_coda_di_riserva_di_un_agente() {
     assert!(
         core.save_agent(Agent {
             name: "Coda sbagliata".into(),
-            fallback_models: Some(vec![ModelRef::Local]),
+            fallback_models: Some(vec![ModelRef::Local { path: None }]),
             ..Default::default()
         })
         .is_err()
     );
 
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un agente con modello cloud finto e una sua pianificazione, pronti per una prova.
+fn schedule_fixture(
+    name: &str,
+    replies: Vec<Vec<serde_json::Value>>,
+) -> (Arc<Core>, PathBuf, schedules::Schedule) {
+    let dir = std::env::temp_dir().join(format!("core-pian-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let work = dir.join("progetto");
+    std::fs::create_dir_all(&work).unwrap();
+    let core = Arc::new(Core::new(&dir.join("dati")).unwrap());
+    let provider = fake_provider(&core, name, fake_service(replies));
+    let agent = core
+        .save_agent(Agent {
+            name: "Notturno".into(),
+            model: cloud(&provider, "modello"),
+            folders: vec![work.to_string_lossy().into_owned()],
+            tools: ToolSettings {
+                files: true,
+                terminal: true,
+                permission: PermissionLevel::Ask,
+                ..Default::default()
+            },
+            restore_points: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let schedule = core
+        .save_schedule(schedules::Schedule {
+            agent_id: agent.id,
+            task: "Esegui il comando".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    (core, dir, schedule)
+}
+
+async fn next_event(
+    events: &mut tokio::sync::broadcast::Receiver<schedules::ScheduleEvent>,
+) -> schedules::ScheduleEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(30), events.recv())
+        .await
+        .expect("nessun esito entro 30 secondi")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn un_esecuzione_pianificata_rifiuta_cio_che_chiederebbe_conferma() {
+    let (core, dir, schedule) = schedule_fixture(
+        "rifiuto",
+        vec![
+            command_call("New-Item segno.txt"),
+            final_text("Non ho potuto eseguire il comando."),
+        ],
+    );
+    // Salvata con la prossima esecuzione domani alle 8: niente parte da solo.
+    assert!(schedule.next_run.is_some());
+    assert_eq!(schedule.local_model, None);
+
+    let mut events = core.schedule_events();
+    core.run_schedule_now(schedule.id).unwrap();
+    // Due volte insieme no.
+    assert!(core.run_schedule_now(schedule.id).is_err());
+    let event = next_event(&mut events).await;
+
+    assert_eq!(event.schedule_id, schedule.id);
+    assert_eq!(event.agent_name, "Notturno");
+    assert_eq!(event.outcome, schedules::ScheduleOutcome::Done);
+    assert_eq!(event.refused, 1);
+    assert_eq!(event.summary, "Non ho potuto eseguire il comando.");
+    assert!(event.notify);
+    assert!(!dir.join("progetto").join("segno.txt").exists());
+
+    let session = core.session(event.session_id.unwrap()).unwrap();
+    assert_eq!(session.schedule_id, Some(schedule.id));
+    assert!(session.unattended);
+    assert!(session.task.starts_with("Esecuzione pianificata del "));
+    assert!(session.task.ends_with("Esegui il comando"));
+    let actions = core.actions(10, Some(session.id)).unwrap();
+    assert_eq!(actions[0].approval, "unattended");
+    let messages = core.messages(session.conversation_id).unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.role == "tool" && m.content.contains("esecuzione pianificata"))
+    );
+
+    let saved = &core.schedules().unwrap()[0];
+    assert_eq!(saved.last_outcome, Some(schedules::ScheduleOutcome::Done));
+    assert_eq!(saved.last_session_id, Some(session.id));
+    assert!(saved.last_run.is_some());
+    // Finita, non è più in coda.
+    assert!(!saved.running);
+
+    // Chi risponde all'agente è lì: le conferme tornano a chiedersi.
+    let replied = core.reply_session(session.id, "Riprova").unwrap();
+    assert!(!replied.unattended);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn un_esecuzione_persa_da_troppo_si_salta() {
+    let (core, dir, schedule) = schedule_fixture("persa", vec![]);
+    let mut events = core.schedule_events();
+    // Doveva partire due giorni fa: per una giornaliera è oltre il periodo.
+    let two_days_ago = jiff::Timestamp::now().as_second() - 2 * 24 * 60 * 60;
+    core.store()
+        .set_schedule_next_run(schedule.id, Some(two_days_ago))
+        .unwrap();
+    core.check_schedules();
+    let event = next_event(&mut events).await;
+    assert_eq!(event.outcome, schedules::ScheduleOutcome::Skipped);
+    assert_eq!(event.session_id, None);
+    assert!(event.note.unwrap().contains("persa"));
+    let saved = &core.schedules().unwrap()[0];
+    // La prossima si calcola da adesso.
+    assert!(saved.next_run.unwrap() > jiff::Timestamp::now().as_second());
+    assert!(core.sessions().unwrap().is_empty());
+
+    // Sospesa: niente prossima esecuzione. Riattivata: di nuovo da adesso.
+    let paused = core
+        .save_schedule(schedules::Schedule {
+            enabled: false,
+            ..saved.clone()
+        })
+        .unwrap();
+    assert_eq!(paused.next_run, None);
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn un_agente_locale_pianificato_vuole_il_suo_modello() {
+    let dir = std::env::temp_dir().join(format!("core-pian-locale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir).unwrap();
+    let agent = core
+        .save_agent(Agent {
+            name: "Locale".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut schedule = schedules::Schedule {
+        agent_id: agent.id,
+        task: "Riassumi".into(),
+        ..Default::default()
+    };
+    assert!(core.save_schedule(schedule.clone()).is_err());
+    schedule.local_model = Some(r"C:\modelli\qwen.gguf".into());
+    let saved = core.save_schedule(schedule).unwrap();
+    assert_eq!(saved.local_model.as_deref(), Some(r"C:\modelli\qwen.gguf"));
+    // Una volta sola nel passato non si salva.
+    assert!(
+        core.save_schedule(schedules::Schedule {
+            recurrence: schedules::Recurrence::Once {
+                at: "2020-01-01T08:00".into()
+            },
+            ..saved.clone()
+        })
+        .is_err()
+    );
+    // Eliminare l'agente elimina le sue pianificazioni.
+    core.delete_agent(agent.id).unwrap();
+    assert!(core.schedules().unwrap().is_empty());
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un servizio finto che risponde a ogni richiesta, anche più insieme, dopo
+/// `delay` e sempre con lo stesso testo.
+fn slow_service(delay: std::time::Duration, text: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            std::thread::spawn(move || {
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    request.extend_from_slice(&buf[..n]);
+                    let head = String::from_utf8_lossy(&request).to_lowercase();
+                    if let Some(end) = head.find("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                std::thread::sleep(delay);
+                let mut body = String::new();
+                for chunk in final_text(text) {
+                    body.push_str(&format!("data: {chunk}\n\n"));
+                }
+                body.push_str("data: [DONE]\n\n");
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+fn delegate_call(id: &str, agent: &str, task: &str) -> serde_json::Value {
+    let arguments = serde_json::json!({ "agent": agent, "task": task }).to_string();
+    serde_json::json!({ "index": 0, "id": id,
+        "function": {"name": agents::DELEGATE_TOOL, "arguments": arguments} })
+}
+
+#[tokio::test]
+async fn le_deleghe_dello_stesso_turno_lavorano_insieme() {
+    let dir = std::env::temp_dir().join(format!("core-deleghe-par-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir).unwrap();
+    let helpers = fake_provider(
+        &core,
+        "aiutanti",
+        slow_service(std::time::Duration::from_millis(1000), "Fatto."),
+    );
+    let mut calls = vec![
+        delegate_call("call_a", "Primo", "Scrivi A"),
+        delegate_call("call_b", "Secondo", "Scrivi B"),
+    ];
+    calls[1]["index"] = serde_json::json!(1);
+    let coordinator = fake_provider(
+        &core,
+        "coordinatore",
+        fake_service(vec![
+            vec![
+                serde_json::json!({"choices": [{"delta": {"tool_calls": calls},
+                "finish_reason": "tool_calls"}]}),
+            ],
+            final_text("Tutto fatto."),
+        ]),
+    );
+    let helper = |name: &str| {
+        core.save_agent(Agent {
+            name: name.into(),
+            model: cloud(&helpers, "piccolo"),
+            restore_points: false,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let (first, second) = (helper("Primo"), helper("Secondo"));
+    let boss = core
+        .save_agent(Agent {
+            name: "Coordinatore".into(),
+            model: cloud(&coordinator, "grande"),
+            tools: ToolSettings {
+                files: false,
+                terminal: false,
+                permission: PermissionLevel::All,
+                ..Default::default()
+            },
+            delegates: vec![first.id, second.id],
+            restore_points: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let session = core.create_session(boss.id, "Dividi il lavoro").unwrap();
+
+    let started = std::time::Instant::now();
+    core.run_session(session.id).await.unwrap();
+    let elapsed = started.elapsed();
+    // In fila ci vorrebbero almeno due secondi.
+    assert!(
+        elapsed < std::time::Duration::from_millis(1900),
+        "{elapsed:?}"
+    );
+
+    let session = core.session(session.id).unwrap();
+    assert_eq!(session.status, SessionStatus::Done);
+    let messages = core.messages(session.conversation_id).unwrap();
+    let tools: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.role == "tool")
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(tools.len(), 2);
+    // I resoconti nell'ordine delle chiamate.
+    assert!(
+        tools[0].contains("di Primo") && tools[0].contains("Fatto."),
+        "{}",
+        tools[0]
+    );
+    assert!(tools[1].contains("di Secondo"), "{}", tools[1]);
+    let children: Vec<_> = core
+        .sessions()
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.parent_session_id == Some(session.id))
+        .collect();
+    assert_eq!(children.len(), 2);
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn senza_modelli_caricati_il_principale_non_c_e() {
+    let dir = std::env::temp_dir().join(format!("core-principale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let core = Core::new(&dir).unwrap();
+    assert!(core.primary_model().is_none());
+    let err = core.local_model(None).unwrap_err().to_string();
+    assert_eq!(err, "Nessun modello locale caricato.");
+    let err = core
+        .local_model(Some(r"C:\modelli\Qwen2.5-7B.gguf"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("«Qwen2.5-7B» non è caricato"), "{err}");
+    assert!(core.set_primary_model(r"C:\modelli\x.gguf").is_err());
+    // `{"kind": "local"}` salvato prima resta il principale.
+    let old: ModelRef = serde_json::from_str(r#"{"kind":"local"}"#).unwrap();
+    assert_eq!(old, ModelRef::Local { path: None });
+    assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"kind":"local"}"#);
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);
 }

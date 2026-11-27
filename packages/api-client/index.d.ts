@@ -18,7 +18,14 @@ export type LoadBody = { path: string,
 /**
  * Carica anche se la stima dice che non entra in memoria.
  */
-force?: boolean, };
+force?: boolean, 
+/**
+ * Scarica prima gli altri modelli, anche con "Più modelli locali insieme"
+ * acceso (ADR 0029). Spento, il modello va accanto agli altri se entra.
+ */
+replace?: boolean, };
+
+export type PathBody = { path: string, };
 
 export type InfillBody = { 
 /**
@@ -119,22 +126,53 @@ maxTokens: number | null, stop: Array<string>, };
 
 export type RuntimeStatus = { 
 /**
- * `true` mentre un modello è in fase di caricamento.
+ * `true` mentre un modello è in fase di caricamento (o scaricamento).
  */
-loading: boolean, loaded: LoadedModel | null, memory: MemorySnapshot, 
+loading: boolean, 
 /**
- * RAM occupata dal processo del modello.
+ * Il modello principale (ADR 0029).
+ */
+loaded: LoadedModel | null, memory: MemorySnapshot, 
+/**
+ * RAM occupata dai processi dei modelli, sommata.
  */
 processRamBytes: number | null, 
 /**
- * Memoria grafica dedicata e condivisa del processo del modello.
+ * Memoria grafica dedicata e condivisa dei processi dei modelli, sommata.
  */
 processGpu: ProcessGpuMemory | null, 
 /**
  * Presente se un modello caricato in VRAM sta sconfinando in RAM:
- * quanta RAM il driver sta usando al posto della VRAM.
+ * quanta RAM il driver sta usando al posto della VRAM (somma di tutti).
  */
-vramSpillBytes: number | null, };
+vramSpillBytes: number | null, 
+/**
+ * Ogni modello caricato, in ordine di caricamento.
+ */
+models: Array<LocalModelStatus>, 
+/**
+ * "Più modelli locali insieme" è acceso.
+ */
+multiModel: boolean, 
+/**
+ * Con più modelli insieme: VRAM e RAM ancora disponibili per un altro
+ * modello, tolto il margine per il sistema.
+ */
+roomVramBytes: number | null, roomRamBytes: number | null, };
+
+export type LocalModelStatus = { 
+/**
+ * È il principale: quello usato quando non se ne sceglie uno.
+ */
+primary: boolean, processRamBytes: number | null, processGpu: ProcessGpuMemory | null, vramSpillBytes: number | null, modelPath: string, modelName: string, params: LoadParams, port: number, pid: number, 
+/**
+ * Cartella della versione di llama.cpp che lo esegue (`b12110-cuda`).
+ */
+engine: string, 
+/**
+ * Caricato con il suo componente visivo (`mmproj`): legge le immagini.
+ */
+vision: boolean, };
 
 export type MemorySnapshot = { ramTotalBytes: number, ramAvailableBytes: number, 
 /**
@@ -197,7 +235,7 @@ inputPrice: number | null,
  */
 outputPrice: number | null, };
 
-export type ModelRef = { "kind": "local" } | { "kind": "cloud", providerId: string, model: string, };
+export type ModelRef = { "kind": "local", path?: string, } | { "kind": "cloud", providerId: string, model: string, };
 
 export type Conversation = { id: number, title: string, createdAt: string, updatedAt: string, };
 
@@ -422,7 +460,17 @@ restorePoints: Array<RestorePoint>,
 /**
  * La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente.
  */
-parentSessionId: number | null, };
+parentSessionId: number | null, 
+/**
+ * La pianificazione che l'ha avviata (ADR 0028).
+ */
+scheduleId: number | null, 
+/**
+ * Nessuno la sorveglia: gli strumenti che chiederebbero conferma si
+ * rifiutano. Vale per le sessioni pianificate e per quelle a cui
+ * affidano lavoro; rispondere all'agente lo spegne.
+ */
+unattended: boolean, };
 
 export type RestorePoint = { folder: string, 
 /**
@@ -447,3 +495,57 @@ export type LiveState = { status: SessionStatus | null, streaming: string, reaso
 revision: number, };
 
 export type PendingRequest = { id: string, name: string, summary: string, arguments: JsonValue, };
+
+export type Schedule = { 
+/**
+ * 0 per una non ancora salvata.
+ */
+id: number, agentId: number, task: string, recurrence: Recurrence, 
+/**
+ * Il file GGUF da caricare, per gli agenti con modello locale.
+ */
+localModel?: string, onConflict: OnConflict, onMissed: OnMissed, notify: NotifyWhen, 
+/**
+ * Oltre questi minuti la sessione si ferma.
+ */
+maxMinutes: number, 
+/**
+ * Sospesa: resta salvata ma non parte.
+ */
+enabled: boolean, 
+/**
+ * Prossima esecuzione, in secondi dal 1970 (UTC).
+ */
+nextRun?: number, lastRun?: number, lastOutcome?: ScheduleOutcome, lastNote?: string, lastSessionId?: number, 
+/**
+ * In coda o al lavoro in questo momento.
+ */
+running: boolean, };
+
+export type Recurrence = { "kind": "once", at: string, } | { "kind": "daily", time: string, weekdays: Array<number>, } | { "kind": "everyHours", hours: number, start: string, weekdays: Array<number>, };
+
+export type OnConflict = "wait" | "replace";
+
+export type OnMissed = "catchUp" | "skip";
+
+export type NotifyWhen = "always" | "problems" | "never";
+
+export type ScheduleOutcome = "done" | "failed" | "stopped" | "skipped";
+
+export type ScheduleEvent = { scheduleId: number, agentName: string, outcome: ScheduleOutcome, 
+/**
+ * Errore, avviso o motivo del salto.
+ */
+note: string | null, sessionId: number | null, 
+/**
+ * Prima riga dell'ultima risposta dell'agente.
+ */
+summary: string, 
+/**
+ * Strumenti rifiutati perché avrebbero chiesto conferma.
+ */
+refused: number, 
+/**
+ * Va mostrata una notifica, secondo la scelta della pianificazione.
+ */
+notify: boolean, };

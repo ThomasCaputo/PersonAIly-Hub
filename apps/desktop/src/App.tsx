@@ -72,6 +72,7 @@ function readStoredModel(): ModelRef {
   try {
     const stored = JSON.parse(localStorage.getItem(ACTIVE_MODEL_KEY) ?? "null");
     if (stored?.kind === "cloud" && stored.providerId && stored.model) return stored;
+    if (stored?.kind === "local" && typeof stored.path === "string" && stored.path) return { kind: "local", path: stored.path };
   } catch {
     // Memoria non disponibile o contenuto non valido: si parte dal modello locale.
   }
@@ -257,7 +258,10 @@ export default function App() {
   // chiave è il percorso del file, per uno cloud provider + modello.
   const loadedPath = status?.loaded?.modelPath ?? null;
   const presetKey = useMemo(
-    () => (activeModel.kind === "cloud" ? cloudPresetKey(activeModel.providerId, activeModel.model) : loadedPath),
+    () =>
+      activeModel.kind === "cloud"
+        ? cloudPresetKey(activeModel.providerId, activeModel.model)
+        : (activeModel.path ?? loadedPath),
     [activeModel, loadedPath],
   );
 
@@ -387,9 +391,15 @@ function StatusPanel({ status, core }: { status: RuntimeStatus | null; core: Cor
   return (
     <div className="status">
       <div className="status-model" role="status">
-        {status?.loading
+        {status?.loading && !status.loaded
           ? t("Caricamento del modello…")
           : (status?.loaded?.modelName ?? t("Nessun modello locale caricato"))}
+        {status && status.models.length > 1 && (
+          <span className="dim" title={status.models.map((m) => m.modelName).join(", ")}>
+            {" "}
+            {t("+{n} altri", { n: status.models.length - 1 })}
+          </span>
+        )}
       </div>
       {status?.loaded && (
         <div className="dim">

@@ -28,6 +28,28 @@ export const CORE_EN: Record<string, string> = {
 
   // Errori frequenti
   "Agente non trovato: forse è stato eliminato.": "Agent not found: it may have been deleted.",
+
+  // Più modelli locali (ADR 0029)
+  "Il modello locale si sta caricando: aspetta.": "The local model is loading: wait.",
+  "Questo modello non è caricato.": "This model is not loaded.",
+
+  // Pianificazioni (ADR 0028)
+  "Azione non disponibile in un'esecuzione pianificata: chiederebbe una conferma e nessuno può darla. Non riprovarla: fai ciò che puoi senza, e nel resoconto finale scrivi cosa non hai potuto fare e perché.":
+    "Action not available in a scheduled run: it would ask for approval and nobody can give it. Do not retry it: do what you can without it, and in your final report say what you could not do and why.",
+  "Esecuzione persa: all'ora stabilita l'app era chiusa o il PC spento.":
+    "Run missed: the app was closed or the PC off at the set time.",
+  "Il lavoro della volta precedente non era ancora finito.": "The previous run had not finished yet.",
+  "Era caricato un altro modello e nessuno l'ha scaricato entro un'ora.":
+    "Another model was loaded and nobody unloaded it within an hour.",
+  "Il modello locale è rimasto occupato per un'ora.": "The local model stayed busy for an hour.",
+  "L'agente usa un modello locale: scegli quale caricare.": "The agent uses a local model: choose which one to load.",
+  "La data scelta è già passata.": "The chosen date has already passed.",
+  "Questa pianificazione sta già lavorando.": "This schedule is already running.",
+  "Pianificazione non trovata: forse è stata eliminata.": "Schedule not found: it may have been deleted.",
+  "Scrivi il compito da eseguire.": "Write the task to run.",
+  "Il compito è troppo lungo.": "The task is too long.",
+  "L'intervallo va da 1 a 24 ore.": "The interval goes from 1 to 24 hours.",
+  "Giorni della settimana non validi.": "Invalid days of the week.",
   "Allegato senza nome.": "Attachment without a name.",
   "Dai un nome al preset.": "Give the preset a name.",
   "Dai un nome al provider.": "Give the provider a name.",
@@ -193,6 +215,18 @@ export const CORE_PATTERNS_EN: [RegExp, string][] = [
   [/^Leggere il file (.*)$/s, "Read the file $1"],
   [/^Ripristinare le cartelle: (.*)$/s, "Restore the folders: $1"],
   [/^Affidare a (.*?): (.*)$/s, "Hand over to $1: $2"],
+  [/^Fermata dopo (\d+) minuti, la durata massima scelta\.$/s, "Stopped after $1 minutes, the chosen maximum duration."],
+  [/^Esecuzione pianificata del (.*)$/s, "Scheduled run, $1"],
+  [/^Il modello locale «(.*)» non è caricato: caricalo nella pagina Modelli\.$/s, "The local model “$1” is not loaded: load it in the Models page."],
+  [
+    /^L'agente usa il modello locale «(.*)», che non è caricato e non entra accanto agli altri: scaricane uno, oppure caricalo tu nella pagina Modelli\.$/s,
+    "The agent uses the local model “$1”, which is not loaded and does not fit next to the others: unload one, or load it yourself in the Models page.",
+  ],
+  [
+    /^Ci sono già (\d+) modelli locali caricati, il massimo che hai scelto: scaricane uno, o carica questo al posto degli altri\.$/s,
+    "There are already $1 local models loaded, the maximum you chose: unload one, or load this one instead of the others.",
+  ],
+  [/^(.*) Con altri modelli caricati l'app tiene libero un margine per il sistema: scarica un altro modello, o carica questo al posto degli altri\.$/s, "$1 With other models loaded the app keeps a margin free for the system: unload another model, or load this one instead of the others."],
   [/^Cercare nei documenti: (.*)$/s, "Search the documents: $1"],
   [/^Caricare la skill «(.*)»$/s, "Load the skill “$1”"],
   [/^Server MCP «(.*)» saltato: usa il trasporto SSE, che l'app non supporta\.$/s, "MCP server “$1” skipped: it uses the SSE transport, which the app does not support."],

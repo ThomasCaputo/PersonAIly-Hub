@@ -289,11 +289,19 @@ Ciò che resta (certificato Authenticode, prove dal vivo, tag) è in
       predefinita nelle Impostazioni e propria per ogni chat o agente
       ([ADR 0027](adr/0027-modelli-di-riserva.md)).
 - [ ] Modelli di riserva provati con un servizio vero (Google AI Studio gratuito).
+- [x] Agenti pianificati, AG-9: compito e ricorrenza per agente, modello locale caricato
+      all'ora stabilita e scaricato dopo, strumenti da confermare rifiutati, "Avvia con
+      Windows", notifiche ([ADR 0028](adr/0028-agenti-pianificati.md)).
+- [ ] Agenti pianificati provati nell'app installata: notifica di Windows e avvio
+      all'accesso con "Avvia con Windows".
+- [x] Più modelli locali caricati insieme (LO-11), finché entrano nella memoria del PC con un
+      margine proporzionale, e agenti che cooperano con deleghe in parallelo (AG-10)
+      ([ADR 0029](adr/0029-piu-modelli-locali.md)).
+- [ ] Più modelli locali provati nell'interfaccia dell'app installata.
 
 ## Dopo
 
 Linux e macOS (GE-2), Gemini (CL-3).
 
-Idee ancora da valutare: catalogo di plugin da installare con un clic, più modelli locali
-caricati insieme.
+Idee ancora da valutare: catalogo di plugin da installare con un clic.
 

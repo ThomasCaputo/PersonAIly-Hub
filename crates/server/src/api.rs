@@ -12,6 +12,7 @@ use app_core::instance::InstanceKind;
 use app_core::local::SamplingParams;
 use app_core::local::runtime::LoadedModel;
 use app_core::models::ModelInfo;
+use app_core::schedules::Schedule;
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::ToolSettings;
 use app_core::{Approval, Core, ModelRef, ProviderInfo, RuntimeStatus};
@@ -34,6 +35,7 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/models", get(models))
         .route("/api/local/load", post(load_model))
         .route("/api/local/unload", post(unload_model))
+        .route("/api/local/primary", post(set_primary_model))
         .route("/api/infill", post(infill))
         .route(
             "/api/conversations",
@@ -65,6 +67,12 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/sessions/{id}/resume", post(resume_session))
         .route("/api/sessions/{id}/stop", post(stop_session))
         .route("/api/sessions/{id}/reply", post(reply_session))
+        .route("/api/schedules", get(schedules).post(save_schedule))
+        .route(
+            "/api/schedules/{id}",
+            axum::routing::put(update_schedule).delete(delete_schedule),
+        )
+        .route("/api/schedules/{id}/run", post(run_schedule))
 }
 
 /// Esegue fuori dal ciclo asincrono un'operazione che legge il disco o il portachiavi.
@@ -157,6 +165,18 @@ pub(crate) struct LoadBody {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     force: bool,
+    /// Scarica prima gli altri modelli, anche con "Più modelli locali insieme"
+    /// acceso (ADR 0029). Spento, il modello va accanto agli altri se entra.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    replace: bool,
+}
+
+/// Un modello locale caricato, indicato dal suo file.
+#[derive(Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PathBody {
+    path: String,
 }
 
 /// Carica un modello della libreria con i parametri del suo preset.
@@ -182,7 +202,15 @@ async fn load_model(
         .load;
     let loaded = state
         .core
-        .load_model(&body.path, &params, body.force)
+        .load_model_with(
+            &body.path,
+            &params,
+            app_core::LoadOptions {
+                force: body.force,
+                replace_others: body.replace,
+                make_primary: true,
+            },
+        )
         .await?;
     Ok(Json(loaded))
 }
@@ -219,9 +247,28 @@ async fn infill(
     Ok(Json(InfillReply { text }))
 }
 
-async fn unload_model(State(state): State<ApiState>) -> StatusCode {
-    state.core.unload_model().await;
-    StatusCode::NO_CONTENT
+/// Scarica un modello (`{"path": …}`) o, senza corpo, tutti.
+async fn unload_model(
+    State(state): State<ApiState>,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        state.core.unload_model().await;
+    } else {
+        let body: PathBody = serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request(format!("corpo non valido: {e}")))?;
+        state.core.unload_local(&body.path).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Rende principale un modello già caricato.
+async fn set_primary_model(
+    State(state): State<ApiState>,
+    Json(body): Json<PathBody>,
+) -> ApiResult<StatusCode> {
+    state.core.set_primary_model(&body.path)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── Conversazioni ───────────────────────────────────────────────────────
@@ -603,4 +650,52 @@ async fn delete_session(
 ) -> ApiResult<StatusCode> {
     blocking(&state.core, move |core| core.delete_session(id)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Pianificazioni (ADR 0028) ───────────────────────────────────────────
+
+async fn schedules(State(state): State<ApiState>) -> ApiResult<Json<Vec<Schedule>>> {
+    Ok(Json(blocking(&state.core, |core| core.schedules()).await?))
+}
+
+/// Crea una pianificazione (l'`id` del corpo si ignora).
+async fn save_schedule(
+    State(state): State<ApiState>,
+    Json(body): Json<Schedule>,
+) -> ApiResult<Json<Schedule>> {
+    let body = Schedule { id: 0, ..body };
+    Ok(Json(
+        blocking(&state.core, move |core| core.save_schedule(body)).await?,
+    ))
+}
+
+async fn update_schedule(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+    Json(body): Json<Schedule>,
+) -> ApiResult<Json<Schedule>> {
+    if id == 0 {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "Pianificazione non trovata.",
+        ));
+    }
+    let body = Schedule { id, ..body };
+    Ok(Json(
+        blocking(&state.core, move |core| core.save_schedule(body)).await?,
+    ))
+}
+
+async fn delete_schedule(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    blocking(&state.core, move |core| core.delete_schedule(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Esegue subito il compito, con le regole di un'esecuzione pianificata.
+async fn run_schedule(State(state): State<ApiState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    state.core.run_schedule_now(id)?;
+    Ok(StatusCode::ACCEPTED)
 }

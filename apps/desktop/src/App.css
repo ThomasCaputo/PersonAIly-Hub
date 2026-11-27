@@ -2234,3 +2234,13 @@ details > summary {
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Pianificazioni (ADR 0028) ── */
+.card-title .status-badge {
+  margin-left: 8px;
+}
+
+.schedule-task {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+}

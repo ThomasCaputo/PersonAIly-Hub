@@ -29,6 +29,7 @@ Priorità: **M** = indispensabile per la prima versione, **S** = importante ma s
 | LO-8 | Caricare e scaricare il modello a mano; scaricamento automatico dopo un tempo di inattività configurabile | S |
 | LO-9 | Scelta della variante di llama.cpp (CUDA, Vulkan, solo CPU) e suo aggiornamento dall'app | S |
 | LO-10 | Modalità ibrida GPU + CPU per modelli che non entrano in VRAM, solo come scelta esplicita e avanzata (fatto, ADR 0016) | F |
+| LO-11 | Più modelli locali caricati insieme, nei limiti della memoria, con un modello principale e la scelta del modello in chat, negli agenti e nell'API (ADR 0029) | F |
 
 ## 3. Parametri dei modelli
 
@@ -72,6 +73,8 @@ cartella di lavoro.
 | AG-6 | Più agenti in parallelo (con i modelli locali, nei limiti della memoria disponibile) | S |
 | AG-7 | Supporto a MCP (Model Context Protocol) per aggiungere strumenti esterni | S |
 | AG-8 | Agenti che delegano parti del lavoro ad altri agenti (fatto, ADR 0018) | F |
+| AG-9 | Agenti pianificati: un compito che parte da solo a un orario o a intervalli, caricando e poi scaricando il modello locale (ADR 0028) | F |
+| AG-10 | Agenti che cooperano: ognuno con il suo modello locale, deleghe in parallelo (ADR 0029) | F |
 
 ## 6. Permessi e sicurezza
 

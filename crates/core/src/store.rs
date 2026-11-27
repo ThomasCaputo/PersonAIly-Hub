@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents::{Agent, AgentSession, SessionStatus};
 use crate::attachments::{Attachment, AttachmentInfo};
 use crate::error::{Error, Result};
+use crate::schedules::{Schedule, ScheduleOutcome};
 use crate::snapshots::RestorePoint;
 use crate::tools::ToolCall;
 
@@ -168,6 +169,26 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE conversations ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;
     ",
+    // 12 — agenti pianificati (ADR 0028): le pianificazioni, con la loro
+    //      definizione in JSON e lo stato scritto dal nucleo; le sessioni
+    //      sanno da quale pianificazione vengono e se nessuno le sorveglia
+    "
+    CREATE TABLE schedules (
+        id               INTEGER PRIMARY KEY,
+        agent_id         INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        definition       TEXT    NOT NULL,
+        next_run         INTEGER,
+        last_run         INTEGER,
+        last_outcome     TEXT,
+        last_note        TEXT,
+        last_session_id  INTEGER,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    ALTER TABLE agent_sessions ADD COLUMN schedule_id INTEGER
+        REFERENCES schedules(id) ON DELETE SET NULL;
+    ALTER TABLE agent_sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// Caratteri del risultato conservati nel registro delle azioni.
@@ -175,7 +196,8 @@ const ACTION_RESULT_CHARS: usize = 400;
 
 /// Colonne lette per ogni sessione, nell'ordine atteso da `row_to_session`.
 const SESSION_COLUMNS: &str = "id, agent_id, agent_name, conversation_id, task, status, note, \
-     created_at, updated_at, definition, restore_points, parent_session_id";
+     created_at, updated_at, definition, restore_points, parent_session_id, schedule_id, \
+     unattended";
 
 /// Una voce del registro delle azioni (SI-6).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -937,6 +959,115 @@ impl Store {
         Ok(())
     }
 
+    /// Lega una sessione alla pianificazione che l'ha avviata.
+    pub fn set_session_schedule(&self, id: i64, schedule_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET schedule_id = ?2 WHERE id = ?1",
+            params![id, schedule_id],
+        )?;
+        Ok(())
+    }
+
+    /// Senza sorveglianza, gli strumenti che chiederebbero conferma si
+    /// rifiutano invece di aspettare (ADR 0028).
+    pub fn set_session_unattended(&self, id: i64, unattended: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE agent_sessions SET unattended = ?2 WHERE id = ?1",
+            params![id, unattended],
+        )?;
+        Ok(())
+    }
+
+    // ── Pianificazioni (ADR 0028) ───────────────────────────────────────
+
+    pub fn schedules(&self) -> Result<Vec<Schedule>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SCHEDULE_COLUMNS} FROM schedules ORDER BY next_run IS NULL, next_run, id"
+        ))?;
+        let rows = stmt.query_map([], row_to_schedule)?;
+        // Una definizione illeggibile non deve nascondere le altre.
+        Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+    }
+
+    pub fn schedule(&self, id: i64) -> Result<Schedule> {
+        self.conn
+            .query_row(
+                &format!("SELECT {SCHEDULE_COLUMNS} FROM schedules WHERE id = ?1"),
+                [id],
+                row_to_schedule,
+            )
+            .optional()?
+            .flatten()
+            .ok_or_else(|| Error::msg("Pianificazione non trovata: forse è stata eliminata."))
+    }
+
+    /// Crea la pianificazione se `id` è 0, altrimenti ne aggiorna la
+    /// definizione; in entrambi i casi con la prossima esecuzione indicata.
+    pub fn save_schedule(&self, schedule: &Schedule, next_run: Option<i64>) -> Result<Schedule> {
+        let json = serde_json::to_string(&schedule.definition())?;
+        let id = if schedule.id == 0 {
+            self.conn.execute(
+                "INSERT INTO schedules (agent_id, definition, next_run) VALUES (?1, ?2, ?3)",
+                params![schedule.agent_id, json, next_run],
+            )?;
+            self.conn.last_insert_rowid()
+        } else {
+            let changed = self.conn.execute(
+                "UPDATE schedules SET agent_id = ?2, definition = ?3, next_run = ?4 WHERE id = ?1",
+                params![schedule.id, schedule.agent_id, json, next_run],
+            )?;
+            if changed == 0 {
+                return Err(Error::msg(
+                    "Pianificazione non trovata: forse è stata eliminata.",
+                ));
+            }
+            schedule.id
+        };
+        self.schedule(id)
+    }
+
+    pub fn set_schedule_next_run(&self, id: i64, next_run: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE schedules SET next_run = ?2 WHERE id = ?1",
+            params![id, next_run],
+        )?;
+        Ok(())
+    }
+
+    /// Annota com'è andata l'ultima esecuzione.
+    pub fn set_schedule_result(
+        &self,
+        id: i64,
+        at: i64,
+        outcome: ScheduleOutcome,
+        note: Option<&str>,
+        session_id: Option<i64>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE schedules SET last_run = ?2, last_outcome = ?3, last_note = ?4,
+                 last_session_id = COALESCE(?5, last_session_id)
+             WHERE id = ?1",
+            params![id, at, outcome.as_str(), note, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Elimina la pianificazione. Le sue sessioni restano.
+    pub fn delete_schedule(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM schedules WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Quante azioni di una sessione hanno avuto questo esito nel registro.
+    pub fn count_actions(&self, session_id: i64, approval: &str) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM actions WHERE session_id = ?1 AND approval = ?2",
+            params![session_id, approval],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Le sessioni rimaste "al lavoro" quando l'app si è chiusa diventano interrotte.
     pub fn mark_sessions_interrupted(&self) -> Result<()> {
         self.conn.execute(
@@ -1222,7 +1353,33 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSession> {
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default(),
         parent_session_id: row.get(11)?,
+        schedule_id: row.get(12)?,
+        unattended: row.get(13)?,
     })
+}
+
+/// Colonne lette per ogni pianificazione, nell'ordine atteso da `row_to_schedule`.
+const SCHEDULE_COLUMNS: &str =
+    "id, agent_id, definition, next_run, last_run, last_outcome, last_note, last_session_id";
+
+/// `None` se la definizione è illeggibile.
+fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Schedule>> {
+    let Ok(definition) = serde_json::from_str::<Schedule>(&row.get::<_, String>(2)?) else {
+        return Ok(None);
+    };
+    Ok(Some(Schedule {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        next_run: row.get(3)?,
+        last_run: row.get(4)?,
+        last_outcome: row
+            .get::<_, Option<String>>(5)?
+            .and_then(|o| ScheduleOutcome::parse(&o)),
+        last_note: row.get(6)?,
+        last_session_id: row.get(7)?,
+        running: false,
+        ..definition
+    }))
 }
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {

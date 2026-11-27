@@ -114,7 +114,22 @@ export type RuntimeStatus = {
   };
   processRamBytes: number | null;
   processGpu: { dedicatedBytes: number; sharedBytes: number } | null;
-  /** Presente se il modello in VRAM sta sconfinando in RAM. */
+  /** Presente se un modello in VRAM sta sconfinando in RAM (somma di tutti). */
+  vramSpillBytes: number | null;
+  /** Ogni modello caricato, in ordine di caricamento (ADR 0029). `loaded` è il principale. */
+  models: LocalModelStatus[];
+  /** "Più modelli locali insieme" è acceso. */
+  multiModel: boolean;
+  /** Con più modelli insieme: memoria ancora disponibile, tolto il margine per il sistema. */
+  roomVramBytes: number | null;
+  roomRamBytes: number | null;
+};
+
+/** Un modello locale caricato, con la sua memoria. */
+export type LocalModelStatus = LoadedModel & {
+  primary: boolean;
+  processRamBytes: number | null;
+  processGpu: { dedicatedBytes: number; sharedBytes: number } | null;
   vramSpillBytes: number | null;
 };
 
@@ -300,6 +315,44 @@ export type AgentSession = {
   restorePoints: RestorePoint[];
   /** La sessione che ha affidato questo lavoro, se l'ha avviata un altro agente. */
   parentSessionId: number | null;
+  /** La pianificazione che l'ha avviata (ADR 0028). */
+  scheduleId: number | null;
+  /** Nessuno la sorveglia: gli strumenti da confermare si rifiutano. */
+  unattended: boolean;
+};
+
+/** Quando parte un compito pianificato. Orari locali; giorni da 1 (lunedì) a 7, vuoto = tutti. */
+export type Recurrence =
+  | { kind: "once"; at: string }
+  | { kind: "daily"; time: string; weekdays: number[] }
+  | { kind: "everyHours"; hours: number; start: string; weekdays: number[] };
+
+export type OnConflict = "wait" | "replace";
+export type OnMissed = "catchUp" | "skip";
+export type NotifyWhen = "always" | "problems" | "never";
+export type ScheduleOutcome = "done" | "failed" | "stopped" | "skipped";
+
+/** Una pianificazione: un agente, un compito e quando eseguirlo (ADR 0028). */
+export type Schedule = {
+  id: number;
+  agentId: number;
+  task: string;
+  recurrence: Recurrence;
+  /** Il file GGUF da caricare, per gli agenti con modello locale. */
+  localModel?: string;
+  onConflict: OnConflict;
+  onMissed: OnMissed;
+  notify: NotifyWhen;
+  maxMinutes: number;
+  enabled: boolean;
+  /** Secondi dal 1970: scritti dal nucleo. */
+  nextRun?: number;
+  lastRun?: number;
+  lastOutcome?: ScheduleOutcome;
+  lastNote?: string;
+  lastSessionId?: number;
+  /** In coda o al lavoro adesso. */
+  running: boolean;
 };
 
 /** Ciò che una sessione al lavoro sta facendo in questo momento. */
@@ -322,7 +375,7 @@ export type ActionRecord = {
   source: string;
   tool: string;
   summary: string;
-  approval: "auto" | "user" | "denied" | "refused" | "interrupted";
+  approval: "auto" | "user" | "denied" | "refused" | "interrupted" | "unattended";
   isError: boolean;
   result: string;
 };
@@ -373,6 +426,10 @@ export type Preferences = {
   checkUpdates: boolean;
   /** Il primo avvio guidato è concluso (o saltato). */
   onboarded: boolean;
+  /** Più modelli locali caricati insieme, finché entrano in memoria (ADR 0029). */
+  multiModel: boolean;
+  /** Tetto in più al numero di modelli insieme; 0 = nessuno, decide la memoria. */
+  maxLocalModels: number;
 };
 
 /** Protezioni accese di base, che l'utente può spegnere nelle Impostazioni. */
@@ -449,7 +506,11 @@ export type ProviderInfo = Provider & {
 };
 
 /** Il modello a cui inviare un messaggio. */
-export type ModelRef = { kind: "local" } | { kind: "cloud"; providerId: string; model: string };
+/** Senza `path`, il modello locale principale; con `path`, quel file (ADR 0029). */
+export type ModelRef = { kind: "local"; path?: string } | { kind: "cloud"; providerId: string; model: string };
+
+/** Il nome di un file di modello, senza cartella né `.gguf`. */
+export const modelFileName = (path: string) => (path.split(/[\\/]/).pop() ?? path).replace(/\.gguf$/i, "");
 
 /** Chiave sotto cui sono salvati i parametri di un modello cloud. */
 export function cloudPresetKey(providerId: string, model: string): string {
@@ -509,9 +570,12 @@ export const api = {
     invoke<void>("save_preset", { modelPath, preset }),
   checkLoad: (modelPath: string, params: LoadParams) =>
     invoke<LoadCheck>("check_load", { modelPath, params }),
-  loadModel: (modelPath: string, params: LoadParams, force: boolean) =>
-    invoke<LoadedModel>("load_model", { modelPath, params, force }),
-  unloadModel: () => invoke<void>("unload_model"),
+  /** Con `replace`, scarica prima gli altri modelli anche se ne possono stare più insieme. */
+  loadModel: (modelPath: string, params: LoadParams, force: boolean, replace = false) =>
+    invoke<LoadedModel>("load_model", { modelPath, params, force, replace }),
+  /** Scarica un modello, o tutti senza percorso. */
+  unloadModel: (modelPath?: string) => invoke<void>("unload_model", { modelPath: modelPath ?? null }),
+  setPrimaryModel: (modelPath: string) => invoke<void>("set_primary_model", { modelPath }),
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
 
   listConversations: (query = "") => invoke<Conversation[]>("list_conversations", { query }),
@@ -644,6 +708,13 @@ export const api = {
   deleteAgentSession: (id: number) => invoke<void>("delete_agent_session", { id }),
   /** Riporta le cartelle dell'agente a prima della sessione (si può ripetere per annullare). */
   restoreAgentSession: (id: number) => invoke<AgentSession>("restore_agent_session", { id }),
+  listSchedules: () => invoke<Schedule[]>("list_schedules"),
+  saveSchedule: (schedule: Schedule) => invoke<Schedule>("save_schedule", { schedule }),
+  deleteSchedule: (id: number) => invoke<void>("delete_schedule", { id }),
+  /** Esegue subito il compito, con le regole di un'esecuzione pianificata. */
+  runScheduleNow: (id: number) => invoke<void>("run_schedule_now", { id }),
+  autostartEnabled: () => invoke<boolean>("autostart_enabled"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   restorePointsAvailable: () => invoke<boolean>("restore_points_available"),
 
   listNamedPresets: () => invoke<NamedPreset[]>("list_named_presets"),

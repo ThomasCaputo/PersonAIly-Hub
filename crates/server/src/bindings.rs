@@ -19,15 +19,18 @@ use app_core::local::sysmon::{GpuMemory, MemorySnapshot, ProcessGpuMemory};
 use app_core::local::{KvCacheType, LoadParams, Placement, SamplingParams};
 use app_core::models::ModelInfo;
 use app_core::providers::{CloudModel, Provider, ProviderKind};
+use app_core::schedules::{
+    NotifyWhen, OnConflict, OnMissed, Recurrence, Schedule, ScheduleEvent, ScheduleOutcome,
+};
 use app_core::snapshots::RestorePoint;
 use app_core::store::{ActionRecord, Conversation, Message};
 use app_core::tools::{PermissionLevel, ToolCall, ToolSettings};
-use app_core::{Approval, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome};
+use app_core::{Approval, LocalModelStatus, ModelRef, ProviderInfo, RuntimeStatus, SendOutcome};
 use ts_rs::{Config, TS};
 
 use crate::api::{
     AnswerBody, BranchBody, ErrorEvent, InfillBody, InfillReply, Info, LoadBody, LocalModels,
-    ModelSwitchEvent, Models, RenameBody, ReplyBody, SendBody, TaskBody, TextEvent,
+    ModelSwitchEvent, Models, PathBody, RenameBody, ReplyBody, SendBody, TaskBody, TextEvent,
     ToolRequestEvent,
 };
 
@@ -51,6 +54,7 @@ pub fn typescript() -> String {
         Models::decl(&cfg),
         LocalModels::decl(&cfg),
         LoadBody::decl(&cfg),
+        PathBody::decl(&cfg),
         InfillBody::decl(&cfg),
         InfillReply::decl(&cfg),
         ModelInfo::decl(&cfg),
@@ -61,6 +65,7 @@ pub fn typescript() -> String {
         KvCacheType::decl(&cfg),
         SamplingParams::decl(&cfg),
         RuntimeStatus::decl(&cfg),
+        LocalModelStatus::decl(&cfg),
         MemorySnapshot::decl(&cfg),
         GpuMemory::decl(&cfg),
         ProcessGpuMemory::decl(&cfg),
@@ -98,6 +103,14 @@ pub fn typescript() -> String {
         ReplyBody::decl(&cfg),
         LiveState::decl(&cfg),
         PendingRequest::decl(&cfg),
+        // Pianificazioni
+        Schedule::decl(&cfg),
+        Recurrence::decl(&cfg),
+        OnConflict::decl(&cfg),
+        OnMissed::decl(&cfg),
+        NotifyWhen::decl(&cfg),
+        ScheduleOutcome::decl(&cfg),
+        ScheduleEvent::decl(&cfg),
     ];
     let mut out = String::from(HEADER);
     for decl in decls {

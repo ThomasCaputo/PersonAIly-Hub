@@ -87,9 +87,11 @@ impl Core {
                 local::LLAMA_CPP_BUILD
             ),
         );
-        let loaded = match self.runtime.try_lock() {
-            Ok(mut runtime) => match runtime.loaded() {
-                Some(m) => format!(
+        let models: Vec<String> = self
+            .loaded_models()
+            .iter()
+            .map(|m| {
+                format!(
                     "{} con {} ({:?}, contesto {}, cache {:?}, immagini {})",
                     m.model_name,
                     m.engine,
@@ -97,12 +99,26 @@ impl Core {
                     m.params.context_length,
                     m.params.kv_cache_type,
                     m.vision
+                )
+            })
+            .collect();
+        let loading = self.engine_list().iter().any(|e| e.is_busy());
+        line(
+            "Modelli locali",
+            match (models.is_empty(), loading) {
+                (true, true) => "caricamento in corso".to_string(),
+                (true, false) => "nessuno".to_string(),
+                (false, loading) => format!(
+                    "{}{}",
+                    models.join("; "),
+                    if loading {
+                        "; un altro in caricamento"
+                    } else {
+                        ""
+                    }
                 ),
-                None => "nessuno".to_string(),
             },
-            Err(_) => "caricamento in corso".to_string(),
-        };
-        line("Modello locale", loaded);
+        );
         let providers: Vec<String> = self
             .providers()
             .unwrap_or_default()
@@ -125,8 +141,11 @@ impl Core {
         line(
             "Preferenze",
             format!(
-                "area di notifica {}, scaricamento dopo {} min",
-                prefs.keep_running, prefs.idle_unload_minutes
+                "area di notifica {}, scaricamento dopo {} min, più modelli insieme {} (tetto {})",
+                prefs.keep_running,
+                prefs.idle_unload_minutes,
+                prefs.multi_model,
+                prefs.max_local_models
             ),
         );
         let _ = writeln!(out, "\n--- core.log (ultime righe) ---");

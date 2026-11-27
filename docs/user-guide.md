@@ -69,6 +69,18 @@ tick the vision component when loading.
 **Automatic unload.** In Models → Engine the model can be unloaded after a few idle minutes to
 free the memory.
 
+**Several models together.** Turn on **Several local models together** in Models → Engine: from
+then on **Load** adds the model next to the ones already loaded, as long as it fits in your PC's
+memory. The app always keeps a margin free for the system (5% of VRAM and 10% of RAM, with a
+minimum), so a PC with more memory holds more models. If you want a cap, write it in **At
+most**. If a model does not fit, its card offers **Unload the others and load**.
+
+**Loaded models** lists every model with its memory. One of them is the **primary** one: it is
+used wherever you do not pick a model (chats set to “The primary one”, agents created before,
+`local` in the API, VS Code); usually it is the last one you loaded, and **Make primary** changes
+it. In chat, in model comparison and in agents the model picker lists every loaded model by
+name.
+
 ## Cloud models
 
 In **Models → Cloud providers** add a service: Anthropic, or any OpenAI-compatible one (OpenAI,
@@ -131,6 +143,39 @@ again more briefly.
 
 **Delegation.** An agent can hand parts of a task to other agents you choose; each works with
 its own folders and permissions.
+
+**Agents working together.** Each agent can have **its own local model**: pick it in the model
+picker, also among the ones not loaded yet (“Loaded when it starts”). When the agent starts, the
+app loads its model if it is missing, as long as it fits next to the others. So you can have,
+for example, a coordinator on Qwen2.5 7B handing pieces of work to helpers on a smaller model.
+If the coordinator hands out several pieces in the same turn, the helpers work **together** and
+their reports come back together. Helpers need a model that can use tools (for example
+Qwen2.5): the app warns you if a model does not support them.
+
+### Scheduled agents
+
+An agent can work by itself at a set time or at intervals: for example every morning at 8, or
+every 6 hours. In **Agents → Schedules** (or with **Schedule** on the agent's card) pick the
+agent, write the task out in full and choose when: once, every day (also only on some days) or
+every few hours.
+
+- **Local model.** If the agent uses a local model, choose which one: it is loaded at the set
+  time and unloaded when the work is done, if the schedule loaded it and nobody else used it in
+  the meantime. If another model is already loaded, the schedule **waits** for you to unload
+  it, or **replaces** it as soon as nobody is using it, as you prefer. After an hour of waiting
+  it skips the run.
+- **Nobody to approve.** While it works on its own the agent cannot ask you anything: whatever
+  would ask for approval is **refused**. The form tells you which actions will be refused with
+  the agent's current permissions; to allow them, change the agent's permissions. If you reply
+  to the agent in a scheduled session, approvals are asked again.
+- **Result.** Every run is a normal session marked "scheduled": you find it in **Sessions** with
+  its steps, touched files and restore point. A Windows notification tells you how it went
+  (always, only if something goes wrong, or never). **Run now** tries the task straight away,
+  with the same rules.
+- **App closed or PC off.** Schedules run while the app is on, even only in the notification
+  area. With **Start with Windows** the app starts by itself when you sign in, without a window.
+  A missed run is done once as soon as the app is back on, or skipped, as you choose; the PC is
+  not woken from sleep.
 
 ## MCP servers
 

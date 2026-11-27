@@ -54,7 +54,7 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
     }
   };
 
-  const loadedPath = status?.loaded?.modelPath ?? null;
+  const loadedPaths = (status?.models ?? []).map((m) => m.modelPath);
 
   return (
     <div className="page">
@@ -91,6 +91,8 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
 
       <HubSection folders={folders} status={status} onDownloaded={rescan} />
 
+      {status && status.models.length > 0 && <LoadedModels status={status} onStatusChange={onStatusChange} />}
+
       <section className="section">
         <h2>{t("Modelli locali")}</h2>
         {models === null && <p className="dim">{t("Ricerca dei modelli…")}</p>}
@@ -103,7 +105,9 @@ export function ModelsArea({ status, onStatusChange, providers, onProvidersChang
             model={model}
             open={selected === model.path}
             onToggle={() => setSelected(selected === model.path ? null : model.path)}
-            isLoaded={loadedPath === model.path}
+            isLoaded={loadedPaths.includes(model.path)}
+            othersLoaded={loadedPaths.some((p) => p !== model.path)}
+            multiModel={status?.multiModel ?? false}
             busy={status?.loading ?? false}
             onStatusChange={onStatusChange}
           />
@@ -118,11 +122,14 @@ type CardProps = {
   open: boolean;
   onToggle: () => void;
   isLoaded: boolean;
+  /** Ci sono altri modelli caricati (con "Più modelli insieme" acceso, restano). */
+  othersLoaded: boolean;
+  multiModel: boolean;
   busy: boolean;
   onStatusChange: () => void;
 };
 
-function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: CardProps) {
+function ModelCard({ model, open, onToggle, isLoaded, othersLoaded, multiModel, busy, onStatusChange }: CardProps) {
   const [preset, setPreset] = useState<Preset | null>(null);
   const [check, setCheck] = useState<LoadCheck | null>(null);
   const [working, setWorking] = useState(false);
@@ -149,14 +156,14 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
     if (preset) setPreset({ ...preset, load: { ...preset.load, ...patch } });
   };
 
-  const doLoad = async (force: boolean) => {
+  const doLoad = async (force: boolean, replace = false) => {
     if (!preset) return;
     setWorking(true);
     setError(null);
     try {
       await api.savePreset(model.path, preset);
       onStatusChange();
-      await api.loadModel(model.path, preset.load, force);
+      await api.loadModel(model.path, preset.load, force, replace);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -167,7 +174,7 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
 
   const doUnload = async () => {
     setWorking(true);
-    await api.unloadModel().catch((e) => setError(String(e)));
+    await api.unloadModel(model.path).catch((e) => setError(String(e)));
     setWorking(false);
     onStatusChange();
   };
@@ -372,10 +379,73 @@ function ModelCard({ model, open, onToggle, isLoaded, busy, onStatusChange }: Ca
                 {t("Carica comunque")}
               </button>
             )}
+            {multiModel && othersLoaded && !working && (check?.fits === false || error !== null) && (
+              <button className="btn" onClick={() => doLoad(false, true)}>
+                {t("Scarica gli altri e carica")}
+              </button>
+            )}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/** I modelli caricati, uno per riga: memoria, principale, scarica (ADR 0029). */
+function LoadedModels({ status, onStatusChange }: { status: RuntimeStatus; onStatusChange: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const act = (action: () => Promise<unknown>) => {
+    setError(null);
+    action()
+      .catch((e) => setError(String(e)))
+      .finally(onStatusChange);
+  };
+  const several = status.models.length > 1;
+  return (
+    <section className="section">
+      <h2>{t("Modelli caricati")}</h2>
+      {status.models.map((m) => (
+        <div key={m.modelPath} className="folder loaded-model">
+          <span>
+            <strong>{m.modelName}</strong>
+            {several && m.primary && <span className="badge">{t("Principale")}</span>}
+            <span className="dim">
+              {" · "}
+              {m.params.placement === "vram" ? t("Solo VRAM") : m.params.placement === "ram" ? t("Solo RAM") : t("Ibrida")}
+              {m.processGpu != null && m.processGpu.dedicatedBytes > 0 && ` · ${t("VRAM {gb} GB", { gb: gb(m.processGpu.dedicatedBytes) })}`}
+              {m.processRamBytes != null && ` · ${t("RAM {gb} GB", { gb: gb(m.processRamBytes) })}`}
+            </span>
+            {m.vramSpillBytes != null && (
+              <span className="error"> {t("sconfina in RAM per {gb} GB", { gb: gb(m.vramSpillBytes) })}</span>
+            )}
+          </span>
+          <span className="row">
+            {several && !m.primary && (
+              <button className="btn-link" onClick={() => act(() => api.setPrimaryModel(m.modelPath))}>
+                {t("Rendi principale")}
+              </button>
+            )}
+            <button className="btn-link" onClick={() => act(() => api.unloadModel(m.modelPath))}>
+              {t("Scarica")}
+            </button>
+          </span>
+        </div>
+      ))}
+      {status.multiModel && (status.roomVramBytes != null || status.roomRamBytes != null) && (
+        <p className="dim note">
+          {t("Posto per un altro modello, tenendo un margine per il sistema: {vram}RAM {ram} GB.", {
+            vram: status.roomVramBytes != null ? `VRAM ${gb(status.roomVramBytes)} GB, ` : "",
+            ram: gb(status.roomRamBytes ?? 0),
+          })}
+        </p>
+      )}
+      {several && (
+        <p className="dim note">
+          {t("Il principale è quello usato dove non se ne sceglie uno: chat con «Il principale», agenti già creati, «local» nell'API, VS Code.")}
+        </p>
+      )}
+      {error && <p className="error pre" role="alert">{tc(error)}</p>}
+    </section>
   );
 }
 

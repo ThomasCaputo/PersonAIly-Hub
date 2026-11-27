@@ -23,6 +23,7 @@ pub mod named_presets;
 pub mod plugins;
 pub mod providers;
 pub mod rag;
+pub mod schedules;
 pub mod secrets;
 pub mod skills;
 pub mod snapshots;
@@ -31,6 +32,7 @@ pub mod tools;
 
 /// I metodi di [`Core`], divisi per argomento.
 mod ops;
+pub use ops::engine::model_file_name;
 pub use ops::plugins::PluginCommandInfo;
 
 use std::collections::{HashMap, HashSet};
@@ -49,6 +51,7 @@ use chat::{ChatEvent, ChatMessage, GenerationStats};
 use error::{Error, Result};
 use hub::{DownloadEnd, HubFile, HubRepo};
 use local::install::{self, Variant};
+use local::pool::Engine;
 use local::runtime::{InstalledEngine, LoadedModel, LocalRuntime};
 use local::sysmon::{self, MemorySnapshot, ProcessGpuMemory};
 use local::{LoadParams, MemoryEstimate, Placement, Preset, SamplingParams};
@@ -167,17 +170,61 @@ impl LoadCheck {
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
-    /// `true` mentre un modello è in fase di caricamento.
+    /// `true` mentre un modello è in fase di caricamento (o scaricamento).
     pub loading: bool,
+    /// Il modello principale (ADR 0029).
     pub loaded: Option<LoadedModel>,
     pub memory: MemorySnapshot,
-    /// RAM occupata dal processo del modello.
+    /// RAM occupata dai processi dei modelli, sommata.
     pub process_ram_bytes: Option<u64>,
-    /// Memoria grafica dedicata e condivisa del processo del modello.
+    /// Memoria grafica dedicata e condivisa dei processi dei modelli, sommata.
     pub process_gpu: Option<ProcessGpuMemory>,
     /// Presente se un modello caricato in VRAM sta sconfinando in RAM:
-    /// quanta RAM il driver sta usando al posto della VRAM.
+    /// quanta RAM il driver sta usando al posto della VRAM (somma di tutti).
     pub vram_spill_bytes: Option<u64>,
+    /// Ogni modello caricato, in ordine di caricamento.
+    pub models: Vec<LocalModelStatus>,
+    /// "Più modelli locali insieme" è acceso.
+    pub multi_model: bool,
+    /// Con più modelli insieme: VRAM e RAM ancora disponibili per un altro
+    /// modello, tolto il margine per il sistema.
+    pub room_vram_bytes: Option<u64>,
+    pub room_ram_bytes: Option<u64>,
+}
+
+/// Un modello locale caricato, con la sua memoria.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModelStatus {
+    #[serde(flatten)]
+    pub model: LoadedModel,
+    /// È il principale: quello usato quando non se ne sceglie uno.
+    pub primary: bool,
+    pub process_ram_bytes: Option<u64>,
+    pub process_gpu: Option<ProcessGpuMemory>,
+    pub vram_spill_bytes: Option<u64>,
+}
+
+/// Come caricare un modello locale.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadOptions {
+    /// Carica anche se la stima dice che non entra.
+    pub force: bool,
+    /// Scarica prima gli altri modelli, anche con "Più modelli insieme".
+    pub replace_others: bool,
+    /// Diventa il principale: sì quando lo carica l'utente, no quando lo
+    /// carica un agente o una pianificazione.
+    pub make_primary: bool,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self {
+            force: false,
+            replace_others: false,
+            make_primary: true,
+        }
+    }
 }
 
 /// Esito dell'invio di un messaggio.
@@ -246,6 +293,12 @@ pub struct Preferences {
     pub check_updates: bool,
     /// L'utente ha concluso (o saltato) il primo avvio guidato.
     pub onboarded: bool,
+    /// Più modelli locali caricati insieme, finché entrano in memoria (ADR
+    /// 0029). Spento, caricare un modello sostituisce quello di prima.
+    pub multi_model: bool,
+    /// Un tetto in più al numero di modelli locali insieme; `0` = nessuno,
+    /// decide la memoria.
+    pub max_local_models: u32,
 }
 
 impl Default for Preferences {
@@ -256,6 +309,8 @@ impl Default for Preferences {
             idle_unload_minutes: 0,
             check_updates: true,
             onboarded: false,
+            multi_model: false,
+            max_local_models: 0,
         }
     }
 }
@@ -306,8 +361,13 @@ impl Default for SecuritySettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ModelRef {
-    /// Il modello locale attualmente caricato.
-    Local,
+    /// Un modello locale: quello del file indicato oppure, senza percorso, il
+    /// principale (ADR 0029). `{"kind": "local"}` resta valido com'era.
+    Local {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        path: Option<String>,
+    },
     /// Un modello di un provider cloud.
     #[serde(rename_all = "camelCase")]
     Cloud { provider_id: String, model: String },
@@ -332,7 +392,12 @@ pub struct Core {
     /// Per i servizi su internet: rispetta il proxy di sistema.
     cloud_http: reqwest::Client,
     store: Mutex<Store>,
-    runtime: tokio::sync::Mutex<LocalRuntime>,
+    /// I modelli locali caricati, uno per `llama-server` (ADR 0029).
+    engines: Mutex<Vec<Arc<Engine>>>,
+    /// La chiave del modello principale scelto; `None` = il più vecchio.
+    primary: Mutex<Option<String>>,
+    /// Numera i motori in ordine di caricamento.
+    engine_seq: std::sync::atomic::AtomicU64,
     /// Comandi delle risposte in corso in chat, per conversazione: l'app e
     /// l'estensione VS Code possono generare nello stesso momento.
     generation: Mutex<HashMap<i64, Arc<RunControl>>>,
@@ -344,9 +409,6 @@ pub struct Core {
     downloads: Mutex<Vec<DownloadState>>,
     /// Segnali per interrompere i download in corso, per identificatore.
     download_cancel: Mutex<HashMap<String, Arc<Notify>>>,
-    /// Ultima volta in cui il modello locale ha lavorato: per scaricarlo dopo
-    /// un periodo di inattività (LO-8).
-    last_local_use: Mutex<std::time::Instant>,
     /// Per scaricare pagine web su richiesta dei modelli.
     web_http: reqwest::Client,
     /// Strumenti in attesa della conferma dell'utente. La chiave è
@@ -377,6 +439,17 @@ pub struct Core {
     chat_mcp: Mutex<HashMap<i64, ChatMcp>>,
     /// Gli accessi OAuth aperti nel browser, per identificatore del server.
     oauth_logins: Mutex<HashMap<String, ops::mcp_oauth::LoginSlot>>,
+    /// Le pianificazioni in coda o al lavoro (ADR 0028).
+    schedules_running: Mutex<HashSet<i64>>,
+    /// Le esecuzioni pianificate vanno una alla volta: chi aspetta il turno
+    /// aspetta questo lucchetto, che serve nell'ordine di arrivo.
+    schedule_turn: tokio::sync::Mutex<()>,
+    /// Cresce ogni volta che qualcuno che non è una sessione pianificata usa
+    /// il modello locale: a lavoro finito, il modello caricato da una
+    /// pianificazione si scarica solo se nessun altro l'ha usato.
+    local_activity: std::sync::atomic::AtomicU64,
+    /// Esiti delle esecuzioni pianificate, per le notifiche dell'app.
+    schedule_events: tokio::sync::broadcast::Sender<schedules::ScheduleEvent>,
 }
 
 /// I server MCP di una conversazione, accesi tra un messaggio e l'altro.
@@ -409,6 +482,9 @@ struct RunScope<'a> {
     step_tokens: Option<u32>,
     /// Quale coda di riserva provare se un modello cloud non risponde (ADR 0027).
     fallback: Fallback,
+    /// Nessuno sorveglia il lavoro (sessioni pianificate, ADR 0028): ciò che
+    /// chiederebbe conferma si rifiuta.
+    unattended: bool,
 }
 
 /// La coda di riserva di una risposta.
@@ -593,10 +669,9 @@ impl Core {
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             store: Mutex::new(store),
-            runtime: tokio::sync::Mutex::new(LocalRuntime::new(
-                data_dir.to_path_buf(),
-                http.clone(),
-            )),
+            engines: Mutex::new(Vec::new()),
+            primary: Mutex::new(None),
+            engine_seq: std::sync::atomic::AtomicU64::new(0),
             http,
             cloud_http: cloud_client()?,
             generation: Mutex::new(HashMap::new()),
@@ -604,7 +679,6 @@ impl Core {
             installing: tokio::sync::Mutex::new(()),
             downloads: Mutex::new(Vec::new()),
             download_cancel: Mutex::new(HashMap::new()),
-            last_local_use: Mutex::new(std::time::Instant::now()),
             web_http: tools::web::client()?,
             approvals: Mutex::new(HashMap::new()),
             last_action_prune: Mutex::new(std::time::Instant::now()),
@@ -620,6 +694,10 @@ impl Core {
             rag_vectors: Mutex::new((0, None)),
             chat_mcp: Mutex::new(HashMap::new()),
             oauth_logins: Mutex::new(HashMap::new()),
+            schedules_running: Mutex::new(HashSet::new()),
+            schedule_turn: tokio::sync::Mutex::new(()),
+            local_activity: std::sync::atomic::AtomicU64::new(0),
+            schedule_events: tokio::sync::broadcast::channel(32).0,
         })
     }
 
