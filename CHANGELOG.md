@@ -5,6 +5,8 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-11-27
+
 ### Added
 - **Several local models together:** with "Several local models together" on (Models → Engine,
   off by default), "Load" adds a model next to the ones already loaded, each with its own
@@ -215,6 +217,7 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.4.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.2
 [1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...ed79438
 [1.2.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.0.0...v1.2.1
