@@ -89,7 +89,6 @@ export const CORE_EN: Record<string, string> = {
   // Errori meno frequenti
   "Il limite di spesa deve essere un numero positivo.": "The spending limit must be a positive number.",
   "Ferma l'agente prima di annullare le sue modifiche.": "Stop the agent before undoing its changes.",
-  "Il modello locale si sta caricando: aspetta.": "The local model is loading: wait.",
   "Il modello di embedding non è nella libreria.": "The embedding model is not in the library.",
   "Scegli un modello di embedding in Impostazioni → Documenti consultabili.":
     "Choose an embedding model in Settings → Searchable documents.",

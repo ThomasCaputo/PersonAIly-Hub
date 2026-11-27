@@ -5,7 +5,16 @@ The section of each version is also used as the release notes shown by the in-ap
 
 ## [Unreleased]
 
-## [1.4.0] — 2026-11-27
+## [1.4.1] — 2026-11-27
+
+First published version with the changes of 1.4.0, whose build stopped before release.
+
+### Fixed
+- The interface and the VS Code extension did not build because of an English translation
+  written twice; 1.4.0 was never published for this reason.
+- The checks run before a release now also build the interface and test the VS Code extension,
+  like the automatic checks on GitHub, and the GitHub workflows use the current versions of
+  `actions/checkout` and `actions/setup-node` (Node.js 24).
 
 ### Added
 - **Several local models together:** with "Several local models together" on (Models → Engine,
@@ -36,6 +45,11 @@ The section of each version is also used as the release notes shown by the in-ap
   turns. A model loaded by a schedule is unloaded at the end unless someone used *that* model
   meanwhile: chatting with another model no longer keeps it loaded. "Replace it" frees room only
   among the models nobody is using at that moment.
+
+## [1.4.0] — 2026-11-27
+
+Not published: the build stopped on a translation written twice. Its changes are listed under
+1.4.1.
 
 ## [1.3.2] — 2026-11-26
 
@@ -217,6 +231,7 @@ First public version: local GGUF models through llama.cpp, Anthropic and OpenAI-
 providers, chat with tools and permissions, agents with terminal and MCP, local OpenAI-compatible
 API and VS Code extension, Italian and English interface.
 
+[1.4.1]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.3.2...v1.4.1
 [1.4.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...v1.3.2
 [1.3.0]: https://github.com/ThomasCaputo/personaily-hub/compare/v1.2.1...ed79438
