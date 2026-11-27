@@ -180,6 +180,9 @@ export const EN: Record<string, string> = {
   "Comando nel terminale": "Terminal command",
   "Strumento": "Tool",
   "{label} · errore": "{label} · error",
+  Pensiero: "Thought",
+  Richiesta: "Request",
+  Risultato: "Result",
   "{label} non riuscito": "{label} failed",
   "{label} non riuscita": "{label} failed",
   "Quando il contesto si riempie il modello non può più leggere tutta la conversazione":

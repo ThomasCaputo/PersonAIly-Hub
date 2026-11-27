@@ -776,6 +776,14 @@ textarea {
   display: inline;
 }
 
+/* Chiude il float dei pulsanti dentro la sua riga: senza, scivolano nella riga
+   dopo e il bordo finisce a metà, con righe alternate sballate. */
+.fallback-list .folder::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
 .fallback-actions {
   float: right;
   gap: 4px;
@@ -1670,6 +1678,19 @@ input[type="range"]:focus {
 
 .tool-result-label {
   font-weight: 600;
+}
+
+/* «Richiesta» / «Pensiero» e «Risultato» dentro il riquadro aperto. */
+.tool-section {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+/* Un pensiero è testo da leggere, non codice. */
+.tool-preview.tool-thought {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .tool-result.failed .tool-result-label {

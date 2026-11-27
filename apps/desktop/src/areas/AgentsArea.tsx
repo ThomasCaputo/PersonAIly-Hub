@@ -21,7 +21,7 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ToolRequestCard } from "../components/ToolsBar";
 import { FallbackChoice } from "../components/FallbackSection";
-import { ModelPicker, ToolResult, toolLabel } from "./ChatArea";
+import { callsById, ModelPicker, ToolResult, toolLabel } from "./ChatArea";
 import { locale, msg, t, tc } from "../i18n";
 import { SchedulesTab } from "../components/SchedulesTab";
 
@@ -455,6 +455,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
   const files = touchedFiles(messages);
   const cost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
   const steps = messages.filter((m) => m.role === "assistant").length;
+  const calls = callsById(messages);
   const shown = messages.filter((m) => !(m.role === "assistant" && !m.content && m.toolCalls.length > 0));
 
   return (
@@ -526,7 +527,7 @@ function SessionView({ id, onChanged, onDeleted }: { id: number; onChanged: () =
       <div className="messages" role="log" aria-label={t("Passi dell'agente")} aria-live="polite">
         {shown.map((m, index) =>
           m.role === "tool" ? (
-            <ToolResult key={m.id} message={m} />
+            <ToolResult key={m.id} message={m} call={calls.get(m.toolCallId ?? "")} />
           ) : (
             <div key={m.id} className={`message ${m.role}`}>
               <div className="message-role">

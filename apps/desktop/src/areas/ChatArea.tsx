@@ -18,6 +18,7 @@ import {
   type RuntimeStatus,
   type SendOutcome,
   type StreamEvent,
+  type ToolCall,
   type ToolRequest,
   type ToolSettings,
 } from "../api";
@@ -505,6 +506,7 @@ export function ChatArea({
     .reverse()
     .find((m) => m.role === "assistant" && !(m.content === "" && m.toolCalls.length > 0));
 
+  const calls = callsById(messages);
   // Una risposta fatta solo di chiamate a strumenti si vede già nelle righe dei risultati.
   const shown: Shown[] = messages
     .filter((m) => !(m.role === "assistant" && !m.content && m.toolCalls.length > 0))
@@ -638,7 +640,7 @@ export function ChatArea({
           )}
           {shown.map((m) =>
             m.role === "tool" ? (
-              <ToolResult key={m.key} message={m.saved!} />
+              <ToolResult key={m.key} message={m.saved!} call={calls.get(m.saved!.toolCallId ?? "")} />
             ) : (
               <div
                 key={m.key}
@@ -937,10 +939,30 @@ export function toolLabel(name: string): string {
   return (TOOL_LABELS[name] && t(TOOL_LABELS[name])) ?? mcpToolLabel(name) ?? name;
 }
 
-/** Il risultato di uno strumento: una riga, con il contenuto da aprire a richiesta. */
-export function ToolResult({ message }: { message: Message }) {
+/** Le chiamate a strumenti dei messaggi, per id: ogni risultato ritrova la sua. */
+export function callsById(messages: Message[]): Map<string, ToolCall> {
+  return new Map(messages.flatMap((m) => m.toolCalls.map((c): [string, ToolCall] => [c.id, c])));
+}
+
+/**
+ * Il testo libero di una chiamata, se ne ha uno: per esempio il pensiero
+ * scritto con `sequentialthinking`, che il server non ripete nel risultato.
+ */
+function callThought(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const thought = (args as Record<string, unknown>).thought;
+  return typeof thought === "string" && thought.trim() ? thought : null;
+}
+
+/** Il risultato di uno strumento: una riga, con la richiesta e il contenuto da aprire a richiesta. */
+export function ToolResult({ message, call }: { message: Message; call?: ToolCall }) {
   const label = message.toolName ? toolLabel(message.toolName) : t("Strumento");
-  const firstLine = message.content.split("\n")[0];
+  const args = call?.arguments;
+  const hasArgs = !!args && typeof args === "object" && Object.keys(args).length > 0;
+  const thought = callThought(args);
+  // Tutto su una riga: con il JSON formattato dei server MCP la prima riga
+  // sarebbe solo «[» o «{». Se c'è un pensiero, conta più dei contatori.
+  const firstLine = (thought ?? message.content).replace(/\s+/g, " ").trim();
   return (
     <details className={message.isError ? "tool-result failed" : "tool-result"}>
       <summary>
@@ -955,6 +977,15 @@ export function ToolResult({ message }: { message: Message }) {
         </span>
         <span className="dim"> · {firstLine.length > 90 ? `${tc(firstLine).slice(0, 90)}…` : tc(firstLine)}</span>
       </summary>
+      {hasArgs && (
+        <>
+          <div className="tool-section dim">{thought ? t("Pensiero") : t("Richiesta")}</div>
+          <pre className={thought ? "tool-preview tool-thought" : "tool-preview"}>
+            {thought ?? JSON.stringify(args, null, 2)}
+          </pre>
+          <div className="tool-section dim">{t("Risultato")}</div>
+        </>
+      )}
       <pre className="tool-preview">{message.isError ? tc(message.content) : message.content}</pre>
     </details>
   );
